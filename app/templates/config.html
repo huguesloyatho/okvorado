@@ -1,0 +1,218 @@
+{% extends "base.html" %}
+
+{% block title %}Configuration{% endblock %}
+
+{% block content %}
+<section id="config-page">
+  <h1>Configuration Akvorado</h1>
+  <p class="subtitle">
+    Modifiez la déclaration des exportateurs et de leurs interfaces à la souris.
+    Rien n'est écrit dans <code>outlet.yaml</code> tant que vous n'avez pas cliqué sur « Appliquer ».
+  </p>
+
+  <p class="subtitle">
+    Pour le reste de la configuration Akvorado (plan d'adressage, noms d'AS,
+    filtres enregistrés, widgets d'accueil, options de Visualize, ports
+    d'écoute, règles de classification…), direction
+    <a class="link-action" href="{{ '/config/sections' | prefixed }}">Sections de configuration <span aria-hidden="true">&rarr;</span></a>.
+  </p>
+
+  {% if error %}
+    <p class="notice notice-crit">{{ error }}</p>
+  {% endif %}
+
+  <!-- Bandeau + liste des changements en attente — auto-refresh -->
+  <div id="pending-changes-panel"
+       hx-get="{{ '/config/pending' | prefixed }}"
+       hx-trigger="load, every 30s"
+       hx-select="#pending-changes-panel"
+       hx-swap="outerHTML">
+    {% if pending_total > 0 %}
+      <div class="notice notice-warn pending-banner">
+        <strong>{{ pending_total }} changement{{ "s" if pending_total != 1 else "" }} en attente</strong>
+        <p>
+          Rien n'est appliqué à Akvorado tant que vous n'avez pas cliqué sur « Appliquer ».
+          L'application <strong>redémarre les containers Akvorado</strong> et
+          <strong>troue la collecte de flux pendant quelques secondes</strong>
+          (le protocole NetFlow est en UDP : les datagrammes perdus pendant le
+          redémarrage ne sont jamais retransmis). Groupez vos changements plutôt
+          que d'appliquer un par un.
+        </p>
+        <button
+          type="button"
+          class="primary"
+          hx-post="{{ '/config/apply' | prefixed }}"
+          hx-target="#apply-report"
+          hx-swap="innerHTML"
+          hx-confirm="Appliquer les {{ pending_total }} changement(s) en attente ? Ceci redémarre Akvorado et interrompt la collecte de flux pendant quelques secondes."
+          hx-sync="this:replace"
+          hx-disabled-elt="this"
+        >
+          Appliquer les {{ pending_total }} changement{{ "s" if pending_total != 1 else "" }}
+        </button>
+      </div>
+
+      <ul class="pending-list">
+        {% for change in pending_changes %}
+          <li class="pending-item" id="pending-item-{{ change.id }}">
+            <span class="pending-item__label">{{ describe_pending_change(change) }}</span>
+            <span class="pending-item__meta">par {{ change.author }} · {{ change.created_at }}</span>
+            <button
+              type="button"
+              class="danger"
+              hx-delete="{{ '/config/pending/' | prefixed }}{{ change.id }}"
+              hx-target="#pending-item-{{ change.id }}"
+              hx-swap="outerHTML"
+              hx-confirm="Retirer ce changement de la file d'attente ?"
+            >
+              Retirer
+            </button>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="empty">Aucun changement en attente.</p>
+    {% endif %}
+  </div>
+
+  <!-- Rapport d'application, rempli par le bouton "Appliquer" ci-dessus -->
+  <div id="apply-report"></div>
+
+  <!-- État des containers Akvorado — auto-refresh -->
+  <section class="panel" id="akvorado-status-panel">
+    <div class="panel-head">
+      <h2>État des containers Akvorado</h2>
+    </div>
+    <div hx-get="{{ '/config/status' | prefixed }}" hx-trigger="load, every 30s" hx-swap="innerHTML">
+      <p class="view-card__loading">Chargement…</p>
+    </div>
+  </section>
+
+  <!-- Formulaire d'ajout d'exportateur -->
+  <section class="panel" id="add-exporter-panel">
+    <div class="panel-head">
+      <h2>Déclarer un nouvel exportateur</h2>
+    </div>
+    <form
+      class="config-form"
+      hx-post="{{ '/config/exporters' | prefixed }}"
+      hx-target="#pending-changes-panel"
+      hx-trigger="submit"
+      hx-sync="this:replace"
+      hx-disabled-elt="find button"
+      hx-on::after-request="if(event.detail.successful) this.reset()"
+    >
+      {# hx-sync + hx-disabled-elt : un double-clic ne met en attente qu'UN
+         seul changement (même garde que le portmap-editor de views.html).
+
+         Chaque paire label+champ est emballée dans un `.field` : `.config-form`
+         est une grille `auto-fit` où, SANS cette enveloppe, chaque label et
+         chaque champ sont des cellules INDÉPENDANTES. Le retour à la ligne
+         tombe alors au milieu d'une paire et le label se retrouve orphelin,
+         collé au champ suivant. Signalé par capture le 2026-08-06 sur les
+         ports d'écoute ; ce formulaire portait le MÊME défaut, latent. #}
+      <div class="field">
+        <label for="add-exporter-cidr">CIDR</label>
+        <input type="text" id="add-exporter-cidr" name="cidr" placeholder="192.0.2.50/32" required>
+      </div>
+
+      <div class="field">
+        <label for="add-exporter-name">Nom</label>
+        <input type="text" id="add-exporter-name" name="name" placeholder="nouveau-noeud" maxlength="128" required>
+      </div>
+
+      <button type="submit" class="primary">Mettre en attente</button>
+    </form>
+    <p class="config-form__hint">
+      Les interfaces se déclarent ensuite, une fois l'exportateur ajouté et le changement appliqué.
+    </p>
+  </section>
+
+  <!-- Formulaire d'ajout/modification d'interface sur un exportateur déjà déclaré -->
+  <section class="panel" id="add-interface-panel">
+    <div class="panel-head">
+      <h2>Déclarer une interface</h2>
+    </div>
+    {% if declared_exporters %}
+    {# La cible du POST dépend de l'exportateur choisi. Elle était réécrite par
+       un `onchange=` INLINE, que la CSP de l'application (`script-src 'self'`,
+       sans `unsafe-inline`) BLOQUE — mesuré au navigateur le 2026-08-06 sur
+       les 12 exportateurs de production : on choisissait le sixième, `hx-post`
+       restait sur le troisième. L'interface aurait été déclarée sur une
+       machine non choisie, sans message, avec un « mis en attente » en succès.
+
+       Le câblage vit désormais dans `form-targets.js` (fichier statique, seule
+       forme autorisée par la CSP), piloté par ces deux attributs. #}
+    <form
+      id="add-interface-form"
+      class="config-form"
+      data-target-template="{{ '/config/exporters/' | prefixed }}{value}/interfaces"
+      data-target-source="cidr_display"
+      hx-post="{{ '/config/exporters/' | prefixed }}{{ declared_exporters[0].cidr | urlencode }}/interfaces"
+      hx-target="#pending-changes-panel"
+      hx-trigger="submit"
+      hx-sync="this:replace"
+      hx-disabled-elt="find button"
+    >
+      {# Chaque paire label+champ est emballée dans un `.field` : `.config-form`
+         est une grille `auto-fit` où, sans cette enveloppe, chaque label et
+         chaque champ sont des cellules INDÉPENDANTES. Le retour à la ligne
+         tombe alors au milieu d'une paire et le label se retrouve orphelin.
+         Ce formulaire, avec ses 6 paires, était le plus exposé de l'app. #}
+      <div class="field">
+        <label for="add-interface-cidr">Exportateur</label>
+        <select id="add-interface-cidr" name="cidr_display">
+          {% for exporter in declared_exporters %}
+            <option value="{{ exporter.cidr }}">{{ exporter.name }} ({{ exporter.cidr }})</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="field">
+        <label for="add-interface-ifindex">ifIndex</label>
+        <input type="number" id="add-interface-ifindex" name="if_index" min="1" placeholder="409" required>
+      </div>
+
+      <div class="field">
+        <label for="add-interface-name">Nom de l'interface</label>
+        <input type="text" id="add-interface-name" name="name" placeholder="tailscale0" required>
+      </div>
+
+      <div class="field">
+        <label for="add-interface-description">Description</label>
+        <input type="text" id="add-interface-description" name="description" placeholder="tailscale mesh">
+      </div>
+
+      <div class="field">
+        <label for="add-interface-speed">Vitesse (Mbps)</label>
+        <input type="number" id="add-interface-speed" name="speed" min="1" value="1000">
+      </div>
+
+      <div class="field">
+        <label for="add-interface-boundary">Périmètre (boundary)</label>
+        <select id="add-interface-boundary" name="boundary" required>
+          {% for boundary in boundary_choices %}
+            <option value="{{ boundary.value }}">{{ boundary.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <p class="config-form__hint boundary-hint">
+        <strong>Attention, champ sensible.</strong> Une erreur ici vide les dashboards Akvorado.
+        « Vers Internet (WAN) » = interface qui fait face à Internet. « Vers le mesh interne »
+        = interface qui fait face au réseau Tailscale/homelab. « Non classifiée » = par défaut,
+        à corriger dès que le rôle réel de l'interface est connu.
+      </p>
+
+      <button type="submit" class="primary">Mettre en attente</button>
+    </form>
+    {% else %}
+      <p class="empty">Aucun exportateur déclaré pour le moment — ajoutez-en un ci-dessus.</p>
+    {% endif %}
+  </section>
+</section>
+  {# Câblage des formulaires dont la cible ou la soumission dépend d'un choix.
+     Fichier statique : la CSP (`script-src 'self'`) interdit tout gestionnaire
+     inline, et deux défauts vécus le 2026-08-06 viennent précisément de là. #}
+  <script src="{{ '/static/form-targets.js?v=' | prefixed }}{{ static_version }}" defer></script>
+{% endblock %}

@@ -1,0 +1,883 @@
+---
+# Okvorado — stack PORTABLE, clé en main.
+#
+# OBJECTIF (voir CLAUDE.md racine) : remplacer NetFlow en entreprise sur un
+# parc de 350 routeurs SFR. Ce compose ne dépend de RIEN d'autre que la
+# SOURCE DES FLUX : aucun réseau externe préexistant, aucun reverse proxy,
+# aucun VPN mesh, aucun registre d'image privé, aucune identité (Authelia).
+# Il démarre sur une machine nue et se suffit à lui-même.
+#
+# Versions ÉPROUVÉES : reprises du pilote homelab en production (mesuré
+# 2026-07/08), PAS de `:latest` au hasard pour les 4 composants qui comptent
+# (kafka, clickhouse, redis/valkey, akvorado). `grafana` et `okvorado`
+# suivent leur propre cycle de version, séparé.
+#
+# --- Rotation des logs Docker (tous les services ci-dessous) ---------------
+# FAIT MESURÉ (2026-08-08, machine de qualification `.6`) : sans politique de
+# rotation explicite, les logs JSON de Docker s'accumulent sans limite —
+# 155 Mo constatés sur cette machine avant ce chantier. `/etc/docker/daemon.json`
+# de `.6` impose bien un défaut global (`max-size: 10m, max-file: 3`), mais
+# c'est un réglage du DAEMON de CETTE machine, pas du compose : un stack
+# PORTABLE (voir CLAUDE.md racine — « zéro dépendance à l'infrastructure du
+# homelab », doit tourner sur une machine nue en entreprise) ne peut JAMAIS
+# compter sur un `daemon.json` externe déjà en place. Chaque service porte
+# donc ICI sa propre politique `logging:`, explicite.
+#
+# CALCUL HONNÊTE : Docker limite les logs par TAILLE (`max-size × max-file` =
+# plafond disque par conteneur), PAS par DURÉE — il n'existe aucun réglage
+# Docker natif "garder N jours de logs". Le défaut ci-dessous (10 Mo × 3
+# fichiers = 30 Mo/service) est un point de départ raisonnable pour un débit
+# modéré, PAS une mesure de débit réel (aucune mesure de débit par service
+# n'a été faite à ce jour) et PAS une promesse de rétention "30 jours" :
+# un service bavard (kafka, akvorado-outlet en debug) dépassant ~1 Mo/jour
+# tournera sur une fenêtre plus courte que 30 jours ; un service calme
+# (redis, config-generator qui tourne une fois puis s'arrête) durera bien
+# plus longtemps. Augmenter `DOCKER_LOG_MAX_SIZE`/`DOCKER_LOG_MAX_FILE`
+# (`.env`, ou depuis l'écran Okvorado — Lot D, qui les persiste et les
+# réinjecte via `.env`) si les logs réels d'un service sont plus bavards que
+# prévu.
+#
+# ⚠️ FAIT DOCKER (comportement établi, à vérifier via `docker inspect
+# <container> | grep LogConfig` avant/après un `docker restart` si doute) :
+# la politique de rotation d'un conteneur est figée À SA CRÉATION, pas
+# modifiable à chaud. Changer `logging:` sur un service DÉJÀ DÉMARRÉ ne
+# prend effet qu'après RECRÉATION du conteneur (`docker compose up -d` —
+# recrée les conteneurs dont la config a changé ; un simple `docker compose
+# restart` ne suffit PAS, il relance le même conteneur avec sa config figée).
+
+networks:
+  default:
+    # Réseau créé PAR ce compose, jamais supposé préexistant : c'est ce qui
+    # rend le stack démarrable sur une machine nue, sans configuration
+    # réseau préalable.
+    driver: bridge
+
+# Stockage et persistance : BIND MOUNTS vers `./data/...` (relatif à ce
+# fichier, donc `stack/data/...`) — exigence utilisateur explicite (« stockage
+# et persistence dans des dossiers à la racine du projet »), au lieu de
+# volumes Docker nommés dont l'emplacement réel sur disque est géré par Docker
+# et invisible à l'exploitant. `stack/data/` est gitignoré (voir .gitignore
+# racine) : ce sont des données runtime, jamais du contenu versionné.
+#
+# GEOIP — le piège fsnotify décrit plus bas (montage `geoip-data` d'origine)
+# reste valable avec un bind mount : Docker CRÉE TOUJOURS le répertoire hôte
+# cible d'un bind mount s'il n'existe pas encore, au moment du `up` — donc
+# `watcher.Add()` (voir explication complète sur le service `akvorado-outlet`
+# plus bas) trouve un répertoire existant dès le premier démarrage, exactement
+# comme avec le volume nommé. Aucune étape manuelle requise.
+#
+# PERMISSIONS — ClickHouse tourne en uid 101, Grafana en uid 472 (images
+# officielles). VÉRIFIÉ EN CONDITIONS RÉELLES (2026-08-08) sur un bind mount
+# vide créé par Docker (donc appartenant à root) : AUCUN réglage `user:`
+# supplémentaire n'est nécessaire.
+#   - ClickHouse : l'entrypoint officiel démarre en root, fait lui-même le
+#     `chown` du répertoire de données vers l'uid `clickhouse` (101), PUIS
+#     bascule sur cet utilisateur avant de lancer le serveur — comportement
+#     natif de l'image, identique à ce que ferait Docker sur un volume nommé.
+#   - Grafana : le process démarre directement en uid 472 et écrit sans
+#     erreur dans le dossier vide monté (`drwxr-xr-x ... root`, groupe 0
+#     accessible en écriture par cet uid) — pas de chown requis.
+# Aucun chmod/chown ajouté dans ce compose : inutile, et un tel script
+# d'init serait un risque de permissions ouvertes en entreprise pour un
+# bénéfice nul ici.
+
+services:
+  # ---------------------------------------------------------------------
+  # Bus de messages : tampon entre l'inlet (réception UDP) et l'outlet
+  # (écriture ClickHouse). KRaft (pas de ZooKeeper) : un seul binaire à
+  # opérer sur site.
+  # ---------------------------------------------------------------------
+  kafka:
+    # DEFAUT MESURE (2026-08-07) sur une machine vierge : le tag `4.3.1-cvefix`
+    # N EXISTE PAS sur Docker Hub — `manifest unknown`. C etait un tag LOCAL a
+    # la machine de qualification (construit il y a 6 jours), invisible depuis
+    # l exterieur. Le stack tournait donc chez nous par le seul effet du cache
+    # d images local, et echouait partout ailleurs.
+    # Tags reellement publies verifies a la source : latest, 4.3.1, 4.3.0, 4.2.1.
+    image: apache/kafka:4.3.1
+    restart: unless-stopped
+    mem_limit: ${KAFKA_MEM_LIMIT:-1g}
+    logging:
+      driver: json-file
+      options:
+        max-size: "${DOCKER_LOG_MAX_SIZE:-10m}"
+        max-file: "${DOCKER_LOG_MAX_FILE:-3}"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: controller,broker
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: CLIENT://:9092,CONTROLLER://:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CLIENT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: CLIENT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: CLIENT
+      KAFKA_DELETE_TOPIC_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: 1
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      # Brider la JVM : sans ça elle dimensionne son heap sur la RAM totale
+      # de l'hôte — risque d'OOM sur une machine partagée avec d'autres
+      # services (mesuré en prod homelab).
+      KAFKA_HEAP_OPTS: "-Xmx${KAFKA_HEAP_MAX:-512M} -Xms${KAFKA_HEAP_MIN:-256M}"
+    # DEFAUT MESURE (2026-08-08) au premier `up -d` reel sur machine nue,
+    # apres le passage des volumes nommes aux bind mounts `./data/...` :
+    #     java.nio.file.AccessDeniedException:
+    #     /var/lib/kafka/data/bootstrap.checkpoint.tmp
+    # -> kafka `unhealthy`, et TOUT le stack bloque en cascade
+    #    (« dependency failed to start: container kafka is unhealthy »).
+    #
+    # CAUSE EXACTE (verifiee, pas supposee — `docker run --rm apache/kafka:4.3.1
+    # id` retourne `uid=1000(appuser)`) : l'image Kafka demarre DIRECTEMENT en
+    # uid 1000, sans jamais passer par root. Docker cree le repertoire cible
+    # d'un bind mount en `root:root` 0755 — non inscriptible par uid 1000.
+    #
+    # POURQUOI CLICKHOUSE ET GRAFANA N'ONT PAS CE PROBLEME (et pourquoi ce
+    # defaut a echappe a la verification initiale) : ClickHouse demarre en
+    # root et fait lui-meme son `chown` avant de basculer en uid 101 ;
+    # Grafana tourne en uid 472 mais avec le GROUPE 0, qui a l'acces sur un
+    # dossier root:root. Kafka n'a ni l'un ni l'autre — il fallait le tester,
+    # pas l'extrapoler depuis les deux autres.
+    #
+    # PARADE RETENUE : faire tourner Kafka en root, comme ClickHouse et
+    # Valkey le font deja nativement dans ce meme stack. L'image gere alors
+    # ses propres droits. Ecarte : un `chmod 777` (droits ouverts en
+    # entreprise pour un benefice nul) et un script d'init privilegie
+    # (complexite et surface d'attaque supplementaires).
+    user: root
+    volumes:
+      - ./data/kafka:/var/lib/kafka/data
+    healthcheck:
+      interval: 20s
+      test:
+        [
+          "CMD",
+          "/opt/kafka/bin/kafka-topics.sh",
+          "--list",
+          "--bootstrap-server",
+          "kafka:9092",
+        ]
+
+  # ---------------------------------------------------------------------
+  # Cache de la console web Akvorado (résolution ASN/pays mise en cache).
+  # ---------------------------------------------------------------------
+  redis:
+    image: valkey/valkey:9.0
+    restart: unless-stopped
+    mem_limit: ${REDIS_MEM_LIMIT:-128m}
+    logging:
+      driver: json-file
+      options:
+        max-size: "${DOCKER_LOG_MAX_SIZE:-10m}"
+        max-file: "${DOCKER_LOG_MAX_FILE:-3}"
+    healthcheck:
+      interval: 20s
+      test:
+        - CMD-SHELL
+        - "timeout 3 redis-cli ping | grep -q PONG"
+
+  # ---------------------------------------------------------------------
+  # Entrepôt des flux — un seul nœud ClickHouse suffit au volume mesuré
+  # (0,1 à 4,4 To/an à 350 routeurs échantillonnés 1:1000, voir CLAUDE.md).
+  # ---------------------------------------------------------------------
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.3
+    restart: unless-stopped
+    mem_limit: ${CLICKHOUSE_MEM_LIMIT:-2g}
+    logging:
+      driver: json-file
+      options:
+        max-size: "${DOCKER_LOG_MAX_SIZE:-10m}"
+        max-file: "${DOCKER_LOG_MAX_FILE:-3}"
+    stop_grace_period: 30s
+    cap_add:
+      - SYS_NICE
+    environment:
+      CLICKHOUSE_INIT_TIMEOUT: 60
+      CLICKHOUSE_SKIP_USER_SETUP: 1
+    volumes:
+      - ./data/clickhouse:/var/lib/clickhouse
+    healthcheck:
+      interval: 20s
+      test:
+        [
+          "CMD",
+          "wget",
+          "-T",
+          "1",
+          "--spider",
+          "--no-proxy",
+          "http://127.0.0.1:8123/ping",
+        ]
+
+  # ---------------------------------------------------------------------
+  # Générateur de config : résout ${SNMP_COMMUNITY} dans le gabarit versionné
+  # `outlet.yaml.template` et écrit `outlet.yaml` (gitignoré) juste à côté,
+  # AVANT que l'orchestrateur ne démarre.
+  #
+  # POURQUOI CE SERVICE EXISTE (mesuré 2026-08-07, machine vierge) : Akvorado
+  # ne résout JAMAIS lui-même les `${VAR}` dans ses YAML (seul Docker Compose
+  # le fait). La doc officielle Akvorado (50-configuration.md) décrit un seul
+  # mécanisme natif de variables d'environnement, `AKVORADO_CFG_<SERVICE>_...`,
+  # mais ne documente aucune syntaxe pour une clé de MAP dynamique comme
+  # `metadata.providers[].credentials."::/0".communities` (index de liste +
+  # clé CIDR contenant `/` et `:`) — parier la découverte SNMP de 350 routeurs
+  # sur une syntaxe non documentée est écarté. La communauté SNMP est un
+  # secret : elle ne doit JAMAIS apparaître en clair dans un YAML versionné.
+  #
+  # Le script de substitution vit dans un FICHIER SÉPARÉ versionné
+  # (`config-generator/generate-config.sh`), jamais inline dans `command:` —
+  # piège vérifié en session : un `${VAR}` écrit dans une commande YAML
+  # compose se fait interpoler par Docker Compose LUI-MÊME (avec la valeur,
+  # souvent vide, de la variable d'environnement de l'HÔTE qui lance
+  # `docker compose`), avant même que le shell du conteneur ne la voie —
+  # exactement le défaut qu'on cherche à éviter, à un étage différent. En
+  # sortant `${SNMP_COMMUNITY}` du YAML compose, Docker Compose ne le voit
+  # jamais : seul le shell DANS le conteneur le résout, avec la valeur
+  # injectée par `environment:` ci-dessous.
+  config-generator:
+    image: docker.io/library/alpine:3.20
+    restart: "no"
+    logging:
+      driver: json-file
+      options:
+        max-size: "${DOCKER_LOG_MAX_SIZE:-10m}"
+        max-file: "${DOCKER_LOG_MAX_FILE:-3}"
+    command: ["/generate-config.sh"]
+    environment:
+      # Valeur REELLE dans le .env local de l'exploitant (jamais versionné) ;
+      # le fallback "public" est la communauté SNMPv2 en lecture seule la
+      # plus répandue par défaut sur le matériel réseau — à changer
+      # impérativement au déploiement réel (voir .env.example).
+      SNMP_COMMUNITY: ${SNMP_COMMUNITY:-public}
+      # SNMPv3 — migration progressive, COEXISTE avec SNMP_COMMUNITY (v2c)
+      # ci-dessus (voir .env.example pour le détail de chaque variable).
+      # Toutes vides par défaut : generate-config.sh n'ajoute aucune entrée
+      # v3 dans outlet.yaml tant que SNMP_V3_USERNAME est vide — comportement
+      # identique à aujourd'hui (fail-safe, 350 routeurs pas encore migrés).
+      # SECRETS_INLINE_OK: meme pattern ${VAR:-defaut} deja utilise ci-dessus
+      # pour SNMP_COMMUNITY (secret existant, non flagge) — reference
+      # d'environnement resolue depuis le .env local (jamais versionne),
+      # jamais une valeur en clair ; les passphrases vides par defaut sont
+      # le fail-safe documente juste au-dessus (v3 non configure).
+      SNMP_V3_SUBNET: ${SNMP_V3_SUBNET:-}
+      SNMP_V3_USERNAME: ${SNMP_V3_USERNAME:-}
+      SNMP_V3_SECURITY_LEVEL: ${SNMP_V3_SECURITY_LEVEL:-authPriv}
+      SNMP_V3_AUTH_PROTOCOL: ${SNMP_V3_AUTH_PROTOCOL:-SHA256}
+      SNMP_V3_AUTH_PASSPHRASE: ${SNMP_V3_AUTH_PASSPHRASE:-}
+      SNMP_V3_PRIV_PROTOCOL: ${SNMP_V3_PRIV_PROTOCOL:-AES256}
+      SNMP_V3_PRIV_PASSPHRASE: ${SNMP_V3_PRIV_PASSPHRASE:-}
+      # Seuils d'alerte Grafana — voir stack/grafana/provisioning/alerting/README.md.
+      # Résolus ICI (pas par Grafana lui-même, qui n'expand aucun ${VAR} dans
+      # son provisioning — mesuré 2026-08-08, voir generate-config.sh).
+      ALERTE_EXPORTATEUR_MUET_MINUTES: ${ALERTE_EXPORTATEUR_MUET_MINUTES:-15}
+      ALERTE_SATURATION_INTERFACE_SEUIL_PCT: ${ALERTE_SATURATION_INTERFACE_SEUIL_PCT:-80}
+      ALERTE_CHUTE_TRAFIC_SEUIL_PCT: ${ALERTE_CHUTE_TRAFIC_SEUIL_PCT:-50}
+      # Cible INOFFENSIVE par défaut (URL locale non routée) — les
+      # notifications échouent proprement (log Grafana) tant que
+      # l'exploitant n'a pas réglé la vraie cible (webhook Slack/Teams/ntfy/
+      # relais mail) dans son .env.
+      ALERTE_NOTIFICATION_WEBHOOK_URL: ${ALERTE_NOTIFICATION_WEBHOOK_URL:-http://localhost:9999/aucune-cible-configuree}
+      # Santé DB ClickHouse (LOT db_health) — signal précoce sur les parts
+      # actives, bien avant le ralentissement forcé ClickHouse (voir écran
+      # Okvorado /db-health pour le détail et les seuils réels du serveur).
+      ALERTE_DB_HEALTH_PARTS_ACTIVES_SEUIL: ${ALERTE_DB_HEALTH_PARTS_ACTIVES_SEUIL:-500}
+    volumes:
+      - ./config:/etc/akvorado
+      - ./config-generator/generate-config.sh:/generate-config.sh:ro
+      - ./grafana/provisioning/alerting:/etc/grafana-alerting-templates:ro
+      - ./data/grafana-alerting:/etc/grafana-alerting
+
+  # ---------------------------------------------------------------------
+  # Orchestrateur : distribue la configuration (les 4 YAML de ./config)
+  # aux autres composants Akvorado et pilote les migrations de schéma.
+  # ---------------------------------------------------------------------
+  akvorado-orchestrator:
+    # ⚠️ PREREQUIS MATERIEL MESURE (2026-08-08) — A LIRE AVANT DEPLOIEMENT.
+    #
+    # Le tag `main` n'est publie qu'en `linux/amd64` VARIANT `v3` (lu dans
+    # le manifeste, pas suppose). `x86-64-v3` exige un CPU avec AVX2
+    # (Intel Haswell 2013+ / AMD Excavator 2015+). Sur un processeur qui
+    # n'annonce pas ce niveau, `docker pull` echoue avec :
+    #     no matching manifest for linux/amd64 in the manifest list entries
+    #
+    # MESURE SUR DEUX MACHINES REELLES :
+    #   - i7-11700KF (AVX2 present)          -> pull OK, stack fonctionnel
+    #   - VM QEMU « Virtual CPU version 2.5+ » (AVX2 ABSENT) -> pull REFUSE
+    # Le second cas est FREQUENT en entreprise : une VM configuree avec un
+    # modele de CPU generique masque les instructions modernes de l'hote,
+    # meme si le processeur physique les possede.
+    #
+    # PARADE si le pull echoue sur la machine cible : configurer l'hyperviseur
+    # pour exposer le CPU reel (Proxmox/QEMU : `cpu: host` ; VMware : mode de
+    # compatibilite EVC au moins Haswell), puis relancer `up -d`. Aucune
+    # modification de ce fichier n'est necessaire.
+    #
+    # POURQUOI PAS UN TAG STABLE (`2.4.1`), QUI LUI N'A PAS CETTE CONTRAINTE :
+    # teste avec le vrai binaire le 2026-08-08 — `2.4.1` REJETTE les fichiers
+    # de configuration de ce stack (« invalid key Outlet[0].geoip /
+    # .kafkainput / .networks »). Le schema de configuration a change entre
+    # 2.4.1 et `main` ; basculer sur la version stable casserait le stack.
+    # `AKVORADO_IMAGE` permet de figer une autre version si un futur tag
+    # stable adopte ce schema.
+    image: ${AKVORADO_IMAGE:-quay.io/akvorado/akvorado:main}
+    restart: unless-stopped
+    mem_limit: ${AKVORADO_ORCHESTRATOR_MEM_LIMIT:-256m}
+    logging:
+      driver: json-file
+      options:
+        max-size: "${DOCKER_LOG_MAX_SIZE:-10m}"
+        max-file: "${DOCKER_LOG_MAX_FILE:-3}"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      config-generator:
+        condition: service_completed_successfully
+    command: orchestrator /etc/akvorado/akvorado.yaml
+    volumes:
+      - ./config:/etc/akvorado:ro
+
+  # ---------------------------------------------------------------------
+  # Console web — configuration ET consultation, à l'écran (exigence n°2
+  # de l'objectif du projet).
+  # ---------------------------------------------------------------------
+  akvorado-console:
+    image: ${AKVORADO_IMAGE:-quay.io/akvorado/akvorado:main}
+    restart: unless-stopped
+    mem_limit: ${AKVORADO_CONSOLE_MEM_LIMIT:-512m}
+    logging:
+      driver: json-file
+      options:
+        max-size: "${DOCKER_LOG_MAX_SIZE:-10m}"
+        max-file: "${DOCKER_LOG_MAX_FILE:-3}"
+    depends_on:
+      akvorado-orchestrator:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    command: console http://akvorado-orchestrator:8080
+    # PORT NON PUBLIE volontairement (décision « une seule URL » — demande
+    # utilisateur : « pas jongler sur 4 url pour voir l'exhaustivite des
+    # informations »). Le service continue de tourner (Okvorado l'appelle en
+    # interne via le réseau docker, cf. OKVORADO_CONSOLE_HOST) — seule la
+    # publication sur l'hôte disparaît. Grafana est la porte d'entrée unique ;
+    # cette console reste joignable en interne sur akvorado-console:8080.
+    volumes:
+      - ./data/okvorado:/run/akvorado
+    environment:
+      AKVORADO_CFG_CONSOLE_DATABASE_DSN: /run/akvorado/console.sqlite
+      AKVORADO_CFG_CONSOLE_BRANDING: ${AKVORADO_CONSOLE_BRANDING:-false}
+
+  # ---------------------------------------------------------------------
+  # Collecteur — c'est LE point de contact des 350 routeurs : on les
+  # pointe ici (IP/nom de cette machine), rien d'autre à déclarer.
+  # ---------------------------------------------------------------------
+  akvorado-inlet:
+    image: ${AKVORADO_IMAGE:-quay.io/akvorado/akvorado:main}
+    restart: unless-stopped
+    mem_limit: ${AKVORADO_INLET_MEM_LIMIT:-512m}
+    logging:
+      driver: json-file
+      options:
+        max-size: "${DOCKER_LOG_MAX_SIZE:-10m}"
+        max-file: "${DOCKER_LOG_MAX_FILE:-3}"
+    depends_on:
+      akvorado-orchestrator:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    command: inlet http://akvorado-orchestrator:8080
+    ports:
+      # NetFlow v9 / IPFIX (port historique)
+      - "${NETFLOW_PORT:-2055}:2055/udp"
+      # IPFIX (port IANA officiel)
+      - "${IPFIX_PORT:-4739}:4739/udp"
+      # sFlow
+      - "${SFLOW_PORT:-6343}:6343/udp"
+    volumes:
+      - ./data/okvorado:/run/akvorado
+
+  # ---------------------------------------------------------------------
+  # Sortie — décode les flux Kafka, résout les métadonnées d'interface
+  # (cascade static -> snmp, voir config/outlet.yaml) et écrit ClickHouse.
+  # ---------------------------------------------------------------------
+  akvorado-outlet:
+    image: ${AKVORADO_IMAGE:-quay.io/akvorado/akvorado:main}
+    restart: unless-stopped
+    mem_limit: ${AKVORADO_OUTLET_MEM_LIMIT:-1g}
+    logging:
+      driver: json-file
+      options:
+        max-size: "${DOCKER_LOG_MAX_SIZE:-10m}"
+        max-file: "${DOCKER_LOG_MAX_FILE:-3}"
+    stop_grace_period: 30s
+    depends_on:
+      akvorado-orchestrator:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    command: outlet http://akvorado-orchestrator:8080
+    # PORT NON PUBLIE volontairement (décision « une seule URL », cf.
+    # akvorado-console ci-dessus) : ce port n'exposait que des métriques
+    # Prometheus internes, pas une UI destinée à un humain — Okvorado les lit
+    # déjà en interne (OKVORADO_OUTLET_PORT) sur le réseau docker. L'outlet
+    # lui-même continue de tourner, seule la publication sur l'hôte disparaît.
+    volumes:
+      - ./data/okvorado:/run/akvorado
+      # CAUSE RÉELLE (mesurée 2026-08-07, machine vierge .7) : sans ce
+      # montage, `/usr/share/GeoIP` n'existe PAS DU TOUT dans le conteneur
+      # akvorado-outlet — pas seulement les fichiers `.mmdb`, le RÉPERTOIRE
+      # lui-même. Code source Akvorado (outlet/geoip/root.go, fonction
+      # Start()) : `geoip.optional: true` protège UNIQUEMENT l'ouverture des
+      # fichiers `.mmdb` (`openDatabase`, ligne 136-141) — PAS l'appel
+      # `fsnotify.Watcher.Add(dir)` sur le répertoire PARENT (ligne 160-163)
+      # qui suit juste après, hors de toute condition `!c.config.Optional`.
+      # Sur répertoire absent, `watcher.Add()` échoue avec "no such file or
+      # directory" et `Start()` retourne cette erreur — un bug upstream, non
+      # couvert par `optional`. Le run-group de l'outlet (package `daemon`,
+      # démarrage séquentiel de tous les composants) annule alors TOUT le
+      # démarrage en cascade dès qu'un composant retourne une erreur, stoppant
+      # les composants déjà UP (kafkainput) — AVANT MÊME d'atteindre le
+      # composant `networks` (qui dépend de `geoip`) puis `core`, qui est le
+      # seul point d'appel de `kafkainput.StartWorkers()` (le VRAI démarrage
+      # des workers Kafka : `joining group`, `assigning partitions`). Résultat
+      # mesuré : `docker compose logs akvorado-outlet` s'arrête net après
+      # "starting GeoIP component" / "cannot watch database directory" — sans
+      # jamais logguer "starting new client" ni "joining group" — alors que le
+      # conteneur reste `Up (healthy)` indéfiniment (le healthcheck `akvorado
+      # healthcheck` ne vérifie que le serveur HTTP interne, pas la
+      # consommation Kafka). C'est un ZÉRO SILENCIEUX : `kafka-consumer-
+      # groups.sh --list` ne rend AUCUN groupe, `SELECT count() FROM
+      # default.flows` reste à 0, sans qu'aucune erreur ne remonte au niveau
+      # visible (statut du conteneur).
+      #
+      # BIND MOUNT (et non plus un volume Docker nommé, voir commentaire en
+      # tête de fichier « Stockage et persistance ») : Docker crée TOUJOURS le
+      # répertoire hôte cible d'un bind mount s'il n'existe pas, au moment du
+      # `up` — ça suffit à faire réussir `watcher.Add()`, exactement comme
+      # avec le volume nommé d'origine. Un exploitant qui veut de vraies bases
+      # MaxMind/IPinfo peut les déposer dans `./data/geoip` sans changer ce
+      # compose.
+      - ./data/geoip:/usr/share/GeoIP
+    environment:
+      AKVORADO_CFG_OUTLET_METADATA_CACHEPERSISTFILE: /run/akvorado/metadata.cache
+      AKVORADO_CFG_OUTLET_FLOW_STATEPERSISTFILE: /run/akvorado/flow.state
+
+  # ---------------------------------------------------------------------
+  # Restitution graphique — courbes, donuts, barres. Grafana parle
+  # nativement à ClickHouse ; les dashboards eux-mêmes (provisioning,
+  # panels) sont construits par un autre lot, hors périmètre ici. Ce
+  # service ne fait QUE déclarer le conteneur et ses volumes.
+  # ---------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    mem_limit: ${GRAFANA_MEM_LIMIT:-512m}
+    logging:
+      driver: json-file
+      options:
+        max-size: "${DOCKER_LOG_MAX_SIZE:-10m}"
+        max-file: "${DOCKER_LOG_MAX_FILE:-3}"
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      # Attend la génération des règles d'alerte (voir config-generator et
+      # stack/grafana/provisioning/alerting/README.md) — sans ça, Grafana
+      # démarrerait avant que le volume grafana-alerting-generated ne soit
+      # rempli, et provisionnerait un dossier vide au premier démarrage
+      # (rattrapé seulement au cycle de re-scan suivant, updateIntervalSeconds
+      # n'existe pas pour l'alerting comme pour les dashboards).
+      config-generator:
+        condition: service_completed_successfully
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000/tcp"
+    environment:
+      # SECRETS_INLINE_OK: reference ${VAR}, jamais une valeur en clair — le
+      # mot de passe REEL vient du .env local de l'exploitant (jamais
+      # versionne, voir .env.example et .gitignore). Le fallback "admin" est
+      # le defaut Grafana lui-meme, que Grafana impose de changer au premier
+      # login : ce n'est pas un secret qui fuit, c'est un stack qui demarre
+      # quand meme sans .env personnalise.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # OBLIGATOIRE — sans cette ligne le stack demarre et les dashboards sont
+      # TOUS EN ERREUR. `grafana-clickhouse-datasource` est un plugin
+      # COMMUNAUTAIRE, absent de l'image officielle : la source de donnees
+      # provisionnee ne s'initialise pas et chaque panneau affiche une erreur.
+      # Symptome trompeur — Grafana repond, l'interface s'ouvre, seuls les
+      # graphiques sont vides. Signale par l'agent qui a construit les
+      # dashboards (2026-08-07), pas trouve par un test : aucun test ne monte
+      # le container.
+      # OBLIGATOIRE — sans cette ligne le stack demarre et les dashboards sont
+      # TOUS EN ERREUR. `grafana-clickhouse-datasource` est un plugin
+      # COMMUNAUTAIRE, absent de l'image officielle : la source de donnees
+      # provisionnee ne s'initialise pas et chaque panneau affiche une erreur.
+      # Symptome trompeur — Grafana repond, l'interface s'ouvre, seuls les
+      # graphiques sont vides. Signale par l'agent qui a construit les
+      # dashboards (2026-08-07), pas trouve par un test : aucun test ne monte
+      # le container.
+      #
+      # NE DEPEND PAS d'un montage `./grafana/plugins` externe (verifie dans
+      # ce fichier avant retrait du montage, chantier 2026-08-09 : voir
+      # commentaire sur le volume `./data/grafana` plus bas) : cette variable
+      # declenche `grafana-cli plugins install` dans l'entrypoint officiel de
+      # l'image, qui ecrit sous `GF_PATHS_PLUGINS` — chemin par defaut
+      # `${GF_PATHS_DATA}/plugins`, donc `/var/lib/grafana/plugins`, DEJA
+      # couvert par le bind mount `./data/grafana:/var/lib/grafana` ci-dessous.
+      # Aucun montage dedie n'est necessaire pour ce plugin communautaire.
+      GF_INSTALL_PLUGINS: grafana-clickhouse-datasource
+      # PAGE D'ACCUEIL : Grafana s'ouvre directement sur le dashboard
+      # d'accueil livré par l'agent dashboards. UID vérifié dans
+      # stack/grafana/dashboards/00-accueil-traffic-summary.json (clé "uid"
+      # en tête de fichier), jamais supposé.
+      # DEFAUT MESURE A L ECRAN (2026-08-08) : avec `GF_USERS_HOME_DASHBOARD_UID`,
+      # la racine affichait « Welcome to Grafana » — la page par defaut. La
+      # variable etait pourtant bien passee au container, et le dashboard bien
+      # charge avec cet UID exact.
+      #
+      # CAUSE : ce reglage N EXISTE PAS. Verifie dans le grafana.ini du
+      # container : la cle de la section [users] est `default_home_dashboard_path`
+      # et attend un CHEMIN DE FICHIER, pas un UID. Une variable d environnement
+      # inconnue de Grafana est ignoree EN SILENCE — aucun avertissement, aucune
+      # erreur au demarrage. Zero silencieux typique.
+      #
+      # Le chemin pointe le fichier tel qu il est monte dans le container
+      # (volume ./grafana/dashboards -> /var/lib/grafana/dashboards).
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/00-accueil-traffic-summary.json
+    # DEFAUT MESURE (2026-08-08) au premier `up -d` reel, meme cause que le
+    # `user: root` du service kafka plus haut :
+    #     mkdir: can't create directory '/var/lib/grafana/plugins':
+    #     Permission denied
+    #     GF_PATHS_DATA='/var/lib/grafana' is not writable.
+    # -> grafana en `Restarting` en boucle, l'interface d'analyse (la porte
+    #    d'entree du produit) totalement indisponible.
+    #
+    # CAUSE : l'image tourne en uid 472 et doit CREER des sous-repertoires
+    # (`plugins/`, pour installer `grafana-clickhouse-datasource`) dans un
+    # dossier que Docker vient de creer en `root:root` 0755. Ecrire dedans
+    # exige d'en etre proprietaire — l'appartenance au groupe 0 ne suffit
+    # pas en 0755 (le bit `w` n'est pose que pour le proprietaire).
+    #
+    # LECON DE METHODE : une verification isolee (« l'uid 472 arrive-t-il a
+    # ecrire dans ce dossier ? ») avait conclu a tort que Grafana passait.
+    # Elle ne reproduisait pas le geste REEL du conteneur (creer un
+    # sous-repertoire au demarrage). Seul le `up -d` complet l'a revele —
+    # meme mecanisme que pour kafka, decouvert au meme instant.
+    #
+    # PARADE : tourner en root, comme kafka, clickhouse et valkey dans ce
+    # meme stack. L'entrypoint Grafana gere alors ses propres droits.
+    user: root
+    volumes:
+      - ./data/grafana:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      # Surcharge le sous-dossier alerting du bind mount ci-dessus avec le
+      # dossier GÉNÉRÉ (règles résolues par config-generator) — jamais les
+      # .template versionnés directement : Grafana ne résout aucun ${VAR}
+      # (mesuré, voir stack/grafana/provisioning/alerting/README.md).
+      - ./data/grafana-alerting:/etc/grafana/provisioning/alerting
+    healthcheck:
+      interval: 20s
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:3000/api/health || exit 1"]
+
+  # ---------------------------------------------------------------------
+  # Prépare les droits d'écriture d'Okvorado sur son bind mount AVANT que
+  # le conteneur applicatif ne démarre — troisième occurrence du MÊME
+  # défaut que kafka et grafana ci-dessus (voir leurs commentaires
+  # `user: root`), mais dont la parade diffère volontairement.
+  #
+  # DEFAUT MESURE (2026-08-09), IDENTIQUE dans son mécanisme à kafka et
+  # grafana : Docker crée `./data/okvorado` en `root:root` 0755 au premier
+  # `up`. Le Dockerfile d'Okvorado (racine du dépôt) fait tourner l'appli
+  # en `USER okvorado` (uid 10001, `useradd --uid 10001` — "l'app n'a
+  # besoin d'aucun droit root"), qui ne peut alors pas écrire sa base
+  # SQLite (`OKVORADO_SQLITE_PATH=/data/okvorado.db`) :
+  #     sqlite3.OperationalError: unable to open database file
+  # -> HTTP 500 à l'écran, précisément sur la page de connexion (premier
+  #    geste de tout exploitant). Contrairement à kafka/grafana, PAS de
+  #    `user: root` ici : le Dockerfile crée délibérément un utilisateur
+  #    non privilégié pour cette appli maison qui accepte des entrées
+  #    utilisateur (voir CLAUDE.md racine, section Sécurité) — annuler ce
+  #    durcissement pour corriger un problème de PERMISSIONS DE DOSSIER
+  #    serait proportionné à l'envers. `./data/okvorado` est aussi monté
+  #    par akvorado-console/inlet/outlet (sur /run/akvorado) : leur image
+  #    (`quay.io/akvorado/akvorado`) démarre en uid 0 (root, vérifié via
+  #    `docker image inspect --format '{{.Config.User}}'`), donc totalement
+  #    indifférente à l'appartenance du dossier — ce chown ne les affecte
+  #    en rien.
+  #
+  # PARADE : un service d'init dédié, sur le même motif que
+  # `config-generator` ci-dessus (`restart: "no"`, `depends_on:
+  # condition: service_completed_successfully` côté okvorado) — s'exécute
+  # une fois, chown le dossier vers l'uid/gid EXACT du Dockerfile (10001),
+  # puis s'arrête. `okvorado` démarre ensuite en uid 10001 (aucun `user:`
+  # à poser dessus : c'est déjà l'USER par défaut de l'image) et trouve un
+  # dossier dont il est propriétaire. Écarté : fusionner ce chown dans
+  # `config-generator` (responsabilité différente — résolution de
+  # templates YAML, pas gestion de droits filesystem — un service au nom
+  # explicite documente mieux l'intention et isole le rayon d'un échec).
+  okvorado-data-init:
+    image: docker.io/library/alpine:3.20
+    restart: "no"
+    logging:
+      driver: json-file
+      options:
+        max-size: "${DOCKER_LOG_MAX_SIZE:-10m}"
+        max-file: "${DOCKER_LOG_MAX_FILE:-3}"
+    # Uid/gid EN DUR à 10001 : DOIT rester synchronisé avec `useradd
+    # --uid 10001 okvorado` du Dockerfile racine. Une seule ligne, valeur
+    # documentée ci-dessus — un changement d'uid côté Dockerfile doit se
+    # répercuter ici.
+    command: ["chown", "-R", "10001:10001", "/data"]
+    volumes:
+      - ./data/okvorado:/data
+
+  # ---------------------------------------------------------------------
+  # Okvorado — configuration à l'écran (exigence n°2) + diagnostics que
+  # Grafana ne sait pas produire (convergence N sources -> 1 destination).
+  # Image publique construite depuis ce même dépôt (Dockerfile à la
+  # racine du projet) ; le tag est fourni par CI/CD au déploiement réel,
+  # `latest` sert de défaut pour un premier démarrage local.
+  # ---------------------------------------------------------------------
+  okvorado:
+    # DEFAUT MESURE (2026-08-07) en montant ce stack sur une machine VIERGE :
+    # `image:` seul renvoyait `pull access denied for okvorado, repository does
+    # not exist`. Le compose reclamait une image pre-construite qui n existe
+    # dans aucun registre public — le stack ne demarrait pas du tout en
+    # entreprise, ce qui vide de son sens la promesse « cle en main ».
+    #
+    # `build` rend le stack AUTONOME : `docker compose up -d` construit l image
+    # depuis le depot clone, sans registre prive ni etape manuelle.
+    # `image:` est conserve pour NOMMER l image construite, et reste
+    # surchargeable par ${OKVORADO_IMAGE} si un registre interne est disponible.
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: ${OKVORADO_IMAGE:-okvorado:latest}
+    restart: unless-stopped
+    mem_limit: ${OKVORADO_MEM_LIMIT:-256m}
+    logging:
+      driver: json-file
+      options:
+        max-size: "${DOCKER_LOG_MAX_SIZE:-10m}"
+        max-file: "${DOCKER_LOG_MAX_FILE:-3}"
+    depends_on:
+      akvorado-orchestrator:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      okvorado-data-init:
+        condition: service_completed_successfully
+    # PORT REPUBLIE (décision d'architecture 2026-08-09, remplace le montage
+    # « à travers Grafana » ci-dessous jugé inutilisable) : Okvorado porte
+    # désormais SA PROPRE authentification (page de connexion, session, TOTP
+    # optionnel — OKVORADO_AUTH_USER / OKVORADO_AUTH_PASSWORD, voir
+    # .env.example et app/config.py), il n'a donc plus besoin d'être caché
+    # derrière Grafana pour rester protégé.
+    #
+    # ANCIEN MÉCANISME ABANDONNÉ (plugin d'app Grafana à backend Go,
+    # `stack/grafana-plugin-backend/`, resource handler
+    # `/api/plugins/okvorado-console-app/resources/...`) : MESURÉ AU
+    # NAVIGATEUR jusqu'au bout — Grafana pose en DUR un en-tête
+    # `Content-Security-Policy: sandbox` sur TOUTES les réponses de proxy,
+    # y compris celles du resource handler d'un plugin (pas seulement le
+    # proxy natif de datasource, `/api/datasources/proxy/...`, déjà écarté
+    # avant lui pour la même raison) : le CSS ne s'applique jamais (page en
+    # Times New Roman), JavaScript inopérant (HTMX mort) — même un plugin
+    # posant explicitement une CSP permissive se fait écraser par Grafana.
+    # Aucun contournement trouvé : le module Go entier
+    # (`stack/grafana-plugin-backend/`) et le plugin déclaré
+    # (`stack/grafana/plugins/okvorado-console-app/`) sont supprimés.
+    #
+    # LIAISON 127.0.0.1 (et non `0.0.0.0`) — DÉFENSE EN PROFONDEUR : même
+    # avec sa propre authentification applicative, publier ce port sur
+    # TOUTES les interfaces (`0.0.0.0`) exposerait la surface à tout le
+    # réseau plutôt qu'à la seule machine hôte (ou son reverse proxy local).
+    # MESURÉ sur la plateforme de qualification (avant ce chantier) : un
+    # accès direct au port renvoyait HTTP 200 sans aucune authentification,
+    # alors que le vhost devant imposait Authelia — la protection réseau
+    # (reverse proxy, pare-feu) ne dispensait pas d'une protection au niveau
+    # du port lui-même. `127.0.0.1` fait qu'aucune machine tierce du réseau
+    # ne peut joindre ce port, quelle que soit la configuration réseau
+    # environnante — seule cette machine (ou un reverse proxy qui y tourne)
+    # le peut.
+    #
+    # `OKVORADO_BIND_ADDRESS` rend cette adresse RÉGLABLE (défaut
+    # `127.0.0.1`) pour le cas fréquent en entreprise d'un reverse proxy sur
+    # une AUTRE machine que celle-ci : dans ce cas, régler sur `0.0.0.0` en
+    # toute connaissance de cause (voir .env.example) — l'authentification
+    # applicative d'Okvorado reste alors la seule protection restante,
+    # jamais une raison de considérer le port réseau comme secondaire.
+    #
+    # (DEFAUT PASSÉ, à ne pas reproduire : mesuré 2026-08-08 sur .7, un port
+    # publié visait le port CONTENEUR 8000 alors que le Dockerfile fait
+    # tourner uvicorn sur 8099 — EXPOSE 8099, CMD --port 8099 — connexion
+    # acceptée par docker-proxy puis immédiatement réinitialisée, invisible
+    # du healthcheck du Dockerfile lui-même, qui ne vérifie que
+    # 127.0.0.1:8099 DANS le conteneur. Le mapping ci-dessous vise le bon
+    # port conteneur : 8099.)
+    ports:
+      - "${OKVORADO_BIND_ADDRESS:-127.0.0.1}:${OKVORADO_PORT:-8000}:8099"
+    environment:
+      # Préfixe d'URL que l'application utilise pour générer ses liens/assets
+      # (voir app/ — settings.url_prefix, app/templating.py). MÉCANISME
+      # CONSERVÉ (utile pour un déploiement sous un sous-chemin derrière un
+      # reverse proxy en entreprise), mais son DÉFAUT change : le chemin de
+      # resource handler du plugin Grafana qu'il visait jusqu'ici a disparu
+      # avec le montage proxy (voir commentaire `ports:` ci-dessus). Défaut
+      # remis à vide = comportement normal, chemins servis à la racine `/`
+      # (le port étant désormais republié directement, plus besoin d'un
+      # préfixe pour être joignable).
+      OKVORADO_URL_PREFIX: ${OKVORADO_URL_PREFIX:-}
+      OKVORADO_AKVORADO_HOST: akvorado-outlet
+      OKVORADO_CLICKHOUSE_HOST: clickhouse
+      OKVORADO_CONSOLE_HOST: akvorado-console
+      OKVORADO_CLICKHOUSE_PORT: "8123"
+      # ClickHouse tourne ici avec CLICKHOUSE_SKIP_USER_SETUP=1 (voir service
+      # clickhouse plus haut) : aucun utilisateur/mot de passe n'est créé,
+      # les défauts `default` / vide fonctionnent tel quel au premier
+      # démarrage. Exposés ici pour l'exploitant qui DURCIT ClickHouse
+      # (crée un utilisateur dédié en lecture/écriture plutôt que le compte
+      # `default` ouvert) — sans ces trois variables, un tel durcissement
+      # casserait silencieusement toute connexion Okvorado -> ClickHouse
+      # (app/clients/clickhouse.py).
+      # SECRETS_INLINE_OK: pattern ${VAR:-} déjà utilisé partout ailleurs
+      # dans ce fichier — référence vers le .env local, jamais une valeur en
+      # clair ; vide par défaut = comportement CLICKHOUSE_SKIP_USER_SETUP=1
+      # inchangé.
+      OKVORADO_CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
+      OKVORADO_CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      OKVORADO_CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-default}
+      OKVORADO_OUTLET_PORT: "8080"
+      OKVORADO_CONSOLE_PORT: "8080"
+      OKVORADO_AKVORADO_CONFIG_PATH: /etc/akvorado-config/outlet.yaml
+      OKVORADO_SQLITE_PATH: /data/okvorado.db
+      OKVORADO_SILENT_THRESHOLD_HOURS: ${SILENT_THRESHOLD_HOURS:-1}
+      # Plafond mémoire utilisé par l'écran Santé DB (/db-health) quand la
+      # lecture directe de max_server_memory_usage échoue (voir app/models.py
+      # ::MemoryHealth, limit_source). DOIT suivre CLICKHOUSE_MEM_LIMIT
+      # (service clickhouse, plus haut dans ce fichier) : les deux réglages
+      # portent la MÊME grandeur physique (le plafond mémoire du conteneur
+      # ClickHouse) sous deux formats différents (Docker: "2g", Okvorado:
+      # octets). Non lié automatiquement (deux moteurs d'interpolation
+      # distincts, Docker Compose ne convertit pas les unités) : un
+      # exploitant qui change CLICKHOUSE_MEM_LIMIT doit changer cette valeur
+      # EN OCTETS à l'identique, sinon le pourcentage affiché diverge du
+      # vrai plafond en silence. Défaut 2147483648 = 2 Gio = valeur par
+      # défaut de CLICKHOUSE_MEM_LIMIT (2g) ci-dessus.
+      OKVORADO_DB_HEALTH_MEMORY_LIMIT_BYTES: ${CLICKHOUSE_MEM_LIMIT_BYTES:-2147483648}
+      # Même variable SNMP_COMMUNITY que `config-generator` ci-dessus (source
+      # UNIQUE de ce secret dans ce compose, jamais un second réglage qui
+      # dériverait) : débloque la collecte d'inventaire équipement
+      # (/inventory, app/services/snmp_inventory.py). Vide = collecte
+      # désactivée (fail-safe), voir app/config.py::snmp_community.
+      # Plages considérées comme le réseau INTERNE de CE déploiement. Décide du
+      # filtre « source/destination interne » de la vue Convergence — celui qui
+      # sépare le vrai motif du bruit. Voir .env.example pour l'adapter.
+      #
+      # Le défaut du PAQUET est l'espace privé RFC1918 SEUL, volontairement :
+      # c'est l'adressage d'une entreprise. La plage CGNAT (utilisée par les
+      # VPN maillés type Tailscale) n'y figure pas — l'inclure « au cas où »
+      # classerait « interne » du trafic qui ne l'est pas sur un site qui n'en
+      # utilise pas. Un déploiement qui en a besoin l'ajoute dans son .env.
+      OKVORADO_INTERNAL_NETWORKS: ${INTERNAL_NETWORKS:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
+      OKVORADO_SNMP_COMMUNITY: ${SNMP_COMMUNITY:-}
+      #
+      # --- AUTHENTIFICATION DE L'INTERFACE -----------------------------
+      # DEFAUT MESURE (2026-08-09) au premier `up -d` reel apres l'ajout de
+      # l'authentification : ces deux variables etaient documentees dans
+      # `.env.example` et lues par `app/config.py`, mais JAMAIS transmises
+      # au conteneur — seulement citees dans un commentaire de ce fichier.
+      # Resultat constate : `OKVORADO_AUTH_USER` vide dans le conteneur,
+      # donc l'exploitant qui renseigne son `.env` obtient malgre tout un
+      # mot de passe ALEATOIRE genere au boot, sans comprendre pourquoi.
+      # Une variable documentee mais non cablee est pire qu'absente : elle
+      # promet un reglage qui n'a aucun effet.
+      #
+      # SECRETS_INLINE_OK: meme pattern ${VAR:-} que OKVORADO_SNMP_COMMUNITY
+      # ci-dessus — reference vers le `.env` local, jamais une valeur en
+      # clair dans ce fichier versionne. Vide = mot de passe aleatoire
+      # genere au premier demarrage et affiche UNE FOIS dans les logs
+      # (fail-safe : jamais de defaut faible type `admin/admin`).
+      OKVORADO_AUTH_USER: ${OKVORADO_AUTH_USER:-admin}
+      OKVORADO_AUTH_PASSWORD: ${OKVORADO_AUTH_PASSWORD:-}
+      # Clé de signature des cookies de session. Vide = generee au boot :
+      # les sessions ne survivent alors pas a un redemarrage (reconnexion
+      # demandee). La renseigner pour des sessions persistantes.
+      OKVORADO_AUTH_SESSION_SECRET: ${OKVORADO_AUTH_SESSION_SECRET:-}
+      # `secure` sur le cookie de session : le stack tourne en HTTP nu par
+      # defaut, or un cookie `secure` n'est JAMAIS envoye en HTTP — la
+      # connexion serait impossible. A passer a `true` derriere un reverse
+      # proxy TLS, seul cas ou le cookie est reellement protege en transit.
+      OKVORADO_AUTH_COOKIE_SECURE: ${OKVORADO_AUTH_COOKIE_SECURE:-false}
+      # SECRETS_INLINE_OK: meme pattern ${VAR:-} que OKVORADO_SNMP_COMMUNITY
+      # juste au-dessus (secret existant, non flagge) — reference vers le
+      # .env local, jamais une valeur en clair ; vide par defaut = v3 non
+      # configure (fail-safe).
+      #
+      # Même variables SNMP_V3_* que `config-generator` ci-dessus (source
+      # UNIQUE de ces réglages dans ce compose) — préfixées OKVORADO_ pour
+      # que app/config.py les expose côté application (ex: écran Découverte
+      # SNMP), au même titre qu'OKVORADO_SNMP_COMMUNITY. Vides par défaut :
+      # migration v3 non configurée.
+      OKVORADO_SNMP_V3_SUBNET: ${SNMP_V3_SUBNET:-}
+      OKVORADO_SNMP_V3_USERNAME: ${SNMP_V3_USERNAME:-}
+      OKVORADO_SNMP_V3_SECURITY_LEVEL: ${SNMP_V3_SECURITY_LEVEL:-authPriv}
+      OKVORADO_SNMP_V3_AUTH_PROTOCOL: ${SNMP_V3_AUTH_PROTOCOL:-SHA256}
+      # DEFAUT MESURE (2026-08-09, ce chantier — meme famille que
+      # OKVORADO_AUTH_USER documente plus haut) : ces deux variables
+      # portaient le suffixe `_PASSPHRASE` alors que `app/config.py::Settings`
+      # (pydantic-settings, prefixe OKVORADO_) genere reellement
+      # `OKVORADO_SNMP_V3_AUTH_PASSWORD` / `OKVORADO_SNMP_V3_PRIV_PASSWORD`
+      # (champs `snmp_v3_auth_password` / `snmp_v3_priv_password`) — VERIFIE
+      # par instanciation reelle de `Settings` avec les deux noms poses en
+      # environnement simultanement. Le nom `_PASSPHRASE` n'etait donc JAMAIS
+      # lu par pydantic : une passphrase SNMPv3 renseignee dans `.env` restait
+      # sans AUCUN effet, silencieusement. `SNMP_V3_AUTH_PASSPHRASE` /
+      # `SNMP_V3_PRIV_PASSPHRASE` restent les noms de variable COMPOSE
+      # (`.env.example`, terme metier lisible) ; seul le nom de la variable
+      # OKVORADO_* transmise au conteneur applicatif change ici.
+      # SECRETS_INLINE_OK: pattern ${VAR:-} deja utilise partout ailleurs dans
+      # ce fichier (SNMP_COMMUNITY, OKVORADO_AUTH_PASSWORD...) — reference vers
+      # le .env local jamais versionne, jamais une valeur en clair.
+      OKVORADO_SNMP_V3_AUTH_PASSWORD: ${SNMP_V3_AUTH_PASSPHRASE:-}
+      OKVORADO_SNMP_V3_PRIV_PROTOCOL: ${SNMP_V3_PRIV_PROTOCOL:-AES256}
+      OKVORADO_SNMP_V3_PRIV_PASSWORD: ${SNMP_V3_PRIV_PASSPHRASE:-}
+      # Version SNMP par défaut pour tout exportateur découvert SANS override
+      # explicite (app/routers/inventory.py::snmp_version_default) — le parc
+      # migre progressivement v2c -> v3 (voir bloc SNMPv3 ci-dessus) : ce
+      # réglage détermine quelle version un routeur NEUF (jamais vu) essaie
+      # en premier. "v2c" tant que la majorité du parc n'a pas migré.
+      OKVORADO_SNMP_VERSION_DEFAULT: ${SNMP_VERSION_DEFAULT:-v2c}
+      # Délai avant de considérer un agent SNMP muet, et fréquence du cycle de
+      # collecte d'inventaire (app/services/snmp_inventory.py). Réglables :
+      # sur 350 routeurs dont une partie est probablement injoignable (pare-feu,
+      # panne), un timeout ou une fréquence trop agressive côté défaut (3s,
+      # 5 min) peut ralentir un cycle complet — l'exploitant qui l'observe à
+      # l'écran Découverte SNMP doit pouvoir l'ajuster sans reconstruire l'image.
+      OKVORADO_SNMP_TIMEOUT_SECONDS: ${SNMP_TIMEOUT_SECONDS:-3.0}
+      OKVORADO_SNMP_POLL_INTERVAL_SECONDS: ${SNMP_POLL_INTERVAL_SECONDS:-300}
+      # Autorise Grafana (et LUI SEUL) à afficher Okvorado dans un <iframe>
+      # (CSP frame-ancestors, voir app/main.py) — décision « une seule URL »
+      # de la demande utilisateur. Défaut : l'origine du Grafana de CE stack,
+      # au port publié sur l'hôte. Réglable en `.env` (ex. origine publique
+      # réelle de Grafana en prod) si elle diffère du défaut local.
+      OKVORADO_FRAME_ANCESTORS: ${OKVORADO_FRAME_ANCESTORS:-http://localhost:${GRAFANA_PORT:-3000}}
+      # --- DURCISSEMENT SESSION / BRUTE-FORCE (entreprise) -----------------
+      # Durée de vie d'une session (secondes) et seuil anti-brute-force sur
+      # /login (app/auth.py::RateLimiter) — un exploitant entreprise a une
+      # politique de sécurité qui lui est propre (session plus courte,
+      # tolérance d'essais plus stricte qu'un défaut générique) : ces trois
+      # réglages doivent être ajustables sans reconstruire l'image.
+      OKVORADO_AUTH_SESSION_MAX_AGE_SECONDS: ${AUTH_SESSION_MAX_AGE_SECONDS:-43200}
+      OKVORADO_AUTH_LOGIN_MAX_ATTEMPTS: ${AUTH_LOGIN_MAX_ATTEMPTS:-5}
+      OKVORADO_AUTH_LOGIN_WINDOW_SECONDS: ${AUTH_LOGIN_WINDOW_SECONDS:-300}
+    volumes:
+      - ./config:/etc/akvorado-config:ro
+      - ./data/okvorado:/data

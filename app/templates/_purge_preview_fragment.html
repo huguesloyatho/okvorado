@@ -1,0 +1,44 @@
+{# Fragment rendu par `POST /api/retention/purge/preview` UNIQUEMENT pour un
+   appel HTMX (header `HX-Request`) — un appel API direct reçoit du JSON, ce
+   fragment n'est jamais servi comme page complète (pas de {% extends %}).
+
+   Affiche le résultat du preview ET le bouton "Confirmer la purge" : c'est le
+   SEUL endroit qui embarque le JSON du preview (`preview_json`, déjà
+   sérialisé serveur, jamais reconstruit côté client) dans le champ caché que
+   `/purge/execute` exige — protection anti-TOCTOU documentée dans
+   `app/services/purge.py` et `app/routers/retention.py::PurgeExecuteRequest` :
+   ce que l'utilisateur voit ici est EXACTEMENT ce qui sera supprimé au clic
+   sur "Confirmer", jamais un nouveau scan divergent au moment de l'exécution.
+
+   `hx-confirm` (attribut HTMX natif, pas de JS custom) ajoute une confirmation
+   navigateur avant l'appel réel — CSP `script-src 'self'` sans `unsafe-eval`
+   interdit tout `onclick=`/`hx-vals="js:..."`, ce gabarit n'en utilise aucun. #}
+{% if target == "backups" %}
+  <p class="hint">
+    {{ preview.total_count }} fichier(s) de sauvegarde seraient supprimés
+    ({{ preview.total_count }} au-delà des {{ preview.keep_n }} plus récents conservés),
+    soit environ {{ (preview.total_bytes / 1024) | round(1) }} Ko.
+  </p>
+{% else %}
+  <p class="hint">
+    {{ preview.rows_to_delete }} ligne(s) de <code>{{ target }}</code> seraient
+    supprimées (plus vieilles que {{ preview.max_age_days }} jour(s)){% if preview.oldest_row_age_days is not none %},
+    la plus ancienne ayant {{ preview.oldest_row_age_days | round(1) }} jour(s){% endif %}.
+  </p>
+{% endif %}
+
+{% if (target == "backups" and preview.total_count > 0) or (target != "backups" and preview.rows_to_delete > 0) %}
+<form
+  hx-post="{{ '/api/retention/purge/execute' | prefixed }}"
+  hx-target="this"
+  hx-swap="outerHTML"
+  hx-ext="json-enc"
+  hx-confirm="Confirmer la suppression définitive ? Cette action ne peut pas être annulée."
+>
+  <input type="hidden" name="target" value="{{ target }}">
+  <input type="hidden" name="preview" value='{{ preview_json }}'>
+  <button type="submit" class="danger">Confirmer la purge</button>
+</form>
+{% else %}
+  <p class="hint">Rien à purger avec ce réglage.</p>
+{% endif %}

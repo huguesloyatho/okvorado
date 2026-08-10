@@ -1,0 +1,22 @@
+{# Fragment : état du DERNIER rechargement IANA. ZÉRO SILENCIEUX — quatre
+   états DISTINCTS, jamais un catalogue qui "a l'air à jour" sans preuve. #}
+{% if reload_status.status == "ok" %}
+<p class="notice notice-ok" data-reload-status="ok">
+  <strong>Dernier rechargement IANA réussi.</strong>
+  {{ reload_status.detail }}
+</p>
+{% elif reload_status.status == "offline_fallback" %}
+<p class="notice notice-warn" data-reload-status="offline_fallback">
+  <strong>Réseau IANA indisponible — repli embarqué utilisé.</strong>
+  {{ reload_status.detail }}
+</p>
+{% elif reload_status.status == "error" %}
+<p class="notice notice-crit" data-reload-status="error">
+  <strong>Échec du rechargement.</strong>
+  {{ reload_status.detail }}
+</p>
+{% else %}
+<p class="notice notice-info" data-reload-status="never_run">
+  Aucun rechargement IANA effectué depuis le démarrage de cette base.
+</p>
+{% endif %}

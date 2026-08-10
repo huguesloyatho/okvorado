@@ -1,0 +1,74 @@
+{# Fragment rendu par `POST /api/ingestion/purge` et
+   `POST /api/ingestion/purge-all-flat` UNIQUEMENT pour un appel HTMX (header
+   `HX-Request`) — un appel API direct reçoit du JSON brut.
+
+   DÉFAUT DÉJÀ RENCONTRÉ 9 FOIS SUR CE PROJET : sans ce fragment, le bouton
+   HTMX insère la réponse JSON TELLE QUELLE dans la page, et l'exploitant lit
+   un dictionnaire Python au milieu de l'écran.
+
+   ZÉRO SILENCIEUX : chaque issue possible a sa propre phrase. « 0 purgé » ne
+   dit pas POURQUOI — refusé parce que le compteur grimpe encore, refusé faute
+   de point de comparaison, ou couple introuvable sont trois situations
+   différentes, qui exigent trois explications différentes. #}
+
+{% if result.error %}
+{# `notice-crit` et non `notice-error` : c'est la variante RÉELLEMENT définie
+   dans style.css (avec notice-info/warn/ok). Une classe inventée rendrait un
+   bandeau d'erreur sans aucun style — défaut « CSS cassant un HTML correct »
+   déjà mesuré sur ce projet. #}
+<p class="notice notice-crit" role="alert">
+  <strong>Purge impossible :</strong> {{ result.error }}
+  <br>
+  Aucune ligne n'a été masquée — l'affichage reste inchangé.
+</p>
+
+{% else %}
+
+  {% if result.purged %}
+  <p class="notice notice-ok">
+    <strong>{{ result.purged }} cumul figé masqué.</strong>
+    Le compteur Prometheus d'Akvorado n'a PAS été remis à zéro (c'est
+    impossible sans redémarrer l'outlet) : Okvorado a mémorisé le cumul actuel
+    et n'affichera désormais que ce qui s'y ajoute. Si ce rejet repart, la
+    ligne réapparaît automatiquement.
+  </p>
+  {% endif %}
+
+  {% if result.refused_active %}
+  <p class="notice notice-warn" role="alert">
+    <strong>{{ result.refused_active }} rejet ACTIF non masqué</strong> — son
+    compteur grimpe encore. Un problème en cours n'est jamais escamoté : la
+    purge ne nettoie que le bruit historique.
+  </p>
+  {% endif %}
+
+  {% if result.refused_unknown %}
+  <p class="notice notice-warn">
+    <strong>{{ result.refused_unknown }} rejet de tendance inconnue non masqué</strong>
+    — aucun point de comparaison n'est encore disponible, rien ne prouve que ce
+    cumul est figé. Réessayez dans quelques minutes, une fois la tendance
+    mesurée.
+  </p>
+  {% endif %}
+
+  {% if result.not_found %}
+  <p class="notice notice-warn">
+    <strong>Rejet introuvable</strong> dans la mesure courante de l'outlet —
+    rien n'a été masqué.
+  </p>
+  {% endif %}
+
+  {% if not result.purged and not result.refused_active
+        and not result.refused_unknown and not result.not_found %}
+  <p class="notice">
+    Aucun cumul figé à masquer : tous les rejets affichés sont soit actifs,
+    soit déjà masqués.
+  </p>
+  {% endif %}
+
+{% endif %}
+
+<p class="hint">
+  {{ result.masked_total }} rejet(s) actuellement masqué(s).
+  Rechargez la page pour voir la liste à jour.
+</p>

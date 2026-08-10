@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+
+{% block title %}Comptes{% endblock %}
+
+{% block content %}
+<section id="accounts-page">
+  <h1>Gestion des comptes</h1>
+  <p class="subtitle">
+    Deux rôles : <strong>administrateur</strong> (accède à tout, y compris cet écran et
+    toute route qui écrit — configuration, rétention, catalogue applicatif) et
+    <strong>lecteur</strong> (consultation seule, refusé côté serveur sur les routes
+    d'écriture et sur cet écran).
+  </p>
+
+  {% if error %}
+    <p class="notice notice-error">{{ error }}</p>
+  {% endif %}
+  {% if success %}
+    <p class="notice notice-ok">{{ success }}</p>
+  {% endif %}
+
+  {% if generated_password %}
+    <p class="notice notice-warn">
+      <strong>Mot de passe généré pour « {{ generated_password_for }} » — à transmettre maintenant,
+      il ne sera plus jamais affiché :</strong>
+      <code>{{ generated_password }}</code>
+      Ce compte devra le changer depuis l'écran Sécurité dès sa première connexion.
+    </p>
+  {% endif %}
+
+  <section class="section-card">
+    <h2>Créer un compte</h2>
+    <form method="post" action="{{ '/accounts' | prefixed }}" class="stacked-form">
+      <label for="new-username">Identifiant</label>
+      <input type="text" id="new-username" name="username" autocomplete="off" required>
+      <label for="new-role">Rôle</label>
+      <select id="new-role" name="role">
+        {% for role in roles %}
+          <option value="{{ role }}">{{ 'Administrateur' if role == 'admin' else 'Lecteur' }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit" class="btn primary">Créer</button>
+    </form>
+  </section>
+
+  <section class="section-card">
+    <h2>Comptes existants</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Identifiant</th>
+          <th>Rôle</th>
+          <th>2FA</th>
+          <th>Mot de passe</th>
+          <th>Dernière connexion</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for user in users %}
+          <tr>
+            <td>
+              {{ user.username }}
+              {% if user.username == current_username %}<span class="badge badge-lecteur">vous</span>{% endif %}
+            </td>
+            <td>
+              <form method="post" action="{{ '/accounts/' | prefixed }}{{ user.username | urlencode }}/role" class="inline-form">
+                <select name="role" aria-label="Rôle de {{ user.username }}">
+                  {% for role in roles %}
+                    <option value="{{ role }}" {{ 'selected' if role == user.role else '' }}>{{ 'Administrateur' if role == 'admin' else 'Lecteur' }}</option>
+                  {% endfor %}
+                </select>
+                <button type="submit" class="btn">Changer</button>
+              </form>
+            </td>
+            <td>{{ 'Activé' if user.totp_enabled else '—' }}</td>
+            <td>
+              {% if user.is_default_password %}
+                <span class="badge badge-warning">Par défaut</span>
+              {% else %}
+                <span class="badge badge-healthy">Personnalisé</span>
+              {% endif %}
+            </td>
+            <td>{{ user.last_login_at if user.last_login_at else 'Jamais' }}</td>
+            <td class="actions-cell">
+              <form method="post" action="{{ '/accounts/' | prefixed }}{{ user.username | urlencode }}/reset-password" class="inline-form"
+                    data-confirm="Réinitialiser le mot de passe de « {{ user.username }} » ?">
+                <button type="submit" class="btn">Réinitialiser le mot de passe</button>
+              </form>
+              {% if user.username != current_username %}
+                <form method="post" action="{{ '/accounts/' | prefixed }}{{ user.username | urlencode }}/delete" class="inline-form"
+                      data-confirm="Supprimer définitivement le compte « {{ user.username }} » ?">
+                  <button type="submit" class="btn danger">Supprimer</button>
+                </form>
+              {% endif %}
+            </td>
+          </tr>
+        {% else %}
+          <tr>
+            <td colspan="6">Aucun compte.</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+</section>
+{% endblock %}

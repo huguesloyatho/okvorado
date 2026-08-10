@@ -1,0 +1,33 @@
+{# Fragment rendu par `GET /api/db-health/detached-parts/preview` UNIQUEMENT
+   pour un appel HTMX (header `HX-Request`) — un appel API direct reçoit du
+   JSON brut. Purge restreinte aux tables de flux (`MONITORED_TABLES`) — pour
+   la purge complète (flux + tables système), voir
+   `_detached_parts_purge_all_fragment.html`.
+
+   DÉFAUT MESURÉ (2026-08-09) : même défaut que le bloc OPTIMIZE — le JSON de
+   preview s'affichait en clair dans `#detached-preview-result`. #}
+<p class="hint">
+  {{ preview.count }} part(s) détachée(s) au total
+  ({{ preview.total_bytes | humanize_bytes }}) sur les tables de flux.
+</p>
+
+{% if preview.by_group %}
+<table>
+  <thead>
+    <tr><th>Base</th><th>Table</th><th>Raison</th><th>Parts</th><th>Taille</th></tr>
+  </thead>
+  <tbody>
+    {% for g in preview.by_group %}
+    <tr>
+      <td><code>{{ g.database }}</code></td>
+      <td><code>{{ g.table }}</code></td>
+      <td>{{ g.reason }}</td>
+      <td class="num">{{ g.count }}</td>
+      <td class="num mono">{{ g.bytes_on_disk | humanize_bytes }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="notice notice-ok">Aucune part détachée sur les tables de flux — rien à purger.</p>
+{% endif %}

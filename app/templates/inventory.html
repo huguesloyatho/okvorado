@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+
+{% block title %}Inventaire{% endblock %}
+
+{% block content %}
+<section id="inventory-page">
+  <h1>Inventaire équipement</h1>
+
+  <p class="notice notice-info">
+    Complète les écrans Exportateurs (interfaces) avec les informations
+    ÉQUIPEMENT que ClickHouse ne porte pas : nom système, description,
+    localisation et durée de fonctionnement, lues par SNMP (MIB-II) sur
+    chaque exportateur connu.
+  </p>
+
+  {% if not snmp_configured %}
+    <p class="notice notice-warn">
+      <strong>SNMP non configuré</strong>
+      Ni communauté SNMPv2c (OKVORADO_SNMP_COMMUNITY) ni utilisateur SNMPv3
+      (OKVORADO_SNMP_V3_USERNAME) ne sont définis : la collecte est
+      désactivée tant qu'au moins l'un des deux n'est pas renseigné.
+    </p>
+  {% endif %}
+
+  {% if error %}
+    <p class="notice notice-error">{{ error }}</p>
+  {% endif %}
+
+  <form id="inventory-collect-form"
+        hx-post="{{ '/inventory/collect' | prefixed }}"
+        hx-target="#inventory-page"
+        hx-select="#inventory-page"
+        hx-swap="outerHTML"
+        hx-disabled-elt="find button">
+    <button type="submit" class="primary">Collecter</button>
+  </form>
+
+  <p class="exporters-total">{{ total }} équipement{{ "s" if total != 1 else "" }} inventorié{{ "s" if total != 1 else "" }}.</p>
+
+  <table class="exporters-table">
+    <thead>
+      <tr>
+        <th>État</th>
+        <th>Adresse IP</th>
+        <th>Version SNMP</th>
+        <th>Sys Name</th>
+        <th>System Location</th>
+        <th>Uptime</th>
+        <th>Device added time</th>
+        <th>Dernière collecte</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in items %}
+        <tr class="health-{{ 'healthy' if item.is_responding else ('auth-failure' if item.has_auth_failure else 'silent') }}">
+          <td>
+            <span class="badge badge-{{ 'healthy' if item.is_responding else ('auth-failure' if item.has_auth_failure else 'silent') }}">
+              {% if item.is_responding %}Répond{% elif item.has_auth_failure %}Échec d'authentification SNMPv3{% else %}Pas de réponse SNMP{% endif %}
+            </span>
+          </td>
+          <td><a href="{{ '/inventory/' | prefixed }}{{ item.address | urlencode }}" class="link-action">{{ item.address }}</a></td>
+          <td>{{ "SNMPv3" if item.snmp_version == "v3" else "SNMPv2c" }}</td>
+          <td>{{ item.sys_name if item.sys_name else "—" }}</td>
+          <td>{{ item.sys_location if item.sys_location else "—" }}</td>
+          <td>{{ item.uptime_label }}</td>
+          <td>{{ item.first_seen_at }}</td>
+          <td>{{ item.last_attempt_at }}</td>
+        </tr>
+      {% else %}
+        <tr>
+          <td colspan="8">Aucun équipement inventorié pour le moment. Lance une collecte avec « Collecter ».</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

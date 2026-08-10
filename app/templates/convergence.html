@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+
+{% block title %}Convergence{% endblock %}
+
+{% block content %}
+<section id="convergence-page">
+  <h1>Convergence — qui converge vers quoi</h1>
+
+  <p class="notice notice-info">
+    <strong>Ce que révèle ce classement :</strong> quand de nombreuses sources parlent
+    à une même destination sur un même port, c'est le signal d'un déploiement de masse
+    (ex. un installeur poussé par GPO depuis 160 sites vers un datacenter) — sans qu'il
+    faille savoir à l'avance quoi chercher. Le tableau classe par nombre de
+    <strong>sources internes distinctes</strong>, décroissant, et ne retient que les
+    <strong>destinations internes</strong> (un serveur d'entreprise est toujours interne ;
+    le trafic sortant vers Internet est du bruit ici), les <strong>sources internes</strong>
+    et les <strong>ports de service</strong>. Mesuré en prod : sans ces filtres, le trafic
+    sortant (STUN, cloud), le scan de ports Internet et le maillage P2P Tailscale enterrent
+    le vrai motif sous du bruit.
+  </p>
+
+  {% if error %}
+    <p class="notice notice-crit"><strong>Indisponible</strong>{{ error }}</p>
+  {% endif %}
+
+  <form id="convergence-filter-form"
+        hx-get="{{ '/diagnostics/convergence' | prefixed }}"
+        hx-target="#convergence-page"
+        hx-select="#convergence-page"
+        hx-swap="outerHTML"
+        hx-trigger="change"
+        data-autosubmit
+        class="convergence-form">
+    <label for="period-select">Période</label>
+    <select id="period-select" name="period">
+      {% for choice in period_choices %}
+        <option value="{{ choice }}" {% if choice == current_period %}selected{% endif %}>{{ choice }}</option>
+      {% endfor %}
+    </select>
+
+    <label for="min-sources-input">Seuil minimum de sources</label>
+    <input type="number" id="min-sources-input" name="min_sources" min="1" max="10000"
+           value="{{ min_sources }}">
+
+    <label for="limit-input">Limite de lignes</label>
+    <input type="number" id="limit-input" name="limit" min="1" max="500" value="{{ limit }}">
+
+    <button type="submit" class="btn autosubmit-fallback">Actualiser</button>
+  </form>
+
+  <p class="convergence-total">{{ total }} destination{{ "s" if total != 1 else "" }} en convergence sur la fenêtre {{ current_period }}.</p>
+
+  <table class="convergence-table">
+    <thead>
+      <tr>
+        <th>Destination</th>
+        <th>Application</th>
+        <th>Port</th>
+        <th>Protocole</th>
+        <th>Sources distinctes</th>
+        <th>Volume</th>
+        <th>Flux</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in items %}
+        <tr class="convergence-row"
+            hx-get="{{ '/diagnostics/convergence/detail' | prefixed }}"
+            hx-vals='{"dst_addr": "{{ item.DstAddr }}", "dst_port": {{ item.DstPort }}, "proto": {{ item.Proto }}, "period": "{{ current_period }}"}'
+            hx-target="next .convergence-detail"
+            hx-swap="innerHTML"
+            tabindex="0"
+            role="button">
+          <td>{{ item.DstAddr | format_ip }}</td>
+          <td>{{ item.application }}</td>
+          <td class="num">{{ item.DstPort }}</td>
+          <td>{{ item.Proto | protocol_label }}</td>
+          <td class="num">{{ item.source_count }}</td>
+          <td class="num">{{ item.total_bytes | humanize_bytes }}</td>
+          <td class="num">{{ item.flow_count | humanize_number }}</td>
+        </tr>
+        <tr class="convergence-detail-row"><td colspan="7" class="convergence-detail"></td></tr>
+      {% else %}
+        <tr><td colspan="7">Aucune convergence détectée sur cette fenêtre avec ce seuil.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

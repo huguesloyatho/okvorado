@@ -1,0 +1,859 @@
+{
+  "uid": "okvorado-par-exportateur",
+  "title": "Okvorado — Par exportateur",
+  "description": "Fiche équipement (réplique la fiche 'Inventory > Device' de NetFlow Analyzer) : résumé SNMP-like, trafic Max/Avg/Volume, interfaces avec bascule IN/OUT/Utilisation, flux reçus vs rejetés, applications, conversations, QoS. Filtre $exporter (sélection unique, arrivée par drill-down depuis l'accueil ou le Network Snapshot via var-exporter).",
+  "tags": [
+    "okvorado",
+    "netflow",
+    "exportateur"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "refresh": "1m",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "30s",
+      "1m",
+      "5m",
+      "15m"
+    ],
+    "time_options": [
+      "5m",
+      "15m",
+      "1h",
+      "6h",
+      "24h",
+      "7d",
+      "30d"
+    ]
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "exporter",
+        "type": "query",
+        "label": "Exportateur",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "ClickHouse"
+        },
+        "query": "SELECT DISTINCT ExporterName FROM flows WHERE $__timeFilter(TimeReceived) ORDER BY ExporterName",
+        "refresh": 2,
+        "multi": false,
+        "includeAll": false,
+        "sort": 1
+      }
+    ]
+  },
+  "links": [
+    {
+      "title": "Accueil — Traffic Summary",
+      "type": "dashboards",
+      "tags": [
+        "okvorado",
+        "accueil"
+      ],
+      "asDropdown": false,
+      "icon": "external link",
+      "targetBlank": false,
+      "keepTime": true,
+      "includeVars": true
+    },
+    {
+      "title": "Réseau — Network Snapshot",
+      "type": "dashboards",
+      "tags": [
+        "okvorado",
+        "snapshot"
+      ],
+      "asDropdown": false,
+      "icon": "external link",
+      "targetBlank": false,
+      "keepTime": true,
+      "includeVars": true
+    },
+    {
+      "title": "Vue d'ensemble — Parc",
+      "type": "dashboards",
+      "tags": [
+        "okvorado",
+        "vue-ensemble"
+      ],
+      "asDropdown": false,
+      "icon": "external link",
+      "targetBlank": false,
+      "keepTime": true,
+      "includeVars": true
+    },
+    {
+      "title": "Applications & QoS",
+      "type": "dashboards",
+      "tags": [
+        "okvorado",
+        "applications"
+      ],
+      "asDropdown": false,
+      "icon": "external link",
+      "targetBlank": false,
+      "keepTime": true,
+      "includeVars": true
+    },
+    {
+      "title": "Diagnostic — Incidents",
+      "type": "dashboards",
+      "tags": [
+        "okvorado",
+        "incident"
+      ],
+      "asDropdown": false,
+      "icon": "external link",
+      "targetBlank": false,
+      "keepTime": true,
+      "includeVars": true
+    }
+  ],
+  "panels": [
+    {
+      "id": 20,
+      "type": "row",
+      "title": "Résumé de l'équipement",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 21,
+      "type": "table",
+      "title": "Résumé — interfaces déclarées (SNMP)",
+      "description": "Équivalent 'Device Summary' de NetFlow Analyzer : nom d'interface, description, vitesse déclarée (IfSpeed, Mbps), limite (IfBoundary). Vient de la table 'exporters' (SNMP), pas des flux — donc disponible même sans trafic récent sur l'interface.",
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 1
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "IfSpeed"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "Mbits"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "footer": {
+          "show": true,
+          "enablePagination": true
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT\n    IfName,\n    IfDescription,\n    IfSpeed,\n    IfBoundary,\n    IfConnectivity,\n    IfProvider\nFROM exporters\nWHERE ExporterName = '$exporter'\nORDER BY IfName\nLIMIT 100",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "type": "row",
+      "title": "Trafic — Max Speed / Avg Speed / Volume",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 7
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 23,
+      "type": "stat",
+      "title": "Max Speed",
+      "description": "Débit crête sur des buckets de 1 minute (toStartOfMinute), sum(Bytes * SamplingRate) * 8 / 60 — comme la ligne 'Max Speed' de la fiche Traffic de NetFlow Analyzer.",
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 0,
+        "y": 8
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bps"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT max(debit_min) AS max_speed\nFROM (\n    SELECT toStartOfMinute(TimeReceived) AS minute, sum(Bytes * SamplingRate) * 8 / 60 AS debit_min\n    FROM flows\n    WHERE $__timeFilter(TimeReceived) AND ExporterName = '$exporter'\n    GROUP BY minute\n)",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 24,
+      "type": "stat",
+      "title": "Avg Speed",
+      "description": "Débit moyen sur la période — sum(Bytes * SamplingRate) * 8 / durée_s de la fenêtre.",
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 8,
+        "y": 8
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bps"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT sum(Bytes * SamplingRate) * 8 / greatest(toUnixTimestamp($__toTime) - toUnixTimestamp($__fromTime), 1) AS avg_speed\nFROM flows\nWHERE $__timeFilter(TimeReceived) AND ExporterName = '$exporter'",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 25,
+      "type": "stat",
+      "title": "Volume",
+      "description": "sum(Bytes * SamplingRate) sur la période sélectionnée.",
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 16,
+        "y": 8
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT sum(Bytes * SamplingRate) AS volume\nFROM flows\nWHERE $__timeFilter(TimeReceived) AND ExporterName = '$exporter'",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Trafic dans le temps — $exporter",
+      "description": "sum(Bytes * SamplingRate) pour l'exportateur sélectionné, débit en bps (Mbps/Kbps affichés automatiquement par Grafana selon l'échelle).",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 13
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 20,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT\n    $__timeInterval(TimeReceived) AS time,\n    InIfName AS interface,\n    sum(Bytes * SamplingRate) * 8 / $__interval_s AS \"débit\"\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName = '$exporter'\nGROUP BY time, interface\nORDER BY time ASC",
+          "format": 0
+        }
+      ]
+    },
+    {
+      "id": 26,
+      "type": "row",
+      "title": "Interfaces — Volume | Débit | Utilisation, bascule IN / OUT",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 22
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 2,
+      "type": "bargauge",
+      "title": "Interfaces IN — Utilisation (%)",
+      "description": "Débit IN (InIfName) ramené à InIfSpeed (Mbps mesuré sur ce ClickHouse → converti en bps). Équivalent onglet 'Utilization' + bascule 'IN' de la fiche Interface NetFlow Analyzer.",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 23
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 70
+              },
+              {
+                "color": "red",
+                "value": 90
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT\n    InIfName AS interface,\n    least(\n        100,\n        (sum(Bytes * SamplingRate) * 8 / greatest(toUnixTimestamp($__toTime) - toUnixTimestamp($__fromTime), 1))\n        / (greatest(any(InIfSpeed), 1) * 1000000) * 100\n    ) AS utilisation_in\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName = '$exporter'\n    AND InIfName != ''\nGROUP BY InIfName\nORDER BY utilisation_in DESC\nLIMIT 15",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 27,
+      "type": "bargauge",
+      "title": "Interfaces OUT — Utilisation (%)",
+      "description": "Débit OUT (OutIfName) ramené à OutIfSpeed. Bascule 'OUT' du même écran NetFlow Analyzer.",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 23
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 70
+              },
+              {
+                "color": "red",
+                "value": 90
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT\n    OutIfName AS interface,\n    least(\n        100,\n        (sum(Bytes * SamplingRate) * 8 / greatest(toUnixTimestamp($__toTime) - toUnixTimestamp($__fromTime), 1))\n        / (greatest(any(OutIfSpeed), 1) * 1000000) * 100\n    ) AS utilisation_out\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName = '$exporter'\n    AND OutIfName != ''\nGROUP BY OutIfName\nORDER BY utilisation_out DESC\nLIMIT 15",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 28,
+      "type": "table",
+      "title": "Interfaces — tableau Volume / Débit / Utilisation IN et OUT",
+      "description": "Le tableau de valeurs sous les jauges d'utilisation (constante n°2). Colonnes : Interface Name / IN Traffic / OUT Traffic (volume), Speed IN/OUT (débit), Utilisation IN/OUT (%) — synthèse complète de l'onglet Interface.",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 32
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "volume_in"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "volume_out"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "debit_in"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bps"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "debit_out"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bps"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "utilisation_in"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "utilisation_out"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "footer": {
+          "show": true,
+          "enablePagination": true
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT\n    interface,\n    sum(vol_in) AS volume_in,\n    sum(vol_out) AS volume_out,\n    sum(vol_in) * 8 / greatest(toUnixTimestamp($__toTime) - toUnixTimestamp($__fromTime), 1) AS debit_in,\n    sum(vol_out) * 8 / greatest(toUnixTimestamp($__toTime) - toUnixTimestamp($__fromTime), 1) AS debit_out,\n    least(100, (sum(vol_in) * 8 / greatest(toUnixTimestamp($__toTime) - toUnixTimestamp($__fromTime), 1)) / (greatest(max(vitesse_in_if), 1) * 1000000) * 100) AS utilisation_in,\n    least(100, (sum(vol_out) * 8 / greatest(toUnixTimestamp($__toTime) - toUnixTimestamp($__fromTime), 1)) / (greatest(max(vitesse_out_if), 1) * 1000000) * 100) AS utilisation_out\nFROM (\n    SELECT\n        InIfName AS interface,\n        sum(Bytes * SamplingRate) AS vol_in,\n        0 AS vol_out,\n        any(InIfSpeed) AS vitesse_in_if,\n        0 AS vitesse_out_if\n    FROM flows\n    WHERE $__timeFilter(TimeReceived) AND ExporterName = '$exporter' AND InIfName != ''\n    GROUP BY interface\n    UNION ALL\n    SELECT\n        OutIfName AS interface,\n        0 AS vol_in,\n        sum(Bytes * SamplingRate) AS vol_out,\n        0 AS vitesse_in_if,\n        any(OutIfSpeed) AS vitesse_out_if\n    FROM flows\n    WHERE $__timeFilter(TimeReceived) AND ExporterName = '$exporter' AND OutIfName != ''\n    GROUP BY interface\n)\nGROUP BY interface\nORDER BY volume_in DESC\nLIMIT 20",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 29,
+      "type": "row",
+      "title": "Flow Details — flux reçus vs rejetés",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 41
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 30,
+      "type": "timeseries",
+      "title": "Flux reçus vs rejetés dans le temps",
+      "description": "Équivalent de la bascule 'Received Flows | Dropped Flows' de NetFlow Analyzer. ForwardingStatus encodé en classes IPFIX (RFC 7270) : classe = intDiv(ForwardingStatus, 64), 2 = 'Dropped/Rejetés', sinon 'Reçus'. count() jamais mis à l'échelle — c'est un comptage de flux observés, pas un volume.",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 42
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 60,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT\n    $__timeInterval(TimeReceived) AS time,\n    multiIf(intDiv(ForwardingStatus, 64) = 2, 'Rejetés', 'Reçus') AS statut,\n    count() AS flux\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName = '$exporter'\nGROUP BY time, statut\nORDER BY time ASC",
+          "format": 0
+        }
+      ]
+    },
+    {
+      "id": 31,
+      "type": "stat",
+      "title": "Moyenne des flux rejetés",
+      "description": "Average Dropped Flows — moyenne par intervalle de la série ci-dessus.",
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 0,
+        "y": 51
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT countIf(intDiv(ForwardingStatus, 64) = 2) AS flux_rejetes\nFROM flows\nWHERE $__timeFilter(TimeReceived) AND ExporterName = '$exporter'",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 32,
+      "type": "stat",
+      "title": "Dernier flux rejeté",
+      "description": "Last Dropped Flow — horodatage du plus récent flux au statut rejeté.",
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 12,
+        "y": 51
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "dateTimeAsIso"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT maxIf(TimeReceived, intDiv(ForwardingStatus, 64) = 2) AS dernier_flux_rejete\nFROM flows\nWHERE $__timeFilter(TimeReceived) AND ExporterName = '$exporter'",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 33,
+      "type": "row",
+      "title": "Applications, QoS, Conversations",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 56
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 3,
+      "type": "piechart",
+      "title": "Top applications — $exporter",
+      "description": "sum(Bytes * SamplingRate), LIMIT 20.",
+      "gridPos": {
+        "h": 10,
+        "w": 6,
+        "x": 12,
+        "y": 57
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "links": [
+            {
+              "title": "Voir cette application dans Applications & QoS",
+              "url": "/d/okvorado-applications-qos/okvorado-applications-qos?var-application=${__data.fields.application}",
+              "targetBlank": false
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "pieType": "donut",
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "percent"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT\n    multiIf(\n        Proto = 6 AND (DstPort = 443 OR SrcPort = 443), 'HTTPS',\n        Proto = 6 AND (DstPort = 80 OR SrcPort = 80), 'HTTP',\n        Proto = 17 AND (DstPort = 53 OR SrcPort = 53), 'DNS',\n        Proto = 6, 'TCP autre',\n        Proto = 17, 'UDP autre',\n        Proto = 1, 'ICMP',\n        'Autre'\n    ) AS application,\n    sum(Bytes * SamplingRate) AS volume\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName = '$exporter'\nGROUP BY application\nORDER BY volume DESC\nLIMIT 20",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "piechart",
+      "title": "QoS — $exporter",
+      "description": "DSCP = bitShiftRight(IPTos, 2) — jamais l'opérateur >>, refusé par ClickHouse (Code: 62 SYNTAX_ERROR, mesuré).",
+      "gridPos": {
+        "h": 10,
+        "w": 6,
+        "x": 18,
+        "y": 57
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "links": [
+            {
+              "title": "Voir la QoS dans Applications & QoS",
+              "url": "/d/okvorado-applications-qos/okvorado-applications-qos",
+              "targetBlank": false
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "pieType": "donut",
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "percent"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT\n    multiIf(\n        bitShiftRight(IPTos, 2) = 0, 'BE',\n        bitShiftRight(IPTos, 2) = 8, 'CS1',\n        bitShiftRight(IPTos, 2) = 10, 'AF11',\n        bitShiftRight(IPTos, 2) = 16, 'CS2',\n        bitShiftRight(IPTos, 2) = 18, 'AF21',\n        bitShiftRight(IPTos, 2) = 24, 'CS3',\n        bitShiftRight(IPTos, 2) = 26, 'AF31',\n        bitShiftRight(IPTos, 2) = 32, 'CS4',\n        bitShiftRight(IPTos, 2) = 34, 'AF41',\n        bitShiftRight(IPTos, 2) = 40, 'CS5',\n        bitShiftRight(IPTos, 2) = 46, 'EF',\n        bitShiftRight(IPTos, 2) = 48, 'CS6',\n        bitShiftRight(IPTos, 2) = 56, 'CS7',\n        concat('DSCP ', toString(bitShiftRight(IPTos, 2)))\n    ) AS classe_dscp,\n    sum(Bytes * SamplingRate) AS volume\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName = '$exporter'\nGROUP BY classe_dscp\nORDER BY volume DESC\nLIMIT 20",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "Top conversations — $exporter",
+      "description": "SrcAddr/DstAddr démappées (IPv6NumToString, jamais cutIPv6 qui TRONQUE — mesuré). sum(Bytes * SamplingRate), LIMIT 25. Colonne 'source' cliquable : dataLink vers le dashboard Applications & QoS filtré sur ce même exportateur (drill-down).",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 67
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": true
+          },
+          "links": [
+            {
+              "title": "Voir les applications & QoS de cet exportateur",
+              "url": "/d/okvorado-applications-qos/okvorado-applications-qos?var-exporter=$exporter",
+              "targetBlank": false
+            }
+          ]
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "volume"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "source"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Voir cette IP source dans Anomalies",
+                    "url": "/d/okvorado-anomalies/okvorado-anomalies?var-adresse=${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "destination"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Voir cette IP destination dans Anomalies",
+                    "url": "/d/okvorado-anomalies/okvorado-anomalies?var-adresse=${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "footer": {
+          "show": true,
+          "enablePagination": true
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT\n    replaceOne(IPv6NumToString(SrcAddr), '::ffff:', '') AS source,\n    replaceOne(IPv6NumToString(DstAddr), '::ffff:', '') AS destination,\n    DstPort AS port_destination,\n    sum(Bytes * SamplingRate) AS volume,\n    sum(Packets * SamplingRate) AS paquets,\n    count() AS flux\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName = '$exporter'\nGROUP BY SrcAddr, DstAddr, DstPort\nORDER BY volume DESC\nLIMIT 25",
+          "format": 1
+        }
+      ]
+    }
+  ]
+}

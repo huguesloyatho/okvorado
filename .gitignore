@@ -1,0 +1,61 @@
+# Environnement et dépendances
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Caches d'outillage
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Données locales et secrets — JAMAIS versionnés
+# `data/*` (pas `data/`) : un ignore de RÉPERTOIRE empêcherait git de
+# descendre dedans, et la négation ci-dessous n'aurait alors aucun effet
+# (limite connue de git, vérifiée ici). `data/*` ignore chaque ENTRÉE du
+# répertoire individuellement, ce que la négation peut annuler.
+data/*
+!data/iana_service_names_fallback.csv
+!data/grand_public_fallback.csv
+# Repli embarqué du catalogue applicatif (registre IANA officiel, ~11 600
+# lignes, ~200 Ko) : VOLONTAIREMENT versionné, contrairement au reste de
+# data/ (base SQLite runtime, config générée). Sans lui dans le dépôt, un
+# poste sans accès Internet sortant (proxy d'entreprise, cas SFR probable)
+# démarrerait avec un catalogue applicatif vide au premier boot — voir
+# app/services/app_catalog.py.
+# grand_public_fallback.csv (~110 lignes) : même raisonnement, catalogue
+# GRAND PUBLIC (P2P, streaming, visio, jeux, VoWiFi, cloud, VPN, IoT).
+.env
+
+# outlet.yaml est GÉNÉRÉ au démarrage (service `config-generator`, voir
+# stack/docker-compose.yml) depuis le gabarit versionné outlet.yaml.template
+# — c'est là que ${SNMP_COMMUNITY} (un secret) est résolu. Le fichier généré
+# ne doit JAMAIS être versionné, même si un exploitant le génère localement
+# pendant un test ; seul le .template l'est.
+stack/config/outlet.yaml
+
+# stack/data/ : bind mounts de persistance du stack (ClickHouse, Kafka,
+# Grafana, Okvorado/Akvorado SQLite, GeoIP, alerting généré, cache module Go
+# du plugin backend — voir stack/docker-compose.yml, section « Stockage et
+# persistance »). Données runtime propres à chaque déploiement, jamais du
+# contenu à versionner — même raisonnement que `data/*` plus haut, dossier
+# distinct (sous `stack/`, pas la racine) donc règle séparée.
+stack/data/
+
+# Artefacts de preuve (générés par les hooks, propres à une session)
+.regression-proof.json
+.ux-proof.json
+
+# OS
+.DS_Store
+*.log
+
+# Agent de restart : le .env porte le token, JAMAIS versionné
+restart-agent/.env
+
+# project-map (carte mentale Claude Code)
+.claude/.map-meta.json
+.claude/.map-adopted
+# (project-map.json est volontairement VERSIONNE — ne pas l'ignorer)

@@ -1,0 +1,58 @@
+{# Fragment rendu par `POST /exporters/{address}/resolve-snmp` — le bouton
+   « Résoudre par SNMP » d'UNE ligne de l'écran /exporters. Rendu UNIQUEMENT
+   dans le cas de succès (`result.status == "ok"`) ; les échecs sont rendus
+   par le chemin d'erreur avec un état DISTINCT (zéro silencieux, CLAUDE.md).
+
+   DÉFAUT MESURÉ (2026-08-10) : /exporters affichait « Interface inconnue » sur
+   4 exportateurs sur 11 parce que `outlet.yaml` déclarait des if-indexes écrits
+   À LA MAIN (999, 2932, 1222, 235…) ne correspondant à AUCUNE interface réelle
+   (les vrais sont 1=lo, 2=eth0, 3=tailscale0, 4+=bridges docker). La saisie
+   manuelle d'un ifIndex est le geste que ce fragment supprime : on affiche la
+   table RÉELLEMENT lue par le walk IF-MIB, pour que l'exploitant VOIE ce qui
+   va être écrit avant que ça le soit. #}
+<p class="notice notice-ok">
+  <strong>Table d'interfaces résolue</strong> pour
+  <strong>{{ exporter_name }}</strong> (<code class="mono">{{ address }}</code>) —
+  {{ result.interfaces | length }} interface(s) lue(s) par walk SNMP.
+</p>
+
+{# La table est affichée intégralement, pas seulement comptée : un compteur seul
+   ne permettrait pas de vérifier que les index lus correspondent bien aux
+   interfaces attendues — c'est exactement l'erreur du 2026-08-10. #}
+<table>
+  <thead>
+    <tr>
+      <th>ifIndex</th>
+      <th>Interface</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for if_index, name in result.interfaces | dictsort %}
+    <tr>
+      <td class="mono">{{ if_index }}</td>
+      <td class="mono">{{ name }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<p class="hint">
+  OID source du walk : <code class="mono">{{ result.source_oid }}</code> —
+  <code class="mono">1.3.6.1.2.1.31.1.1.1.1</code> = IF-MIB::ifName (nom court,
+  privilégié), <code class="mono">1.3.6.1.2.1.2.2.1.2</code> = IF-MIB::ifDescr
+  (description, utilisée en repli quand l'agent n'expose pas ifName).
+</p>
+
+{% if result.message %}
+<p class="hint">{{ result.message }}</p>
+{% endif %}
+
+{% if staged %}
+<p class="notice notice-warn">
+  <strong>Changement EN ATTENTE</strong> — rien n'est encore écrit dans
+  <code class="mono">outlet.yaml</code>. La modification a été mise en file
+  d'attente : ouvrez l'écran
+  <a href="{{ '/config' | prefixed }}">Configuration</a> pour la relire et
+  l'appliquer.
+</p>
+{% endif %}

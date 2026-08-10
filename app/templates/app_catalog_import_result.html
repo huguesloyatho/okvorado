@@ -1,0 +1,9 @@
+{# Fragment : résultat d'un import CSV réussi (les échecs passent par
+   _import_error_response, un notice-crit distinct, rendu directement par le
+   routeur — pas ce gabarit). #}
+<p class="notice notice-ok" data-import-result="ok">
+  <strong>Import réussi.</strong>
+  {{ written }} correspondance(s) appliquée(s) sur {{ total_parsed }} ligne(s) lues
+  (source <span class="badge badge-metier">metier</span>).
+  Rechargez la page pour voir le catalogue mis à jour dans la table ci-dessous.
+</p>

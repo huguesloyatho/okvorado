@@ -1,0 +1,72 @@
+services:
+  okvorado-restart-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: okvorado-restart-agent:0.1.0
+    container_name: okvorado-restart-agent
+    restart: unless-stopped
+
+    # Seul service du projet Okvorado autorisé à monter le socket docker
+    # (voir README.md — "Pourquoi cet agent existe"). L'agent cible les
+    # containers via le SDK Python `docker.from_env()` par label
+    # `com.docker.compose.service` (agent.py:RealDockerClient) — jamais de
+    # `docker compose` en CLI, donc AUCUN besoin de monter /root/akvorado.
+    #
+    # `/data/akvorado/run` (le RÉPERTOIRE, pas le fichier `metadata.cache`
+    # seul) est monté en écriture pour la purge OPTIONNELLE et EXPLICITE du
+    # cache de metadata Akvorado (voir README.md — section "Purge du cache
+    # de metadata" — et agent.py: resolve_metadata_cache_path /
+    # purge_metadata_cache). Monter le fichier seul ne fonctionnerait pas :
+    # supprimer un fichier bind-monté échoue (le mount empêche l'unlink,
+    # seul le contenu peut être écrasé) — il faut le répertoire parent pour
+    # que l'agent puisse réellement `unlink()` le fichier.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /data/akvorado/run:/data/akvorado/run
+
+    # `group_add` donne au process (uid dédié 10001, voir Dockerfile) l'accès
+    # au socket sans le faire tourner en root. Le GID du groupe `docker` de
+    # l'hôte varie d'une machine à l'autre (souvent 999 ou 998, jamais garanti
+    # identique à celui du container) : on l'injecte donc via variable d'env
+    # plutôt que de le figer en dur. Sur l'hôte : `getent group
+    # docker | cut -d: -f3` donne la valeur à mettre dans .env
+    # (DOCKER_SOCKET_GID=...). Argumentaire complet dans README.md.
+    group_add:
+      - "${DOCKER_SOCKET_GID}"
+
+    # Rejoint le réseau du stack Akvorado pour que le SDK docker résolve les
+    # containers cibles, et pour qu'Okvorado joigne cet agent par son nom DNS
+    # de service (`okvorado-restart-agent`, défaut de settings.restart_agent_host).
+    networks:
+      - akvorado
+
+    # ⚠️ AUCUN port publié sur l'hôte (pas de section `ports:`). L'agent
+    # monte le socket docker : l'exposer sur 0.0.0.0 le rendrait joignable
+    # depuis tout le mesh Tailscale, ce qui viderait de son sens la
+    # protection par token (un secret réseau, pas une preuve cryptographique
+    # forte). Seuls les containers du réseau `akvorado_default` — Okvorado y
+    # compris — peuvent l'atteindre, par son nom DNS et le port interne 8098.
+
+    environment:
+      RESTART_AGENT_TOKEN: "${RESTART_AGENT_TOKEN}"
+      # Chemin du cache de metadata, purgé UNIQUEMENT si le client passe
+      # `purge_metadata_cache: true` sur POST /restart (jamais implicite).
+      # Le défaut code (agent.py: DEFAULT_METADATA_CACHE_PATH) correspond
+      # déjà au montage ci-dessus ; ne définir cette variable que si le
+      # chemin réel diffère sur l'hôte cible.
+      METADATA_CACHE_PATH: "${METADATA_CACHE_PATH:-/data/akvorado/run/metadata.cache}"
+
+    mem_limit: 128m
+
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8098/health', timeout=4).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+networks:
+  akvorado:
+    external: true
+    name: akvorado_default

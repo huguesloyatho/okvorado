@@ -1,0 +1,99 @@
+# Règle d'alerte — Exportateur muet.
+#
+# SIGNAL N°1 sur un parc de 350 routeurs : un site qui émettait des flux et
+# n'en émet plus. Fenêtre courte (défaut 15 min), sévérité haute — c'est le
+# symptôme d'un routeur tombé, d'un lien coupé côté opérateur, ou d'une
+# reconfiguration qui a cassé l'export NetFlow/IPFIX/sFlow vers ce collecteur.
+#
+# GABARIT résolu par le service `config-generator` (voir docker-compose.yml
+# et README.md de ce dossier) — Grafana ne résout AUCUN ${VAR} lui-même.
+#
+# Requête validée contre le VRAI ClickHouse de ce projet (2026-08-08,
+# stack-clickhouse-1, 192.0.2.7) : rend un exportateur muet depuis 33491s
+# (exportateur-non-resolu) tout en excluant le routeur actif
+# (routeur-test-01, dernier flux < 5s).
+#
+# CONTRAINTES DE CALCUL respectées :
+# - aucune macro Grafana inexistante ($__unixEpochFrom et consorts) : cette
+#   requête n'a pas besoin de la fenêtre de temps du dashboard (l'alerte
+#   regarde TOUT l'historique connu pour trouver le dernier flux de chaque
+#   exportateur), donc pas de $__timeFilter non plus — c'est voulu, pas un
+#   oubli (un $__timeFilter borné à l'intervalle d'évaluation de la règle
+#   ferait disparaître de la liste les exportateurs silencieux depuis plus
+#   longtemps que cette fenêtre, l'inverse de l'objectif).
+# - dateDiff('second', ...) plutôt que toUnixTimestamp($__toTime) - ... :
+#   pas de fenêtre de temps Grafana ici, donc pas de macro de fenêtre à
+#   appliquer — now() suffit et reste correct pour une règle d'alerte
+#   évaluée en continu.
+# - count()/sum() non utilisés ici : agrégat max(), jamais mis à l'échelle
+#   par SamplingRate (ce n'est pas un volume, c'est un horodatage).
+
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: okvorado-exportateur-muet
+    folder: Okvorado
+    interval: 1m
+    rules:
+      - uid: okvorado-alerte-exportateur-muet
+        title: "Exportateur muet — aucun flux depuis ${ALERTE_EXPORTATEUR_MUET_MINUTES} min"
+        condition: seuil
+        for: 2m
+        noDataState: OK
+        execErrState: Error
+        data:
+          - refId: requete
+            relativeTimeRange:
+              from: 21600
+              to: 0
+            datasourceUid: ClickHouse
+            model:
+              rawSql: >-
+                SELECT
+                    ExporterName AS exportateur,
+                    max(TimeReceived) AS dernier_flux,
+                    dateDiff('second', max(TimeReceived), now()) AS silence_s
+                FROM flows
+                GROUP BY ExporterName
+                HAVING silence_s > (${ALERTE_EXPORTATEUR_MUET_MINUTES} * 60)
+                ORDER BY silence_s DESC
+                LIMIT 50
+              format: 1
+              intervalMs: 60000
+              maxDataPoints: 100
+              refId: requete
+          - refId: reduction
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: requete
+              reducer: count
+              refId: reduction
+          - refId: seuil
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: reduction
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]
+              refId: seuil
+        labels:
+          severite: critique
+          famille: disponibilite
+        annotations:
+          resume: "Un ou plusieurs exportateurs n'ont émis aucun flux depuis plus de ${ALERTE_EXPORTATEUR_MUET_MINUTES} minutes."
+          # QUOI FAIRE, pas seulement ce qui ne va pas (exigence du prompt).
+          description: >-
+            Ouvrir le dashboard « Okvorado — Par exportateur » et filtrer sur
+            l'exportateur signalé (voir le panneau « Liste des exportateurs »
+            de l'accueil pour l'identifier). Vérifier dans l'ordre : (1) le
+            routeur répond-il au ping depuis ce collecteur ? (2) l'export
+            NetFlow/IPFIX/sFlow est-il toujours actif sur ce routeur (config
+            SFR, redémarrage récent, changement d'IP source) ? (3) le
+            pare-feu entre le site et ce collecteur laisse-t-il toujours
+            passer les ports 2055/4739/6343 UDP ? Un exportateur qui reste
+            muet plus d'une heure doit être escaladé au support réseau du
+            site concerné.

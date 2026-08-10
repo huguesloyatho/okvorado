@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+
+{% block title %}{{ exporter_name }}{% endblock %}
+
+{% block content %}
+<section id="exporter-detail-page" data-exporter="{{ exporter_name }}">
+  <p><a href="{{ '/exporters' | prefixed }}" class="link-back"><span class="link-back__chevron">←</span> Tous les exportateurs</a></p>
+  <h1>{{ exporter_name }}</h1>
+
+  <form id="exporter-period-form"
+        hx-get="{{ '/exporters/' | prefixed }}{{ exporter_name | urlencode }}"
+        hx-target="#exporter-detail-page"
+        hx-select="#exporter-detail-page"
+        hx-swap="outerHTML"
+        hx-trigger="change"
+        data-autosubmit
+        class="exporter-period-form">
+    <label for="exporter-period-select">Période</label>
+    <select id="exporter-period-select" name="period">
+      {% for choice in period_choices %}
+        <option value="{{ choice }}" {% if choice == current_period %}selected{% endif %}>{{ choice }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit" class="btn autosubmit-fallback">Actualiser</button>
+  </form>
+
+  {# Chaque onglet est une cible HTMX indépendante : un clic charge SA SEULE
+     requête, jamais les 8 d'un coup — c'est ce qui garde la page rapide. Le
+     câblage (quel onglet est actif, quel panneau afficher) vit dans
+     app/static/tabs.js via des attributs data-*, jamais un gestionnaire
+     inline (CSP script-src 'self' sans unsafe-inline). #}
+  <div class="tabs" data-tabs data-tab-default="resume">
+    <nav class="tabs__nav" role="tablist">
+      {% for onglet in onglets %}
+        <button type="button"
+                class="tabs__tab"
+                role="tab"
+                data-tab-target="{{ onglet }}"
+                data-tab-url="{{ '/exporters/' | prefixed }}{{ exporter_name | urlencode }}/onglet/{{ onglet }}?period={{ current_period }}"
+                aria-selected="{{ 'true' if onglet == 'resume' else 'false' }}">
+          {% if onglet == "resume" %}Résumé
+          {% elif onglet == "trafic" %}Trafic
+          {% elif onglet == "interfaces" %}Interfaces
+          {% elif onglet == "applications" %}Applications
+          {% elif onglet == "sources" %}Sources
+          {% elif onglet == "destinations" %}Destinations
+          {% elif onglet == "conversations" %}Conversations
+          {% elif onglet == "qos" %}QoS
+          {% else %}{{ onglet }}
+          {% endif %}
+        </button>
+      {% endfor %}
+    </nav>
+
+    <div class="tabs__panel"
+         id="tab-panel"
+         role="tabpanel"
+         hx-get="{{ '/exporters/' | prefixed }}{{ exporter_name | urlencode }}/onglet/resume?period={{ current_period }}"
+         hx-trigger="load"
+         hx-swap="innerHTML">
+      <p class="empty">Chargement…</p>
+    </div>
+  </div>
+</section>
+{% endblock %}

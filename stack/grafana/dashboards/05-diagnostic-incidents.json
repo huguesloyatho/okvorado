@@ -1,0 +1,681 @@
+{
+  "uid": "okvorado-diagnostic-incidents",
+  "title": "Okvorado — Diagnostic incidents",
+  "description": "SCCM n'était qu'un EXEMPLE d'incident à diagnostiquer, pas le périmètre : la famille réelle est « diagnostiquer un incident réseau depuis les flux ». Ce dashboard couvre les 4 motifs qui manquaient à l'inventaire (B exfiltration, C balayage/scan, E panne/silence, H nouveau flux) — les 4 autres (A convergence, D saturation, F QoS, G top talker) vivent déjà dans '03 — Applications & Diagnostic' et '04 — Network Snapshot'. Choix d'organisation : dashboard DÉDIÉ plutôt qu'ajout aux 5 existants, parce que ces 4 motifs répondent à une question différente (« y a-t-il un incident en cours ? ») de celle des dashboards existants (état du parc / répartition QoS / applications) — les mélanger aurait rendu chaque page plus longue sans plus de clarté. Reste navigable depuis une seule URL : links de dashboard vers Accueil/Applications/Network Snapshot, et chaque panneau porte un dataLink var-exporter vers la fiche exportateur pour le drill-down. Filtre $exporter (multi) : ExporterName IN (${exporter:singlequote}), jamais IN ($exporter) ni comparaison à $__all.",
+  "tags": [
+    "okvorado",
+    "netflow",
+    "diagnostic",
+    "incident"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "refresh": "1m",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "30s",
+      "1m",
+      "5m",
+      "15m"
+    ],
+    "time_options": [
+      "5m",
+      "15m",
+      "1h",
+      "6h",
+      "24h",
+      "7d",
+      "30d"
+    ]
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "exporter",
+        "type": "query",
+        "label": "Exportateur",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "ClickHouse"
+        },
+        "query": "SELECT DISTINCT ExporterName FROM flows WHERE $__timeFilter(TimeReceived) ORDER BY ExporterName",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "sort": 1
+      }
+    ]
+  },
+  "links": [
+    {
+      "title": "Accueil — Traffic Summary",
+      "type": "dashboards",
+      "tags": [
+        "okvorado",
+        "accueil"
+      ],
+      "asDropdown": false,
+      "icon": "external link",
+      "targetBlank": false,
+      "keepTime": true,
+      "includeVars": true
+    },
+    {
+      "title": "Par exportateur",
+      "type": "dashboards",
+      "tags": [
+        "okvorado",
+        "exportateur"
+      ],
+      "asDropdown": false,
+      "icon": "external link",
+      "targetBlank": false,
+      "keepTime": true,
+      "includeVars": true
+    },
+    {
+      "title": "Applications & Diagnostic",
+      "type": "dashboards",
+      "tags": [
+        "okvorado",
+        "applications"
+      ],
+      "asDropdown": false,
+      "icon": "external link",
+      "targetBlank": false,
+      "keepTime": true,
+      "includeVars": true
+    },
+    {
+      "title": "Réseau — Network Snapshot",
+      "type": "dashboards",
+      "tags": [
+        "okvorado",
+        "snapshot"
+      ],
+      "asDropdown": false,
+      "icon": "external link",
+      "targetBlank": false,
+      "keepTime": true,
+      "includeVars": true
+    },
+    {
+      "title": "Anomalies",
+      "type": "dashboards",
+      "tags": [
+        "okvorado",
+        "anomalies"
+      ],
+      "asDropdown": false,
+      "icon": "external link",
+      "targetBlank": false,
+      "keepTime": true,
+      "includeVars": true
+    }
+  ],
+  "panels": [
+    {
+      "id": 30,
+      "type": "row",
+      "title": "B — Exfiltration / fuite de données (source interne -> destination externe)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 40,
+      "type": "piechart",
+      "title": "Volume sortant vers l'extérieur, par pays de destination",
+      "description": "COMMENT LIRE : répartition du volume ENVOYÉ (source interne -> destination externe) par pays (DstCountry) — vue d'ensemble avant de plonger dans le détail par couple source/destination du tableau ci-dessous. Un pays qui prend une part disproportionnée par rapport à l'activité normale (CDN/cloud connus) mérite un regard. Repli '\\0\\0' visible si Akvorado n'a pas pu résoudre le pays de la destination (bytes nuls non résolus) — JAMAIS masqué silencieusement, cf. CLAUDE.md règle n°2. Top 12.",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 1
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "value",
+            "percent"
+          ]
+        },
+        "pieType": "donut"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "rawSql": "SELECT\n    DstCountry AS pays,\n    sum(Bytes * SamplingRate) AS volume_envoye\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\n    AND (\n        (SrcAddr >= toIPv6('::ffff:10.0.0.0') AND SrcAddr <= toIPv6('::ffff:10.255.255.255'))\n        OR (SrcAddr >= toIPv6('::ffff:172.16.0.0') AND SrcAddr <= toIPv6('::ffff:172.31.255.255'))\n        OR (SrcAddr >= toIPv6('::ffff:192.168.0.0') AND SrcAddr <= toIPv6('::ffff:192.168.255.255'))\n        OR (SrcAddr >= toIPv6('::ffff:100.64.0.0') AND SrcAddr <= toIPv6('::ffff:100.127.255.255'))\n    )\n    AND NOT (\n        (DstAddr >= toIPv6('::ffff:10.0.0.0') AND DstAddr <= toIPv6('::ffff:10.255.255.255'))\n        OR (DstAddr >= toIPv6('::ffff:172.16.0.0') AND DstAddr <= toIPv6('::ffff:172.31.255.255'))\n        OR (DstAddr >= toIPv6('::ffff:192.168.0.0') AND DstAddr <= toIPv6('::ffff:192.168.255.255'))\n        OR (DstAddr >= toIPv6('::ffff:100.64.0.0') AND DstAddr <= toIPv6('::ffff:100.127.255.255'))\n    )\nGROUP BY pays\nORDER BY volume_envoye DESC\nLIMIT 12"
+        }
+      ]
+    },
+    {
+      "id": 31,
+      "type": "table",
+      "title": "Trafic sortant vers l'extérieur, classé par volume envoyé",
+      "description": "COMMENT LIRE : une ligne = un couple (source interne, destination externe). Classé par volume ENVOYÉ (sum(Bytes*SamplingRate) source->destination), avec pays (DstCountry) et AS (DstAS) de la destination pour juger si c'est un service connu (CDN, cloud) ou un hébergeur inconnu. LE DISCRIMINANT : compare la colonne 'flux' (nombre de connexions) au volume — une exfiltration envoie BEAUCOUP sur PEU de connexions longues vers UNE destination fixe, contrairement à un usage normal (navigation web = beaucoup de destinations, chacune avec peu de volume). Mesuré sur ce homelab (2026-08-08, fenêtre 24h) : la ligne en tête envoie 3,26 Go vers une destination FR (AS5410) en 30 796 flux — à confirmer manuellement si le pattern est un usage normal (streaming, sync cloud) ou anormal : ce dashboard ne peut PAS distinguer les deux sans connaître le contexte métier de la source. Filtre source interne = RFC1918+CGNAT (mesure décisive n°1, cf. 03-applications-qos.json), destination = tout ce qui N'EST PAS dans ces mêmes plages. LIMIT 30.",
+      "gridPos": {
+        "h": 11,
+        "w": 24,
+        "x": 0,
+        "y": 10
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "left",
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "volume_envoye"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "source"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Voir tout ce que fait cette source",
+                    "url": "/d/okvorado-anomalies/okvorado-anomalies?var-adresse=${__value.raw}",
+                    "targetBlank": false,
+                    "keepTime": true,
+                    "includeVars": true
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "destination"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Voir tout ce que fait cette destination",
+                    "url": "/d/okvorado-anomalies/okvorado-anomalies?var-adresse=${__value.raw}",
+                    "targetBlank": false,
+                    "keepTime": true,
+                    "includeVars": true
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "footer": {
+          "show": true,
+          "enablePagination": true
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "rawSql": "SELECT\n    replaceOne(IPv6NumToString(SrcAddr), '::ffff:', '') AS source,\n    replaceOne(IPv6NumToString(DstAddr), '::ffff:', '') AS destination,\n    DstCountry AS pays,\n    DstAS AS as_destination,\n    sum(Bytes * SamplingRate) AS volume_envoye,\n    count() AS flux\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\n    AND (\n        (SrcAddr >= toIPv6('::ffff:10.0.0.0') AND SrcAddr <= toIPv6('::ffff:10.255.255.255'))\n        OR (SrcAddr >= toIPv6('::ffff:172.16.0.0') AND SrcAddr <= toIPv6('::ffff:172.31.255.255'))\n        OR (SrcAddr >= toIPv6('::ffff:192.168.0.0') AND SrcAddr <= toIPv6('::ffff:192.168.255.255'))\n        OR (SrcAddr >= toIPv6('::ffff:100.64.0.0') AND SrcAddr <= toIPv6('::ffff:100.127.255.255'))\n    )\n    AND NOT (\n        (DstAddr >= toIPv6('::ffff:10.0.0.0') AND DstAddr <= toIPv6('::ffff:10.255.255.255'))\n        OR (DstAddr >= toIPv6('::ffff:172.16.0.0') AND DstAddr <= toIPv6('::ffff:172.31.255.255'))\n        OR (DstAddr >= toIPv6('::ffff:192.168.0.0') AND DstAddr <= toIPv6('::ffff:192.168.255.255'))\n        OR (DstAddr >= toIPv6('::ffff:100.64.0.0') AND DstAddr <= toIPv6('::ffff:100.127.255.255'))\n    )\nGROUP BY source, destination, pays, as_destination\nORDER BY volume_envoye DESC\nLIMIT 30"
+        }
+      ]
+    },
+    {
+      "id": 32,
+      "type": "table",
+      "title": "Rapport envoyé/reçu par source interne — discriminant exfiltration vs téléchargement",
+      "description": "COMMENT LIRE : pour chaque source interne parlant à l'extérieur, compare le volume ENVOYÉ (elle -> extérieur) au volume REÇU (extérieur -> elle). ratio_envoi_reception = envoye/recu, arrondi. UN TÉLÉCHARGEMENT NORMAL a un ratio FAIBLE (on reçoit beaucoup plus qu'on n'envoie : requête HTTP courte, réponse volumineuse). UNE EXFILTRATION a un ratio ÉLEVÉ (on envoie beaucoup, on reçoit peu — l'inverse d'un usage web classique). Une ligne avec ratio > 5 et volume_envoye significatif (pas quelques Ko) mérite un regard. Repli explicite ratio=999 quand recu=0 (jamais de division par zéro silencieuse). LIMIT 30.",
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 21
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "left",
+            "filterable": true
+          },
+          "links": [
+            {
+              "title": "Voir tout ce que fait cette source",
+              "url": "/d/okvorado-anomalies/okvorado-anomalies?var-adresse=${__data.fields.source}",
+              "targetBlank": false,
+              "keepTime": true,
+              "includeVars": true
+            }
+          ]
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "total_envoye"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "total_recu"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "footer": {
+          "show": true,
+          "enablePagination": true
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "rawSql": "SELECT\n    source,\n    sum(volume_envoye) AS total_envoye,\n    sum(volume_recu) AS total_recu,\n    round(sum(volume_envoye) / greatest(sum(volume_recu), 1), 2) AS ratio_envoi_reception\nFROM (\n    SELECT\n        replaceOne(IPv6NumToString(SrcAddr), '::ffff:', '') AS source,\n        Bytes * SamplingRate AS volume_envoye,\n        0 AS volume_recu\n    FROM flows\n    WHERE $__timeFilter(TimeReceived)\n        AND ExporterName IN (${exporter:singlequote})\n        AND (\n            (SrcAddr >= toIPv6('::ffff:10.0.0.0') AND SrcAddr <= toIPv6('::ffff:10.255.255.255'))\n            OR (SrcAddr >= toIPv6('::ffff:172.16.0.0') AND SrcAddr <= toIPv6('::ffff:172.31.255.255'))\n            OR (SrcAddr >= toIPv6('::ffff:192.168.0.0') AND SrcAddr <= toIPv6('::ffff:192.168.255.255'))\n            OR (SrcAddr >= toIPv6('::ffff:100.64.0.0') AND SrcAddr <= toIPv6('::ffff:100.127.255.255'))\n        )\n        AND NOT (\n            (DstAddr >= toIPv6('::ffff:10.0.0.0') AND DstAddr <= toIPv6('::ffff:10.255.255.255'))\n            OR (DstAddr >= toIPv6('::ffff:172.16.0.0') AND DstAddr <= toIPv6('::ffff:172.31.255.255'))\n            OR (DstAddr >= toIPv6('::ffff:192.168.0.0') AND DstAddr <= toIPv6('::ffff:192.168.255.255'))\n            OR (DstAddr >= toIPv6('::ffff:100.64.0.0') AND DstAddr <= toIPv6('::ffff:100.127.255.255'))\n        )\n    UNION ALL\n    SELECT\n        replaceOne(IPv6NumToString(DstAddr), '::ffff:', '') AS source,\n        0 AS volume_envoye,\n        Bytes * SamplingRate AS volume_recu\n    FROM flows\n    WHERE $__timeFilter(TimeReceived)\n        AND ExporterName IN (${exporter:singlequote})\n        AND (\n            (DstAddr >= toIPv6('::ffff:10.0.0.0') AND DstAddr <= toIPv6('::ffff:10.255.255.255'))\n            OR (DstAddr >= toIPv6('::ffff:172.16.0.0') AND DstAddr <= toIPv6('::ffff:172.31.255.255'))\n            OR (DstAddr >= toIPv6('::ffff:192.168.0.0') AND DstAddr <= toIPv6('::ffff:192.168.255.255'))\n            OR (DstAddr >= toIPv6('::ffff:100.64.0.0') AND DstAddr <= toIPv6('::ffff:100.127.255.255'))\n        )\n        AND NOT (\n            (SrcAddr >= toIPv6('::ffff:10.0.0.0') AND SrcAddr <= toIPv6('::ffff:10.255.255.255'))\n            OR (SrcAddr >= toIPv6('::ffff:172.16.0.0') AND SrcAddr <= toIPv6('::ffff:172.31.255.255'))\n            OR (SrcAddr >= toIPv6('::ffff:192.168.0.0') AND SrcAddr <= toIPv6('::ffff:192.168.255.255'))\n            OR (SrcAddr >= toIPv6('::ffff:100.64.0.0') AND SrcAddr <= toIPv6('::ffff:100.127.255.255'))\n        )\n) AS envoi_reception\nGROUP BY source\nHAVING total_envoye > 0\nORDER BY ratio_envoi_reception DESC, total_envoye DESC\nLIMIT 30"
+        }
+      ]
+    },
+    {
+      "id": 33,
+      "type": "row",
+      "title": "C — Balayage / scan (1 source -> N destinations, beaucoup de ports)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 31
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 34,
+      "type": "table",
+      "title": "Sources par nombre de destinations et de ports distincts touchés",
+      "description": "COMMENT LIRE : l'INVERSE du motif de convergence (N sources -> 1 destination du dashboard Applications) — ici 1 SOURCE -> N destinations. uniqExact(DstAddr) = nombre de cibles distinctes touchées par cette source, uniqExact(DstPort) = nombre de ports distincts essayés. LE DISCRIMINANT (mesuré sur ce homelab, 2026-08-08) : octets_par_destination FAIBLE = scanner (beaucoup de cibles, quelques paquets chacune, peu de réponse) ; octets_par_destination ÉLEVÉ = client légitime à fort trafic qui parle simplement à beaucoup d'hôtes (ex. mesuré ici : une source touchant 130 destinations avec 631 Mo/destination — PAS un scan, un gros consommateur normal ; à l'inverse une autre source touchant 1124 destinations pour seulement 3,6 Mo/destination CHACUNE — profil scanner). Trie par destinations_distinctes décroissant, mais LIRE la colonne octets_par_destination avant de conclure à un scan. HAVING destinations_distinctes >= 20 pour ne montrer que les profils qui sortent du lot. LIMIT 25.",
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 32
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "left"
+          },
+          "links": [
+            {
+              "title": "Voir tout ce que fait cette source",
+              "url": "/d/okvorado-anomalies/okvorado-anomalies?var-adresse=${__data.fields.source}",
+              "targetBlank": false,
+              "keepTime": true,
+              "includeVars": true
+            }
+          ],
+          "custom": {
+            "align": "left",
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "volume"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "octets_par_destination"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "footer": {
+          "show": true,
+          "enablePagination": true
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "rawSql": "SELECT\n    replaceOne(IPv6NumToString(SrcAddr), '::ffff:', '') AS source,\n    uniqExact(DstAddr) AS destinations_distinctes,\n    uniqExact(DstPort) AS ports_distincts,\n    sum(Bytes * SamplingRate) AS volume,\n    round(sum(Bytes * SamplingRate) / uniqExact(DstAddr), 1) AS octets_par_destination,\n    count() AS flux\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\n    AND Proto IN (6, 17)\nGROUP BY source\nHAVING destinations_distinctes >= 20\nORDER BY destinations_distinctes DESC\nLIMIT 25"
+        }
+      ]
+    },
+    {
+      "id": 35,
+      "type": "row",
+      "title": "E — Panne / silence (dernier flux reçu par exportateur)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 44
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 36,
+      "type": "table",
+      "title": "Dernier flux reçu par exportateur — silencieux en tête",
+      "description": "COMMENT LIRE : vue de DIAGNOSTIC (complète l'alerte 'okvorado-alerte-chute-trafic' déjà en place, qui prévient mais ne détaille pas) — pour CHAQUE exportateur du parc, la date du dernier flux reçu et les minutes écoulées depuis (dateDiff). Trié par minutes_depuis DÉCROISSANT : un exportateur silencieux depuis longtemps ressort EN TÊTE. Sur ce homelab (2026-08-08), les 11 exportateurs sont tous actifs (minutes_depuis = 0 partout) — aucune panne en cours à démontrer avec les données actuelles ; la valeur du panneau est justement de faire remonter la ligne minutes_depuis > 0 le jour où un exportateur cesse d'émettre, cas qu'on ne peut pas provoquer sur une infra de prod. volume_periode ET flux_periode à 0 pour un exportateur présent dans la liste (JOIN sur templating $exporter, pas sur le résultat) signalerait une coupure TOTALE plutôt qu'une chute partielle. LIMIT 20.",
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 45
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "left",
+            "filterable": true
+          },
+          "links": [
+            {
+              "title": "Voir la fiche de cet exportateur",
+              "url": "/d/okvorado-par-exportateur/okvorado-par-exportateur?var-exporter=${__data.fields.exportateur}",
+              "targetBlank": false,
+              "keepTime": true,
+              "includeVars": true
+            }
+          ]
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "volume_periode"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "minutes_depuis"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 15
+                    },
+                    {
+                      "color": "red",
+                      "value": 60
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "footer": {
+          "show": true,
+          "enablePagination": true
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "rawSql": "SELECT\n    ExporterName AS exportateur,\n    max(TimeReceived) AS dernier_flux,\n    dateDiff('minute', max(TimeReceived), now()) AS minutes_depuis,\n    count() AS flux_periode,\n    sum(Bytes * SamplingRate) AS volume_periode\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\nGROUP BY exportateur\nORDER BY minutes_depuis DESC\nLIMIT 20"
+        }
+      ]
+    },
+    {
+      "id": 37,
+      "type": "table",
+      "title": "Volume actuel vs moyenne — chutes partielles",
+      "description": "COMMENT LIRE : complète le panneau précédent pour attraper les CHUTES PARTIELLES (l'exportateur émet toujours, mais beaucoup moins qu'avant — un silence complet ressortirait déjà dans le panneau du dessus). Compare le volume de la DERNIÈRE HEURE de la fenêtre au volume MOYEN par heure sur le RESTE de la fenêtre ($__timeFilter). ratio_vs_moyenne = volume_derniere_heure / volume_moyen_par_heure — une valeur proche de 1 = normal, une valeur proche de 0 = chute franche à investiguer, une valeur très supérieure à 1 = pic (motif G top talker, pas ce panneau). Repli explicite ratio=0 si aucun flux ni sur la fenêtre ni sur la dernière heure (exportateur totalement éteint sur toute la période), jamais de NULL silencieux. LIMIT 20.",
+      "gridPos": {
+        "h": 11,
+        "w": 24,
+        "x": 0,
+        "y": 57
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "left",
+            "filterable": true
+          },
+          "links": [
+            {
+              "title": "Voir la fiche de cet exportateur",
+              "url": "/d/okvorado-par-exportateur/okvorado-par-exportateur?var-exporter=${__data.fields.exportateur}",
+              "targetBlank": false,
+              "keepTime": true,
+              "includeVars": true
+            }
+          ]
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "volume_derniere_heure"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "volume_moyen_par_heure"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "footer": {
+          "show": true,
+          "enablePagination": true
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "rawSql": "SELECT\n    exportateur,\n    round(sum(if(recent, volume, 0)), 1) AS volume_derniere_heure,\n    round(sum(if(NOT recent, volume, 0)) / greatest(dateDiff('hour', $__fromTime, now() - toIntervalHour(1)), 1), 1) AS volume_moyen_par_heure,\n    round(\n        sum(if(recent, volume, 0))\n        / greatest(sum(if(NOT recent, volume, 0)) / greatest(dateDiff('hour', $__fromTime, now() - toIntervalHour(1)), 1), 1),\n        2\n    ) AS ratio_vs_moyenne\nFROM (\n    SELECT\n        ExporterName AS exportateur,\n        Bytes * SamplingRate AS volume,\n        TimeReceived >= now() - toIntervalHour(1) AS recent\n    FROM flows\n    WHERE $__timeFilter(TimeReceived)\n        AND ExporterName IN (${exporter:singlequote})\n) AS f\nGROUP BY exportateur\nORDER BY ratio_vs_moyenne ASC\nLIMIT 20"
+        }
+      ]
+    },
+    {
+      "id": 38,
+      "type": "row",
+      "title": "H — Nouveau flux / application inédite (fenêtre courante vs fenêtre précédente)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 68
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 39,
+      "type": "table",
+      "title": "Applications présentes sur la fenêtre courante, absentes de la fenêtre précédente",
+      "description": "COMMENT LIRE : révèle un déploiement qui démarre, un service qui s'ouvre, un poste compromis qui parle à une nouvelle destination — toute application (least(SrcPort,DstPort), même table qu'ailleurs) vue sur la fenêtre COURANTE ($__fromTime→$__toTime) mais absente sur la fenêtre PRÉCÉDENTE, de même durée, immédiatement avant. ⚠️ $__timeFilter ne couvre QUE la fenêtre courante : la fenêtre précédente est reconstruite à la main via `$__fromTime - toIntervalSecond(greatest(toUnixTimestamp($__toTime)-toUnixTimestamp($__fromTime),1))`, jamais une date en dur — testé contre le vrai ClickHouse (2026-08-08) : sur une fenêtre de 24h, rend udp/32074 (39 Mo, nouveau) en tête. Un port hors table de correspondance reste visible sous 'tcp/<port>'/'udp/<port>', jamais vide. Le fait qu'une application 'nouvelle' n'ait pas de volume énorme est normal : elle vient de démarrer, elle n'a pas eu le temps d'accumuler — c'est sa PRÉSENCE qui est le signal, pas encore son volume. LIMIT 20.",
+      "gridPos": {
+        "h": 11,
+        "w": 24,
+        "x": 0,
+        "y": 69
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "left",
+            "filterable": true
+          },
+          "links": [
+            {
+              "title": "Voir cette application",
+              "url": "/d/okvorado-applications-qos/okvorado-applications-qos?var-application=${__data.fields.application}",
+              "targetBlank": false,
+              "keepTime": true,
+              "includeVars": true
+            }
+          ]
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "volume"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "footer": {
+          "show": true,
+          "enablePagination": true
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "rawSql": "WITH\n    $__fromTime AS debut_courant,\n    $__toTime AS fin_courant,\n    debut_courant - toIntervalSecond(greatest(toUnixTimestamp($__toTime) - toUnixTimestamp($__fromTime), 1)) AS debut_precedent\nSELECT\n    application,\n    sum(volume) AS volume\nFROM (\n    SELECT\n        multiIf(\n            least(SrcPort,DstPort) = 443, 'HTTPS',\n            least(SrcPort,DstPort) = 80, 'HTTP',\n            least(SrcPort,DstPort) = 8080, 'HTTP-ALT',\n            least(SrcPort,DstPort) = 8443, 'HTTPS-ALT',\n            least(SrcPort,DstPort) = 22, 'SSH',\n            least(SrcPort,DstPort) = 3389, 'RDP',\n            least(SrcPort,DstPort) = 445, 'SMB (microsoft-ds)',\n            least(SrcPort,DstPort) = 139, 'NetBIOS-SSN',\n            least(SrcPort,DstPort) = 53, 'DNS',\n            least(SrcPort,DstPort) = 25, 'SMTP',\n            least(SrcPort,DstPort) = 389, 'LDAP',\n            least(SrcPort,DstPort) = 1433, 'MSSQL',\n            least(SrcPort,DstPort) = 3306, 'MySQL',\n            least(SrcPort,DstPort) = 5432, 'PostgreSQL',\n            concat(if(Proto = 6, 'tcp/', 'udp/'), toString(least(SrcPort,DstPort)))\n        ) AS application,\n        Bytes * SamplingRate AS volume,\n        TimeReceived\n    FROM flows\n    WHERE TimeReceived >= debut_precedent AND TimeReceived < fin_courant\n        AND ExporterName IN (${exporter:singlequote})\n        AND Proto IN (6, 17)\n) AS f\nWHERE f.TimeReceived >= debut_courant AND f.TimeReceived < fin_courant\nGROUP BY application\nHAVING application NOT IN (\n    SELECT\n        multiIf(\n            least(SrcPort,DstPort) = 443, 'HTTPS',\n            least(SrcPort,DstPort) = 80, 'HTTP',\n            least(SrcPort,DstPort) = 8080, 'HTTP-ALT',\n            least(SrcPort,DstPort) = 8443, 'HTTPS-ALT',\n            least(SrcPort,DstPort) = 22, 'SSH',\n            least(SrcPort,DstPort) = 3389, 'RDP',\n            least(SrcPort,DstPort) = 445, 'SMB (microsoft-ds)',\n            least(SrcPort,DstPort) = 139, 'NetBIOS-SSN',\n            least(SrcPort,DstPort) = 53, 'DNS',\n            least(SrcPort,DstPort) = 25, 'SMTP',\n            least(SrcPort,DstPort) = 389, 'LDAP',\n            least(SrcPort,DstPort) = 1433, 'MSSQL',\n            least(SrcPort,DstPort) = 3306, 'MySQL',\n            least(SrcPort,DstPort) = 5432, 'PostgreSQL',\n            concat(if(Proto = 6, 'tcp/', 'udp/'), toString(least(SrcPort,DstPort)))\n        ) AS application\n    FROM flows\n    WHERE TimeReceived >= debut_precedent AND TimeReceived < debut_courant\n        AND ExporterName IN (${exporter:singlequote})\n        AND Proto IN (6, 17)\n    GROUP BY application\n)\nORDER BY volume DESC\nLIMIT 20"
+        }
+      ]
+    }
+  ]
+}

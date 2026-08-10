@@ -1,0 +1,160 @@
+# Règle d'alerte — Saturation d'interface.
+#
+# Utilisation d'une interface (IN ou OUT) au-delà d'un seuil (défaut 80%),
+# calculée sur la vitesse déclarée InIfSpeed/OutIfSpeed (Mbps, résolue par
+# SNMP — voir stack/config/outlet.yaml.template). Une interface saturée
+# annonce des pertes de paquets et de la latence AVANT la coupure complète.
+#
+# GABARIT résolu par `config-generator` — voir README.md de ce dossier.
+#
+# Requête validée contre le VRAI ClickHouse (2026-08-08, stack-clickhouse-1,
+# 192.0.2.7) : rend 1.37% sur interface-non-resolue et 0.47% sur eth0 —
+# cohérent avec un trafic de test faible sur routeur-test-01.
+#
+# CONTRAINTES DE CALCUL respectées :
+# - sum(Bytes * SamplingRate) — jamais sum(Bytes) nu.
+# - fenêtre glissante 5 minutes (300s, littérale : pas de $__timeFilter, la
+#   règle d'alerte n'a pas de fenêtre de dashboard — voir even le même
+#   raisonnement que l'alerte exportateur muet) — assez courte pour réagir
+#   vite à une saturation réelle, assez longue pour lisser les pics NetFlow.
+# - least(100, ...) : une interface ne peut pas dépasser 100% d'utilisation
+#   affichée même si InIfSpeed est mal résolu (SNMP pas encore répondu,
+#   valeur de repli) — évite une fausse alerte à 4000% sur une vitesse
+#   d'interface non résolue proche de 0.
+# - greatest(any(InIfSpeed), 1) : jamais de division par zéro si la vitesse
+#   déclarée est 0 (interface pas encore résolue par SNMP).
+
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: okvorado-saturation-interface
+    folder: Okvorado
+    interval: 1m
+    rules:
+      - uid: okvorado-alerte-saturation-interface-in
+        title: "Saturation d'interface (IN) — au-delà de ${ALERTE_SATURATION_INTERFACE_SEUIL_PCT}%"
+        condition: seuil
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        data:
+          - refId: requete
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: ClickHouse
+            model:
+              rawSql: >-
+                SELECT
+                    ExporterName AS exportateur,
+                    InIfName AS interface,
+                    least(
+                        100,
+                        (sum(Bytes * SamplingRate) * 8 / 300)
+                        / (greatest(any(InIfSpeed), 1) * 1000000) * 100
+                    ) AS utilisation_in
+                FROM flows
+                WHERE TimeReceived >= now() - 300
+                    AND InIfName != ''
+                GROUP BY ExporterName, InIfName
+                HAVING utilisation_in > ${ALERTE_SATURATION_INTERFACE_SEUIL_PCT}
+                ORDER BY utilisation_in DESC
+                LIMIT 50
+              format: 1
+              intervalMs: 60000
+              maxDataPoints: 100
+              refId: requete
+          - refId: reduction
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: requete
+              reducer: count
+              refId: reduction
+          - refId: seuil
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: reduction
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]
+              refId: seuil
+        labels:
+          severite: avertissement
+          famille: performance
+        annotations:
+          resume: "Une ou plusieurs interfaces (IN) dépassent ${ALERTE_SATURATION_INTERFACE_SEUIL_PCT}% d'utilisation."
+          description: >-
+            Ouvrir « Okvorado — Par exportateur » sur le routeur concerné,
+            onglet Utilisation IN/OUT, pour identifier l'interface exacte.
+            Vérifier le Top N Application/Conversation sur la même période :
+            un pic légitime (sauvegarde planifiée, transfert massif) ne
+            demande rien d'urgent ; un trafic anormal ou une croissance
+            durable doit déclencher soit un lissage QoS (limiter les flux
+            non prioritaires sur cette interface), soit une demande
+            d'augmentation de capacité de lien auprès de SFR si la
+            saturation persiste au-delà de quelques heures.
+
+      - uid: okvorado-alerte-saturation-interface-out
+        title: "Saturation d'interface (OUT) — au-delà de ${ALERTE_SATURATION_INTERFACE_SEUIL_PCT}%"
+        condition: seuil
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        data:
+          - refId: requete
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: ClickHouse
+            model:
+              rawSql: >-
+                SELECT
+                    ExporterName AS exportateur,
+                    OutIfName AS interface,
+                    least(
+                        100,
+                        (sum(Bytes * SamplingRate) * 8 / 300)
+                        / (greatest(any(OutIfSpeed), 1) * 1000000) * 100
+                    ) AS utilisation_out
+                FROM flows
+                WHERE TimeReceived >= now() - 300
+                    AND OutIfName != ''
+                GROUP BY ExporterName, OutIfName
+                HAVING utilisation_out > ${ALERTE_SATURATION_INTERFACE_SEUIL_PCT}
+                ORDER BY utilisation_out DESC
+                LIMIT 50
+              format: 1
+              intervalMs: 60000
+              maxDataPoints: 100
+              refId: requete
+          - refId: reduction
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: requete
+              reducer: count
+              refId: reduction
+          - refId: seuil
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: reduction
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]
+              refId: seuil
+        labels:
+          severite: avertissement
+          famille: performance
+        annotations:
+          resume: "Une ou plusieurs interfaces (OUT) dépassent ${ALERTE_SATURATION_INTERFACE_SEUIL_PCT}% d'utilisation."
+          description: >-
+            Même procédure que l'alerte IN (voir okvorado-alerte-saturation-interface-in) :
+            ouvrir la fiche exportateur, onglet Utilisation OUT, identifier le
+            trafic responsable via Top N Application/Conversation, arbitrer
+            entre lissage QoS et demande de capacité opérateur.

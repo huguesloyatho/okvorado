@@ -1,0 +1,166 @@
+{% extends "base.html" %}
+
+{% block title %}Vues métier — Okvorado{% endblock %}
+
+{% block content %}
+<section class="views-page">
+  <header class="views-page__header">
+    <h1>Vues métier</h1>
+    <p class="views-page__subtitle">
+      Cinq vues prêtes à l'emploi sur les flux NetFlow — pas de requête à construire.
+    </p>
+
+    {# `data-autosubmit` remplace un `onchange="this.form.submit()"` INLINE que
+       la CSP de l'application (`script-src 'self'`, sans `unsafe-inline`)
+       BLOQUAIT. Mesuré au navigateur le 2026-08-06 : changer la fenêtre de 1h
+       à 6h ne soumettait RIEN et l'URL restait identique — le sélecteur
+       changeait d'apparence sans aucun effet, et aucun bouton ne permettait de
+       valider. Le câblage vit dans `form-targets.js`.
+
+       Le bouton ci-dessous est le REPLI : si le JS ne s'exécute pas, la
+       fenêtre reste changeable à la souris. Il est masqué quand le script a
+       pris la main — jamais l'inverse, sinon il resterait caché le seul jour
+       où il sert. #}
+    <form class="views-page__window-form" method="get" action="/views"
+          data-autosubmit data-autosubmit-source="window">
+      <label for="window-select">Fenêtre</label>
+      <select id="window-select" name="window">
+        {% for choice in window_choices %}
+        <option value="{{ choice }}" {% if choice == current_window %}selected{% endif %}>{{ choice }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit" class="autosubmit-fallback">Appliquer</button>
+    </form>
+  </header>
+
+  <!-- Vue 1 : Qui parle à qui -->
+  <section class="view-card" id="view-talkers">
+    <h2>Qui parle à qui</h2>
+    <p class="view-card__hint">Top talkers par volume — agrégation source/destination.</p>
+    <div class="view-card__body" hx-get="{{ '/views/fragment/talkers?window=' | prefixed }}{{ current_window }}" hx-trigger="load, every 30s" hx-swap="innerHTML">
+      <p class="view-card__loading">Chargement…</p>
+    </div>
+    <a class="view-card__akvorado-link"
+       href="{{ akvorado_console_url }}/network/flows?window={{ current_window }}"
+       target="_blank" rel="noopener">Ouvrir dans Akvorado</a>
+  </section>
+
+  <!-- Vue 2 : Quels services -->
+  <section class="view-card" id="view-services">
+    <h2>Quels services</h2>
+    <p class="view-card__hint">Volumétrie par port/protocole, traduite en noms d'application.</p>
+    <div class="view-card__body" hx-get="{{ '/views/fragment/services?window=' | prefixed }}{{ current_window }}" hx-trigger="load, every 30s" hx-swap="innerHTML">
+      <p class="view-card__loading">Chargement…</p>
+    </div>
+    <a class="view-card__akvorado-link"
+       href="{{ akvorado_console_url }}/network/flows?dimension=DstPort&window={{ current_window }}"
+       target="_blank" rel="noopener">Ouvrir dans Akvorado</a>
+  </section>
+
+  <!-- Vue 3 : WAN vs mesh -->
+  <section class="view-card" id="view-boundary">
+    <h2>WAN vs mesh</h2>
+    <p class="view-card__hint">Répartition du trafic entre le mesh interne et Internet.</p>
+    <div class="view-card__body" hx-get="{{ '/views/fragment/boundary?window=' | prefixed }}{{ current_window }}" hx-trigger="load, every 30s" hx-swap="innerHTML">
+      <p class="view-card__loading">Chargement…</p>
+    </div>
+    <a class="view-card__akvorado-link"
+       href="{{ akvorado_console_url }}/network/flows?dimension=InIfBoundary&window={{ current_window }}"
+       target="_blank" rel="noopener">Ouvrir dans Akvorado</a>
+  </section>
+
+  <!-- Vue 4 : Dans le temps -->
+  <section class="view-card" id="view-timeseries">
+    <h2>Dans le temps</h2>
+    <p class="view-card__hint">Série temporelle du volume, comparée à la période précédente.</p>
+    <div class="view-card__body" hx-get="{{ '/views/fragment/timeseries?window=' | prefixed }}{{ current_window }}" hx-trigger="load, every 30s" hx-swap="innerHTML">
+      <p class="view-card__loading">Chargement…</p>
+    </div>
+    <a class="view-card__akvorado-link"
+       href="{{ akvorado_console_url }}/network/flows?window={{ current_window }}"
+       target="_blank" rel="noopener">Ouvrir dans Akvorado</a>
+  </section>
+
+  <!-- Vue 5 : QoS -->
+  <section class="view-card" id="view-qos">
+    <h2>QoS</h2>
+    {% if not qos_available %}
+    <div class="view-card__degraded">
+      <p><strong>Vue indisponible dans ce déploiement.</strong></p>
+      <p>{{ qos_reason }}</p>
+      <p class="view-card__degraded-note">
+        Même une fois la colonne activée, prévoir que la grande majorité des flux
+        (mesuré : ~99%) afficheront un ToS à 0 — tailscale ne propage pas le
+        marquage DSCP/ToS à l'enveloppe WireGuard (seuls ~1% des flux portent
+        un marquage réel).
+      </p>
+    </div>
+    {% else %}
+    <div class="view-card__body" hx-get="{{ '/views/fragment/qos?window=' | prefixed }}{{ current_window }}" hx-trigger="load, every 30s" hx-swap="innerHTML">
+      <p class="view-card__loading">Chargement…</p>
+    </div>
+    {% endif %}
+  </section>
+
+  <!-- Table éditable port -> application -->
+  <section class="view-card" id="portmap-editor">
+    <h2>Correspondances port → application</h2>
+    <p class="view-card__hint">
+      Table éditable localement (base Okvorado) — n'affecte jamais la configuration Akvorado.
+    </p>
+
+    <form class="portmap-editor__form"
+          hx-post="{{ '/views/portmap' | prefixed }}"
+          hx-target="#portmap-editor-rows"
+          hx-swap="afterbegin"
+          hx-sync="this:replace"
+          hx-disabled-elt="find button">
+      {# hx-sync + hx-disabled-elt : un double-clic ne crée qu'UNE ligne. Le
+         bouton est désactivé pendant la requête et la seconde soumission
+         remplace la première au lieu de s'y ajouter. #}
+      <input type="number" name="port" min="1" max="65535" placeholder="Port" required>
+      <select name="proto" required>
+        <option value="tcp">tcp</option>
+        <option value="udp">udp</option>
+      </select>
+      <input type="text" name="application" maxlength="128" placeholder="Nom de l'application" required>
+      <button type="submit">Ajouter</button>
+    </form>
+
+    <table class="portmap-editor__table">
+      <thead>
+        <tr>
+          <th>Port</th>
+          <th>Proto</th>
+          <th>Application</th>
+          <th>Source</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="portmap-editor-rows">
+        {% for mapping in port_mappings %}
+        <tr id="portmap-row-{{ mapping.port }}-{{ mapping.proto }}">
+          <td>{{ mapping.port }}</td>
+          <td>{{ mapping.proto }}</td>
+          <td>{{ mapping.application }}</td>
+          <td>{{ mapping.source }}</td>
+          <td>
+            <button type="button"
+                    hx-delete="{{ '/views/portmap/' | prefixed }}{{ mapping.port }}/{{ mapping.proto }}"
+                    hx-target="#portmap-row-{{ mapping.port }}-{{ mapping.proto }}"
+                    hx-swap="outerHTML"
+                    hx-confirm="Supprimer cette correspondance ?">
+              Supprimer
+            </button>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+</section>
+  {# Câblage des formulaires dont la cible ou la soumission dépend d'un choix.
+     Fichier statique : la CSP (`script-src 'self'`) interdit tout gestionnaire
+     inline, et deux défauts vécus le 2026-08-06 viennent précisément de là. #}
+  <script src="{{ '/static/form-targets.js?v=' | prefixed }}{{ static_version }}" defer></script>
+{% endblock %}

@@ -1,0 +1,61 @@
+{# Fragment : table paginée + pager. Inclus par app_catalog.html au premier
+   rendu, et réémis tel quel par /app-catalog/rows (recherche/filtre HTMX). #}
+{% if result.items %}
+<table class="app-catalog-table">
+  <thead>
+    <tr>
+      <th>Port</th>
+      <th>Proto</th>
+      <th>Application</th>
+      <th>Source</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody id="app-catalog-rows">
+    {% for mapping in result.items %}
+    <tr id="app-catalog-row-{{ mapping.port }}-{{ mapping.proto }}">
+      <td class="num">{{ mapping.port_label }}</td>
+      <td>{{ mapping.proto }}</td>
+      <td>{{ mapping.application }}</td>
+      <td><span class="badge badge-{{ mapping.source }}">{{ mapping.source }}</span></td>
+      <td>
+        <button type="button" class="danger"
+                hx-delete="{{ '/app-catalog/' | prefixed }}{{ mapping.port }}/{{ mapping.proto }}"
+                hx-target="#app-catalog-row-{{ mapping.port }}-{{ mapping.proto }}"
+                hx-swap="outerHTML"
+                hx-confirm="Supprimer cette correspondance du catalogue ?">
+          Supprimer
+        </button>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<nav class="pager" aria-label="Pagination du catalogue">
+  {% set base_qs = "search=" ~ (search | urlencode) ~ "&source=" ~ (source_filter | urlencode) %}
+  {% if result.page > 1 %}
+  <a href="#" data-app-catalog-page="{{ result.page - 1 }}"
+     hx-get="{{ '/app-catalog/rows?' | prefixed }}{{ base_qs }}&page={{ result.page - 1 }}"
+     hx-target="#app-catalog-table-wrapper" hx-swap="innerHTML">&larr; Précédent</a>
+  {% else %}
+  <span class="pager__current disabled">&larr; Précédent</span>
+  {% endif %}
+  <span>Page {{ result.page }} / {{ result.total_pages }}</span>
+  {% if result.page < result.total_pages %}
+  <a href="#" data-app-catalog-page="{{ result.page + 1 }}"
+     hx-get="{{ '/app-catalog/rows?' | prefixed }}{{ base_qs }}&page={{ result.page + 1 }}"
+     hx-target="#app-catalog-table-wrapper" hx-swap="innerHTML">Suivant &rarr;</a>
+  {% else %}
+  <span class="pager__current disabled">Suivant &rarr;</span>
+  {% endif %}
+</nav>
+{% else %}
+<p class="empty">
+  {% if search or source_filter %}
+  Aucune correspondance ne correspond à ce filtre.
+  {% else %}
+  Le catalogue est vide — rechargez depuis IANA ou ajoutez une correspondance.
+  {% endif %}
+</p>
+{% endif %}

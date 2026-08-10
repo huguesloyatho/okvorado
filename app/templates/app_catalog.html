@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+
+{% block title %}Catalogue applicatif{% endblock %}
+
+{% block content %}
+<h1>Catalogue applicatif</h1>
+<p class="subtitle">
+  Correspondances port &rarr; application utilisées par les vues Services, Convergence et
+  Exportateurs. Trois sources : <span class="badge badge-iana">iana</span> (registre officiel),
+  <span class="badge badge-metier">metier</span> (préchargé pour ce parc : SCCM, Tailscale, WSUS...),
+  <span class="badge badge-custom">custom</span> (ajout manuel — jamais écrasé par un rechargement).
+</p>
+
+{# ===================== Compteurs + statut du dernier rechargement IANA ===================== #}
+<section class="panel" id="app-catalog-status-panel">
+  <div class="panel-head">
+    <h2>Catalogue</h2>
+  </div>
+  <div class="stat-row">
+    <div class="stat">
+      <span class="stat-label">Total</span>
+      <span class="stat-value">{{ result.total }}</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">IANA</span>
+      <span class="stat-value">{{ counts.get("iana", 0) }}</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Métier</span>
+      <span class="stat-value">{{ counts.get("metier", 0) }}</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Custom</span>
+      <span class="stat-value">{{ counts.get("custom", 0) }}</span>
+    </div>
+  </div>
+
+  <div id="app-catalog-reload-status">
+    {% include "app_catalog_reload_status.html" %}
+  </div>
+
+  {# CSP stricte : aucun onclick inline. hx-disabled-elt désactive le bouton
+     pendant la requête réseau (peut prendre plusieurs secondes : ~700 Ko
+     téléchargés depuis IANA), hx-indicator affiche un message d'attente. #}
+  <form hx-post="{{ '/app-catalog/reload-iana' | prefixed }}"
+        hx-target="#app-catalog-reload-status"
+        hx-swap="innerHTML"
+        hx-sync="this:replace"
+        hx-disabled-elt="find button"
+        hx-indicator="#reload-indicator">
+    <button type="submit" class="primary">Recharger depuis IANA</button>
+    <span id="reload-indicator" class="htmx-indicator">Téléchargement en cours…</span>
+  </form>
+  <p class="explanation">
+    Télécharge le registre officiel IANA (~11 600 entrées). N'écrase jamais une correspondance
+    <span class="badge badge-custom">custom</span> ou <span class="badge badge-metier">metier</span>
+    déjà en place. Sans accès Internet sortant (proxy d'entreprise), bascule automatiquement sur
+    le repli embarqué dans l'application — le catalogue reste utilisable, l'état est affiché
+    explicitement ci-dessus.
+  </p>
+</section>
+
+{# ===================== Ajout manuel ===================== #}
+<section class="panel" id="app-catalog-add-panel">
+  <div class="panel-head">
+    <h2>Ajouter une correspondance</h2>
+  </div>
+  <form class="app-catalog-add__form"
+        hx-post="{{ '/app-catalog' | prefixed }}"
+        hx-target="#app-catalog-rows"
+        hx-swap="afterbegin"
+        hx-sync="this:replace"
+        hx-disabled-elt="find button">
+    <input type="number" name="port" min="1" max="65535" placeholder="Port" required>
+    <input type="number" name="port_end" min="1" max="65535" placeholder="Fin de plage (optionnel)">
+    <select name="proto" required>
+      <option value="tcp">tcp</option>
+      <option value="udp">udp</option>
+    </select>
+    <input type="text" name="application" maxlength="128" placeholder="Nom de l'application" required>
+    <button type="submit">Ajouter</button>
+  </form>
+  <p class="explanation">
+    Une correspondance ajoutée ici est marquée <span class="badge badge-custom">custom</span> :
+    elle ne sera jamais remplacée par un rechargement IANA ni un réimport métier.
+    La fin de plage est optionnelle (ex. 50000-51000 pour du FTP passif).
+  </p>
+</section>
+
+{# ===================== Import / export CSV ===================== #}
+<section class="panel" id="app-catalog-csv-panel">
+  <div class="panel-head">
+    <h2>Import / export CSV en masse</h2>
+  </div>
+  <p class="explanation">
+    Format <code>port;proto;application;port_end</code> (dernière colonne optionnelle, vide pour
+    un port unique) — même convention <code>valeur;désignation</code> que les autres imports CSV
+    d'Okvorado. Une ligne malformée refuse l'import ENTIER et le dit explicitement ; les entrées
+    importées sont marquées <span class="badge badge-metier">metier</span> (jamais appliquées
+    sur une correspondance <span class="badge badge-custom">custom</span> existante).
+  </p>
+
+  <form hx-post="{{ '/app-catalog/import' | prefixed }}"
+        hx-target="#app-catalog-import-result"
+        hx-swap="innerHTML"
+        hx-encoding="multipart/form-data"
+        hx-sync="this:replace"
+        hx-disabled-elt="find button">
+    <div class="controls">
+      <input type="file" name="file" accept=".csv,text/csv">
+      <button type="submit">Importer le fichier</button>
+    </div>
+    <textarea name="content" rows="6" style="width:100%;margin-top:8px;"
+              placeholder="ou collez ici : port;proto;application;port_end"></textarea>
+  </form>
+  <div id="app-catalog-import-result"></div>
+
+  <div class="controls" style="margin-top:12px;">
+    <a class="link-action" href="{{ '/app-catalog/export.csv' | prefixed }}">Exporter tout le catalogue (CSV)</a>
+    <a class="link-action" href="{{ '/app-catalog/export.csv?source=metier' | prefixed }}">Exporter le métier seul</a>
+    <a class="link-action" href="{{ '/app-catalog/export.csv?source=custom' | prefixed }}">Exporter le custom seul</a>
+  </div>
+</section>
+
+{# ===================== Recherche + filtre + table paginée ===================== #}
+<section class="panel" id="app-catalog-list-panel">
+  <div class="panel-head">
+    <h2>Correspondances ({{ result.total }})</h2>
+  </div>
+
+  <form class="controls" id="app-catalog-filters"
+        hx-get="{{ '/app-catalog/rows' | prefixed }}"
+        hx-target="#app-catalog-table-wrapper"
+        hx-swap="innerHTML"
+        hx-trigger="input changed delay:300ms from:#app-catalog-search, change from:#app-catalog-source-filter">
+    <input type="search" id="app-catalog-search" name="search" value="{{ search }}"
+           placeholder="Rechercher un port ou un nom d'application…">
+    <select id="app-catalog-source-filter" name="source">
+      <option value="" {{ "selected" if not source_filter else "" }}>Toutes les sources</option>
+      {% for choice in valid_sources %}
+      <option value="{{ choice }}" {{ "selected" if source_filter == choice else "" }}>{{ choice }}</option>
+      {% endfor %}
+    </select>
+  </form>
+
+  <div id="app-catalog-table-wrapper">
+    {% include "app_catalog_rows.html" %}
+  </div>
+</section>
+
+<script src="{{ '/static/form-targets.js?v=' | prefixed }}{{ static_version }}" defer></script>
+{% endblock %}

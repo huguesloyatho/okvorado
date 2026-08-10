@@ -1,0 +1,25 @@
+{# Fragment rendu par `POST /api/ingestion/unmask-all` et
+   `POST /api/ingestion/unmask` UNIQUEMENT pour un appel HTMX — un appel API
+   direct reçoit du JSON brut (même contrat que
+   `_ingestion_purge_fragment.html`).
+
+   RÉVERSIBILITÉ : rétablir un masquage doit être aussi lisible que le poser.
+   Un masquage qu'on ne saurait pas défaire serait lui-même un zéro
+   silencieux. #}
+
+{% if result.restored %}
+<p class="notice notice-ok">
+  <strong>{{ result.restored }} rejet(s) rétabli(s).</strong>
+  Leur cumul BRUT (tel que rapporté par Akvorado) est de nouveau affiché —
+  aucune ligne de base ne vient plus en soustraire quoi que ce soit.
+</p>
+{% else %}
+<p class="notice">
+  Aucun rejet masqué à rétablir.
+</p>
+{% endif %}
+
+<p class="hint">
+  {{ result.masked_total }} rejet(s) restant(s) masqué(s).
+  Rechargez la page pour voir la liste à jour.
+</p>

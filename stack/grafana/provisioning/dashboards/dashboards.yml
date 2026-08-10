@@ -1,0 +1,20 @@
+# Provisioning AUTOMATIQUE des dashboards — zéro clic.
+#
+# Grafana scanne ce dossier au démarrage et charge tout fichier JSON présent
+# sous stack/grafana/dashboards (monté sur /var/lib/grafana/dashboards par
+# docker-compose.yml). L'exploitant n'importe rien à la main : les dashboards
+# sont là dès le premier login.
+
+apiVersion: 1
+
+providers:
+  - name: Okvorado
+    orgId: 1
+    folder: "Okvorado"
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

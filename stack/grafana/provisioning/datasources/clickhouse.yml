@@ -1,0 +1,53 @@
+# Provisioning AUTOMATIQUE de la source de données ClickHouse — zéro clic.
+#
+# Grafana charge ce fichier au démarrage (dossier monté par docker-compose.yml
+# sur /etc/grafana/provisioning/datasources) et crée la datasource lui-même :
+# l'exploitant n'a RIEN à configurer à l'écran pour que les dashboards
+# affichent des données.
+#
+# Host ClickHouse = nom du service Docker déclaré dans docker-compose.yml
+# (réseau interne du compose, résolution DNS Docker) — jamais une IP en dur,
+# ni une adresse d'infra homelab (Tailscale, example...).
+#
+# Identifiants mesurés sur ce projet (app/config.py) : utilisateur "default",
+# mot de passe vide, base "default" — CLICKHOUSE_SKIP_USER_SETUP=1 dans le
+# compose ne crée aucun utilisateur applicatif, donc aucun secret à référencer
+# ici. Si l'exploitant durcit ClickHouse plus tard (utilisateur dédié), ce
+# fichier devra basculer sur des variables d'environnement Grafana
+# (GF_DATASOURCES_*) plutôt que des valeurs en dur — non nécessaire tant que
+# le compose livré reste dans cet état.
+#
+# `uid: ClickHouse` — EXPLICITE, pas laissé à l'auto-génération de Grafana.
+# CAUSE RÉELLE MESURÉE (2026-08-08, .7) : sans `uid:` fixé ici, Grafana
+# attribue un UID ALÉATOIRE à chaque provisioning à froid (mesuré :
+# "PDEE91DDB90597936" sur ce déploiement). Les dashboards de ce lot
+# référencent tous `"datasource": {"uid": "ClickHouse"}` et fonctionnent
+# QUAND MÊME — Grafana retombe sur une résolution PAR NOM au chargement du
+# dashboard, un mécanisme de compatibilité propre au rendu de dashboard.
+# Ce filet n'existe PAS pour l'API `/api/ds/query` (utilisée par les
+# RÈGLES D'ALERTE) : `curl .../api/ds/query` avec `uid: "ClickHouse"` rend
+# `{"message":"Data source not found"}`, prouvé contre ce ClickHouse réel,
+# alors que le même appel avec l'UID auto-généré répond 200. Une règle
+# d'alerte provisionnée avec `uid: ClickHouse` échouerait donc à s'évaluer
+# sur un stack neuf. Fixer l'UID ici le rend STABLE et PORTABLE — condition
+# pour que `stack/grafana/provisioning/alerting/*.yaml` (qui référence ce
+# même UID) fonctionne du premier coup sur n'importe quel déploiement.
+
+apiVersion: 1
+
+datasources:
+  - name: ClickHouse
+    uid: ClickHouse
+    type: grafana-clickhouse-datasource
+    access: proxy
+    isDefault: true
+    jsonData:
+      host: clickhouse
+      port: 8123
+      protocol: http
+      username: default
+      defaultDatabase: default
+      tlsSkipVerify: true
+    secureJsonData:
+      password: ""
+    editable: true

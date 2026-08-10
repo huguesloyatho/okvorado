@@ -1,0 +1,375 @@
+{
+  "uid": "okvorado-vue-ensemble-parc",
+  "title": "Okvorado — Vue d'ensemble du parc",
+  "description": "Le dashboard qu'on ouvre en premier un jour d'incident : trafic total, exportateurs actifs, répartition applicative et QoS sur l'ensemble du parc de routeurs. Filtre $exporter (multi-sélection) : ExporterName IN (${exporter:singlequote}) — pas de allValue custom, 'Tous' développe la liste réelle des exportateurs renvoyée par la requête de la variable, donc du SQL toujours valide (mesuré : un allValue littéral '.*' injecté dans IN() casse le parsing ClickHouse avec Code: 62 SYNTAX_ERROR).",
+  "tags": [
+    "okvorado",
+    "netflow",
+    "vue-ensemble"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "refresh": "1m",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "exporter",
+        "type": "query",
+        "label": "Exportateur",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "ClickHouse"
+        },
+        "query": "SELECT DISTINCT ExporterName FROM flows WHERE $__timeFilter(TimeReceived) ORDER BY ExporterName",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "sort": 1
+      }
+    ]
+  },
+  "links": [
+    {
+      "title": "Accueil — Traffic Summary",
+      "type": "dashboards",
+      "tags": ["okvorado", "accueil"],
+      "asDropdown": false,
+      "icon": "external link",
+      "targetBlank": false,
+      "keepTime": true,
+      "includeVars": true
+    },
+    {
+      "title": "Réseau — Network Snapshot",
+      "type": "dashboards",
+      "tags": ["okvorado", "snapshot"],
+      "asDropdown": false,
+      "icon": "external link",
+      "targetBlank": false,
+      "keepTime": true,
+      "includeVars": true
+    },
+    {
+      "title": "Par exportateur",
+      "type": "dashboards",
+      "tags": ["okvorado", "exportateur"],
+      "asDropdown": false,
+      "icon": "external link",
+      "targetBlank": false,
+      "keepTime": true,
+      "includeVars": true
+    },
+    {
+      "title": "Applications & QoS",
+      "type": "dashboards",
+      "tags": ["okvorado", "applications"],
+      "asDropdown": false,
+      "icon": "external link",
+      "targetBlank": false,
+      "keepTime": true,
+      "includeVars": true
+    },
+    {
+      "title": "Anomalies",
+      "type": "dashboards",
+      "tags": ["okvorado", "anomalies"],
+      "asDropdown": false,
+      "icon": "external link",
+      "targetBlank": false,
+      "keepTime": true,
+      "includeVars": true
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Trafic total dans le temps (par application)",
+      "description": "sum(Bytes * SamplingRate) — remis à l'échelle du taux d'échantillonnage réel de chaque exportateur, jamais sum(Bytes) nu.",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 25,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT\n    $__timeInterval(TimeReceived) AS time,\n    multiIf(\n        Proto = 6 AND (DstPort = 443 OR SrcPort = 443), 'HTTPS',\n        Proto = 6 AND (DstPort = 80 OR SrcPort = 80), 'HTTP',\n        Proto = 17 AND (DstPort = 53 OR SrcPort = 53), 'DNS',\n        Proto = 6, 'TCP autre',\n        Proto = 17, 'UDP autre',\n        Proto = 1, 'ICMP',\n        'Autre'\n    ) AS application,\n    sum(Bytes * SamplingRate) / $__interval_s AS \"débit\"\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\nGROUP BY time, application\nORDER BY time ASC",
+          "format": 0
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Exportateurs actifs",
+      "description": "Nombre de routeurs distincts ayant émis des flux sur la période.",
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 0,
+        "y": 9
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT uniqExact(ExporterName) AS exportateurs_actifs\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Volume total",
+      "description": "sum(Bytes * SamplingRate) sur la période sélectionnée.",
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 6,
+        "y": 9
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT sum(Bytes * SamplingRate) AS volume_total\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Flux observés",
+      "description": "count() — nombre de flux réellement reçus par le collecteur, JAMAIS mis à l'échelle (c'est une mesure du travail du collecteur, pas du trafic).",
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 12,
+        "y": 9
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT count() AS flux_observes\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Taux d'échantillonnage moyen",
+      "description": "Moyenne de SamplingRate sur la période — 1 en homelab (softflowd, non échantillonné), typiquement 1:1000 en entreprise.",
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 18,
+        "y": 9
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT round(avg(SamplingRate)) AS taux_moyen\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "barchart",
+      "title": "Top exportateurs par volume",
+      "description": "sum(Bytes * SamplingRate) groupé par exportateur, LIMIT 15 — la table brute sert aussi la console Akvorado, jamais de requête non bornée. Cliquer une barre ouvre la fiche détaillée de cet exportateur (dataLink, drill-down).",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 14
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "links": [
+            {
+              "title": "Voir la fiche de cet exportateur",
+              "url": "/d/okvorado-par-exportateur/okvorado-par-exportateur?var-exporter=${__data.fields.exportateur}",
+              "targetBlank": false
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT\n    ExporterName AS exportateur,\n    sum(Bytes * SamplingRate) AS volume\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\nGROUP BY ExporterName\nORDER BY volume DESC\nLIMIT 15",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "piechart",
+      "title": "Répartition applicative",
+      "description": "Donut du volume par application déduite du protocole et du port — sum(Bytes * SamplingRate).",
+      "gridPos": {
+        "h": 9,
+        "w": 6,
+        "x": 12,
+        "y": 14
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "links": [
+            {
+              "title": "Voir les applications & QoS",
+              "url": "/d/okvorado-applications-qos/okvorado-applications-qos?var-application=${__data.fields.application}",
+              "targetBlank": false
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "pieType": "donut",
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "percent"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT\n    multiIf(\n        Proto = 6 AND (DstPort = 443 OR SrcPort = 443), 'HTTPS',\n        Proto = 6 AND (DstPort = 80 OR SrcPort = 80), 'HTTP',\n        Proto = 17 AND (DstPort = 53 OR SrcPort = 53), 'DNS',\n        Proto = 6, 'TCP autre',\n        Proto = 17, 'UDP autre',\n        Proto = 1, 'ICMP',\n        'Autre'\n    ) AS application,\n    sum(Bytes * SamplingRate) AS volume\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\nGROUP BY application\nORDER BY volume DESC\nLIMIT 20",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "piechart",
+      "title": "Répartition QoS (DSCP)",
+      "description": "DSCP = bitShiftRight(IPTos, 2) — ClickHouse n'a PAS l'opérateur >> (Code: 62 SYNTAX_ERROR, mesuré). Classes nommées : BE=0, CS1=8, AF21=18, CS5=40, EF=46, CS6=48.",
+      "gridPos": {
+        "h": 9,
+        "w": 6,
+        "x": 18,
+        "y": 14
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "links": [
+            {
+              "title": "Voir les applications & QoS",
+              "url": "/d/okvorado-applications-qos/okvorado-applications-qos",
+              "targetBlank": false
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "pieType": "donut",
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "percent"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT\n    multiIf(\n        bitShiftRight(IPTos, 2) = 0, 'BE',\n        bitShiftRight(IPTos, 2) = 8, 'CS1',\n        bitShiftRight(IPTos, 2) = 10, 'AF11',\n        bitShiftRight(IPTos, 2) = 16, 'CS2',\n        bitShiftRight(IPTos, 2) = 18, 'AF21',\n        bitShiftRight(IPTos, 2) = 24, 'CS3',\n        bitShiftRight(IPTos, 2) = 26, 'AF31',\n        bitShiftRight(IPTos, 2) = 32, 'CS4',\n        bitShiftRight(IPTos, 2) = 34, 'AF41',\n        bitShiftRight(IPTos, 2) = 40, 'CS5',\n        bitShiftRight(IPTos, 2) = 46, 'EF',\n        bitShiftRight(IPTos, 2) = 48, 'CS6',\n        bitShiftRight(IPTos, 2) = 56, 'CS7',\n        concat('DSCP ', toString(bitShiftRight(IPTos, 2)))\n    ) AS classe_dscp,\n    sum(Bytes * SamplingRate) AS volume\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\nGROUP BY classe_dscp\nORDER BY volume DESC\nLIMIT 20",
+          "format": 1
+        }
+      ]
+    }
+  ]
+}

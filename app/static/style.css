@@ -1,0 +1,2176 @@
+/* Okvorado — direction visuelle : salle de contrôle réseau.
+   Fond sombre profond, accents cyan/ambre, monospace pour les données chiffrées.
+   Objectif : lecture rapide d'un état, hiérarchie de gravité immédiatement visible. */
+
+:root {
+  --bg: #0d1117;
+  --bg-panel: #151b23;
+  --bg-raised: #1c242e;
+  --border: #2a3441;
+  --text: #e6edf3;
+  --text-dim: #8b98a5;
+  --text-faint: #5c6773;
+
+  --accent: #2dd4bf;
+  --accent-dim: #14403c;
+
+  --ok: #3fb950;
+  --ok-bg: #12291a;
+  --warn: #d29922;
+  --warn-bg: #2b2311;
+  --crit: #f85149;
+  --crit-bg: #2d1517;
+  --info: #58a6ff;
+  --info-bg: #11253f;
+
+  /* QR TOTP (LOT auth) : un lecteur de QR a besoin d'un contraste franc et
+     d'un fond RÉELLEMENT blanc, indépendant du thème sombre — `--text`
+     (#e6edf3) n'offre pas le contraste garanti que les scanners attendent. */
+  --qr-bg: #ffffff;
+
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+  --radius: 6px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+/* ---------- Barre supérieure ---------- */
+
+.topbar {
+  /* DÉFAUT MESURÉ AU NAVIGATEUR (2026-08-09) : `height: 56px` fixe combiné à
+     `flex-wrap: wrap` — dès que la marque + les 10 liens de nav + le lien
+     externe + le bouton déconnexion ne tenaient plus sur une ligne (largeurs
+     d'écran ordinaires, pas seulement le mobile ≤720px déjà couvert par le
+     media query ci-dessous), le contenu réel débordait de la boîte de 56px
+     tout en restant `position: sticky`. Le bandeau mot de passe, juste après
+     dans le flux du document, démarrait alors au bas NOMINAL (56px) de la
+     topbar — chevauchant la nav qui débordait réellement jusqu'à ~116-123px.
+     `min-height` (au lieu de `height`) laisse la boîte grandir avec son
+     contenu à TOUTE largeur : plus de désaccord entre la hauteur affichée et
+     la hauteur réservée, donc plus de chevauchement possible avec ce qui suit. */
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 10px 24px;
+  min-height: 56px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  flex-wrap: wrap;
+}
+
+.brand { display: flex; align-items: baseline; gap: 9px; }
+.brand-mark { color: var(--accent); font-size: 15px; }
+.brand-name { font-weight: 650; letter-spacing: -0.01em; font-size: 15px; }
+.brand-sub {
+  color: var(--text-faint);
+  font-size: 12px;
+  border-left: 1px solid var(--border);
+  padding-left: 9px;
+}
+
+.nav { display: flex; gap: 4px; flex-wrap: wrap; }
+
+.nav a {
+  color: var(--text-dim);
+  text-decoration: none;
+  padding: 6px 12px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  transition: background 0.12s, color 0.12s;
+}
+.nav a:hover { background: var(--bg-raised); color: var(--text); }
+.nav a.active { background: var(--accent-dim); color: var(--accent); font-weight: 550; }
+.nav a.external { color: var(--text-faint); }
+
+/* État de connexion (LOT accounts) — identifiant + rôle de l'utilisateur
+   courant, à côté du bouton de déconnexion : demande utilisateur « etat de
+   connexion user ». */
+.session-info { display: flex; align-items: center; gap: 10px; }
+.session-user { color: var(--text-dim); font-size: 13px; }
+
+/* ---------- Contenu ---------- */
+
+.content { padding: 24px; max-width: 1500px; margin: 0 auto; }
+
+h1 { font-size: 20px; font-weight: 650; margin: 0 0 4px; letter-spacing: -0.01em; }
+h2 { font-size: 16px; font-weight: 600; margin: 28px 0 12px; }
+h3 { font-size: 14px; font-weight: 600; margin: 18px 0 8px; color: var(--text-dim); }
+
+.subtitle { color: var(--text-dim); margin: 0 0 20px; font-size: 13px; }
+
+.panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px;
+  margin-bottom: 18px;
+  overflow-x: auto;
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+.panel-head h2 { margin: 0; }
+
+/* ---------- Tableaux ---------- */
+
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+
+th {
+  text-align: left;
+  font-weight: 550;
+  color: var(--text-dim);
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+td { padding: 9px 12px; border-bottom: 1px solid rgba(42, 52, 65, 0.5); }
+tbody tr:hover { background: rgba(28, 36, 46, 0.6); }
+tbody tr:last-child td { border-bottom: none; }
+
+.num { font-family: var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
+.mono { font-family: var(--mono); font-size: 12.5px; }
+
+/* ---------- Badges d'état ---------- */
+
+.badge {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 11px;
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+.badge-healthy           { background: var(--ok-bg);   color: var(--ok);   border-color: rgba(63,185,80,0.3); }
+.badge-silent            { background: var(--crit-bg); color: var(--crit); border-color: rgba(248,81,73,0.3); }
+.badge-rejected          { background: var(--crit-bg); color: var(--crit); border-color: rgba(248,81,73,0.3); }
+.badge-undeclared        { background: var(--info-bg); color: var(--info); border-color: rgba(88,166,255,0.3); }
+.badge-unknown_interface { background: var(--warn-bg); color: var(--warn); border-color: rgba(210,153,34,0.3); }
+/* Inventaire SNMP (écran /inventory) — `badge-auth-failure` INTENTIONNELLEMENT
+   distinct de `badge-silent` : un échec d'authentification SNMPv3 (agent qui
+   répond mais refuse) n'est pas un agent muet — même distinction visuelle que
+   `badge-unavailable` vs `badge-healthy` pour db-health (zéro silencieux,
+   CLAUDE.md règle n°2). Couleur `--warn` (pas `--crit`) : c'est un problème
+   de CONFIGURATION côté Okvorado, pas une panne d'équipement/réseau. */
+.badge-auth-failure      { background: var(--warn-bg); color: var(--warn); border-color: rgba(210,153,34,0.3); }
+/* Catalogue applicatif (écran /app-catalog) — une couleur par source, pour
+   repérer d'un coup d'œil ce qui est un registre officiel (iana), un ajout
+   manuel unitaire (custom) ou un import métier en masse (metier). */
+.badge-iana   { background: var(--info-bg); color: var(--info); border-color: rgba(88,166,255,0.3); }
+.badge-custom { background: var(--warn-bg); color: var(--warn); border-color: rgba(210,153,34,0.3); }
+.badge-metier { background: var(--ok-bg);   color: var(--ok);   border-color: rgba(63,185,80,0.3); }
+/* Santé DB (écran /db-health) — `HealthState` : sain/à surveiller/critique/
+   indisponible. `badge-unavailable` est INTENTIONNELLEMENT distinct de
+   `badge-healthy` : un échec de lecture ne doit jamais être confondu
+   visuellement avec un état sain (zéro silencieux, CLAUDE.md règle n°2). */
+.badge-warning     { background: var(--warn-bg); color: var(--warn); border-color: rgba(210,153,34,0.3); }
+.badge-critical    { background: var(--crit-bg); color: var(--crit); border-color: rgba(248,81,73,0.3); }
+.badge-unavailable { background: var(--info-bg); color: var(--info); border-color: rgba(88,166,255,0.3); }
+/* Rôles de compte (LOT accounts, écran /accounts + état de connexion dans
+   base.html) — `admin` en couleur `--accent` (pas `--ok`/`--crit`, ce n'est
+   pas un état de santé mais un niveau de privilège) pour rester visuellement
+   distinct des badges d'état ci-dessus. */
+.badge-admin   { background: var(--accent-dim); color: var(--accent);   border-color: rgba(45,212,191,0.3); }
+.badge-lecteur { background: var(--bg-raised);   color: var(--text-dim); border-color: var(--border); }
+
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+.pager a, .pager span.pager__current {
+  padding: 4px 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  color: var(--text);
+  text-decoration: none;
+}
+.pager span.pager__current { background: var(--accent-dim); color: var(--accent); font-weight: 600; }
+.pager a.disabled { color: var(--text-faint); pointer-events: none; }
+
+/* ---------- Encarts de message ---------- */
+
+.notice {
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  font-size: 13px;
+  border-left: 3px solid;
+}
+.notice-info { background: var(--info-bg); border-color: var(--info); }
+.notice-warn { background: var(--warn-bg); border-color: var(--warn); }
+.notice-crit { background: var(--crit-bg); border-color: var(--crit); }
+/* `notice-error` est un ALIAS de `notice-crit`, pas un doublon oublié.
+   DÉFAUT MESURÉ (2026-08-10) : la classe était employée 8 fois dans les
+   gabarits (accounts, inventory, inventory_detail, login, exporters,
+   security_settings ×2) sans exister ici — ces bandeaux d'erreur se
+   rendaient donc SANS AUCUN STYLE, y compris celui de la page de connexion,
+   le premier écran que voit un exploitant. Famille de défaut déjà rencontrée
+   sur ce projet : un CSS absent casse un HTML par ailleurs correct, et aucun
+   test de rendu HTML ne le voit.
+   Choix : DÉFINIR l'alias plutôt que renommer les 8 occurrences — « error »
+   est le mot qu'un développeur écrit spontanément pour une erreur, donc la
+   classe manquante réapparaîtrait au prochain gabarit. Verrouillé par le
+   test d'inventaire de `tests/test_design_system.py`. */
+.notice-error { background: var(--crit-bg); border-color: var(--crit); }
+
+/* ---------- Indicateur d'attente HTMX ---------- */
+
+/* `htmx-indicator` est la convention d'HTMX : l'élément est MASQUÉ au repos et
+   révélé pendant la requête (htmx pose la classe `htmx-request` sur lui, ou
+   sur l'élément déclencheur). Sans ces deux règles, l'indicateur resterait
+   affiché EN PERMANENCE — le contraire de l'effet voulu.
+   AJOUTÉ le 2026-08-10 pour un défaut MESURÉ à l'écran : « Tout résoudre par
+   SNMP » mettait 9,8 s à répondre (chaque agent muet coûte son timeout, 3,4 s
+   mesurées) et pendant ce temps l'écran ne montrait RIEN — l'exploitant
+   conclut que le bouton est cassé et reclique. Le sondage est désormais
+   concurrent, mais l'attente reste non nulle et doit rester visible. */
+.htmx-indicator { display: none; }
+.htmx-request .htmx-indicator,
+.htmx-request.htmx-indicator { display: inline-block; }
+
+.snmp-progress {
+  color: var(--text-dim);
+  font-size: 12px;
+  font-style: italic;
+  margin: 8px 0 0;
+}
+
+/* Le bouton « Fermer le compte rendu » n'a de sens QUE s'il y a un compte
+   rendu : `:empty` le masque tant que le conteneur de résultat est vide.
+   Le sélecteur adjacent (`+`) impose que le bouton suive IMMÉDIATEMENT le
+   conteneur dans le gabarit — s'ils étaient séparés, le bouton resterait
+   affiché en permanence. */
+.snmp-resolve-result:empty + .snmp-resolve-close { display: none; }
+
+.snmp-resolve-close { margin-top: 10px; }
+.notice-ok   { background: var(--ok-bg);   border-color: var(--ok); }
+/* Le TITRE d'un encart passe en bloc — mais LUI SEUL.
+   DÉFAUT MESURÉ À L'ÉCRAN (2026-08-07) : la règle visait `.notice strong` sans
+   restriction. Sur un encart dont la phrase contient de l'emphase en cours de
+   texte, CHAQUE <strong> forçait un retour à la ligne : le paragraphe explicatif
+   de la vue Convergence se rendait haché sur 9 lignes, illisible.
+   Le HTML était pourtant correct — d'où l'invisibilité au test, qui lit le DOM.
+   `:first-child` dit ce que la règle voulait dire : le titre, pas l'emphase. */
+.notice > strong:first-child { display: block; margin-bottom: 3px; }
+
+.explanation {
+  color: var(--text-dim);
+  font-size: 12.5px;
+  margin-top: 4px;
+  max-width: 70ch;
+}
+
+/* ---------- Contrôles ---------- */
+
+.controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+/* La liste des types est ÉNUMÉRÉE, et c'est un piège : un `type` absent d'ici
+   échappe à toute la charte et le navigateur rend son champ en BLANC sur une
+   interface sombre. Constaté par capture le 2026-08-06 — la barre de recherche
+   du compositeur de filtres, en `type="search"`, était le seul élément clair de
+   l'écran. `textarea` était dans le même cas.
+   Tout nouveau type de champ texte doit être ajouté ici. */
+select,
+textarea,
+input[type="text"],
+input[type="number"],
+input[type="search"],
+input[type="email"],
+input[type="url"],
+input[type="password"] {
+  background: var(--bg-raised);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  font-size: 13px;
+  font-family: inherit;
+}
+
+/* Chrome rend une croix de réinitialisation bleue, de sa palette par défaut. */
+input[type="search"]::-webkit-search-cancel-button {
+  filter: grayscale(1) brightness(1.6);
+  cursor: pointer;
+}
+select:focus, input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+button, .btn {
+  background: var(--bg-raised);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 13px;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+button:hover, .btn:hover { background: var(--border); }
+button.primary { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
+button.danger  { background: var(--crit-bg);   border-color: var(--crit);   color: var(--crit); }
+
+label { color: var(--text-dim); font-size: 12.5px; }
+
+/* ---------- Jauge d'occupation ---------- */
+
+.gauge {
+  height: 10px;
+  background: var(--bg-raised);
+  border-radius: 5px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+.gauge-fill { height: 100%; background: var(--accent); transition: width 0.3s; }
+.gauge-fill.warn { background: var(--warn); }
+.gauge-fill.crit { background: var(--crit); }
+
+/* ---------- Cartes de métrique ---------- */
+
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.stat {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 13px 15px;
+}
+.stat-label {
+  color: var(--text-faint);
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.stat-value {
+  font-family: var(--mono);
+  font-size: 21px;
+  font-weight: 600;
+  margin-top: 3px;
+  font-variant-numeric: tabular-nums;
+}
+.stat-value.crit { color: var(--crit); }
+.stat-value.warn { color: var(--warn); }
+.stat-value.ok   { color: var(--ok); }
+
+.empty { color: var(--text-faint); text-align: center; padding: 28px; font-size: 13px; }
+
+/* ---------- Pied de page ---------- */
+
+.footer {
+  padding: 20px 24px;
+  color: var(--text-faint);
+  font-size: 12px;
+  border-top: 1px solid var(--border);
+  margin-top: 36px;
+}
+
+.htmx-request { opacity: 0.55; transition: opacity 0.15s; }
+
+/* ---------- Écran de configuration (LOT C) ---------- */
+
+/* Bandeau "N changements en attente" — averti avant d'agir, jamais discret. */
+.pending-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-start;
+}
+.pending-banner strong { font-size: 14px; }
+.pending-banner p { margin: 0; color: var(--text-dim); max-width: 70ch; }
+
+.pending-list {
+  list-style: none;
+  margin: 0 0 18px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pending-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 9px 13px;
+  font-size: 13px;
+}
+.pending-item__label { flex: 1 1 auto; }
+.pending-item__meta { color: var(--text-faint); font-size: 11.5px; white-space: nowrap; }
+
+/* Rapport d'application — succès/échec avec étapes franchies. */
+.apply-report {
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  margin: 14px 0 22px;
+  border-left: 3px solid;
+}
+.apply-report.notice-ok   { background: var(--ok-bg);   border-color: var(--ok); }
+.apply-report.notice-crit { background: var(--crit-bg); border-color: var(--crit); }
+.apply-report strong { display: block; font-size: 14px; margin-bottom: 6px; }
+.apply-report h3 {
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-dim);
+  margin: 10px 0 4px;
+}
+.apply-report ul { margin: 0; padding-left: 18px; font-size: 12.5px; }
+.apply-report__rollback { margin: 8px 0 0; font-size: 12.5px; }
+
+/* Formulaires d'ajout (exportateur / interface) */
+.config-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px 14px;
+  align-items: end;
+}
+.config-form label { grid-column: span 1; margin-bottom: 2px; display: block; }
+.config-form input, .config-form select { width: 100%; }
+.config-form button { grid-column: 1 / -1; justify-self: start; }
+.config-form__hint {
+  color: var(--text-faint);
+  font-size: 12px;
+  margin: 10px 0 0;
+  max-width: 70ch;
+}
+
+/* Aide contextuelle sur le champ boundary — piège documenté du projet. */
+.boundary-hint {
+  grid-column: 1 / -1;
+  background: var(--warn-bg);
+  border-left: 3px solid var(--warn);
+  border-radius: var(--radius);
+  padding: 9px 12px;
+  color: var(--text);
+}
+.boundary-hint strong { color: var(--warn); }
+
+/* Actions inline sur le tableau Exportateurs (bouton correction/déclaration). */
+.exporters-table__action form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.exporters-table__ifindex-input,
+.exporters-table__name-input {
+  width: 110px;
+  padding: 4px 8px;
+  font-size: 12.5px;
+}
+
+/* ---------- Sections de configuration (édition à la souris des 4 YAML) ---------- */
+
+.sections-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+  margin-top: 18px;
+}
+.section-card {
+  display: block;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  text-decoration: none;
+  color: var(--text);
+  transition: border-color 0.12s, background 0.12s;
+}
+.section-card:hover { border-color: var(--accent); background: var(--bg-raised); }
+.section-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Écran Comptes (LOT accounts) — un formulaire par ACTION dans une cellule de
+   tableau (rôle, réinitialisation, suppression), chacun posté indépendamment
+   pour rester sans JavaScript (cohérent avec `data-confirm`, sans handler
+   inline). `.inline-form` annule les marges par défaut d'un `<form>` pour
+   qu'il tienne sur une ligne à côté des autres. */
+.inline-form { display: inline-flex; align-items: center; gap: 6px; margin: 0; }
+.actions-cell { display: flex; flex-wrap: wrap; gap: 8px; }
+.section-card__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.section-card__head h2 { margin: 0; font-size: 15px; }
+.section-card__desc { color: var(--text-dim); font-size: 12.5px; margin: 0 0 10px; }
+.section-card__meta { color: var(--text-faint); font-size: 11.5px; margin: 0; }
+
+.config-form--stacked {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.config-form--stacked textarea {
+  background: var(--bg-raised);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  font-size: 12.5px;
+  width: 100%;
+  resize: vertical;
+}
+.config-form--stacked textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.config-form--stacked button { align-self: start; }
+
+.widget-checklist {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  margin: 0 0 14px;
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+}
+.widget-checklist legend { color: var(--text-dim); font-size: 12.5px; padding: 0 4px; }
+.widget-checklist__item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  font-size: 13px;
+  font-family: var(--mono);
+}
+
+/* ---------- Système de liens-actions ----------
+   Tout <a href="/..."> qui joue un rôle d'action (retour, action principale,
+   lien externe, carte cliquable) passe par une de ces classes. Aucun lien nu :
+   c'est précisément le défaut constaté (souligné bleu par défaut du
+   navigateur) que ce système corrige. */
+
+/* Lien de retour — discret, chevron qui se décale au survol. */
+.link-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-dim);
+  text-decoration: none;
+  font-size: 13px;
+  padding: 6px 4px;
+  border-radius: var(--radius);
+  transition: color 0.12s, gap 0.12s;
+}
+.link-back__chevron { transition: transform 0.12s; }
+.link-back:hover { color: var(--accent); }
+.link-back:hover .link-back__chevron { transform: translateX(-3px); }
+.link-back:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Lien d'action principal — même registre que button.primary. */
+.link-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--accent-dim);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 6px 13px;
+  font-size: 13px;
+  text-decoration: none;
+  transition: background 0.12s, border-color 0.12s;
+}
+.link-action:hover { background: var(--border); }
+.link-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Lien externe — signalé comme sortant, registre discret comme .nav a.external. */
+.link-external {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-faint);
+  text-decoration: none;
+  font-size: 12.5px;
+  padding: 4px 2px;
+  border-radius: var(--radius);
+  transition: color 0.12s;
+}
+.link-external:hover { color: var(--accent); }
+.link-external:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Lien "ouvrir dans Akvorado" des vues métier — variante link-external, posée
+   en pied de carte. La classe était déjà utilisée dans views.html mais
+   jamais définie ici : même défaut (lien nu) que celui signalé, trouvé en
+   élargissant l'inventaire. */
+.view-card__akvorado-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-faint);
+  text-decoration: none;
+  font-size: 12.5px;
+  margin-top: 10px;
+  padding: 4px 2px;
+  border-radius: var(--radius);
+  transition: color 0.12s;
+}
+.view-card__akvorado-link:hover { color: var(--accent); }
+.view-card__akvorado-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+@media (max-width: 720px) {
+  .topbar { padding: 10px 16px; }
+  .content { padding: 16px; }
+}
+
+/* ---------- Diagnostic d'ingestion ---------- */
+/* Ces règles vivaient dans un <style> inline de ingestion.html, avec des
+   couleurs en dur dont un fond CLAIR sur une interface sombre — hors charte.
+   Ramenées ici et dérivées des variables de gravité. */
+
+.ingestion-note { color: var(--text-dim); max-width: 80ch; }
+
+.ingestion-critical-table .rejection-row-critical { color: var(--crit); }
+
+/* Ligne en tête de gravité : fond d'alerte sombre + filet à gauche, plutôt
+   qu'un aplat clair qui trouerait l'interface. */
+.ingestion-critical-table .rejection-row-top {
+  background: var(--crit-bg);
+  box-shadow: inset 3px 0 0 var(--crit);
+  font-weight: 600;
+}
+
+.error-banner {
+  color: var(--crit);
+  background: var(--crit-bg);
+  border-left: 3px solid var(--crit);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  margin: 16px 0;
+  font-size: 13px;
+}
+
+/* Tendance des compteurs de rejet — DÉFAUT MESURÉ (2026-08-09) : un cumul
+   FIGÉ depuis 11h s'affichait avec la même urgence visuelle qu'un rejet EN
+   COURS. `.trend-rising` reprend l'alerte (`--crit`, gras) réservée à un
+   problème actif ; `.trend-flat` retombe sur une teinte neutre discrète —
+   ce n'est plus une urgence, juste un historique ; `.trend-unknown` est une
+   troisième teinte distincte (`--text-dim`, italique) : jamais confondue
+   avec "flat", qui affirmerait à tort une absence de mouvement (zéro
+   silencieux, CLAUDE.md règle n°2). */
+.trend-rising {
+  color: var(--crit);
+  font-weight: 600;
+}
+
+.trend-flat {
+  color: var(--text-dim);
+}
+
+.trend-unknown {
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+/* ---------- Case à cocher et sélecteur de fichier ---------- */
+/* Deux défauts vus par CAPTURE D'ÉCRAN uniquement (2026-08-06) : le DOM était
+   correct — label associé à son input, attributs en place — mais le RENDU ne
+   l'était pas.
+   1. Dans un `config-form--stacked`, les labels sont alignés à droite : la case
+      « Remplacer entièrement le plan d'adressage » se retrouvait détachée de
+      son texte, poussée au bord de l'écran. Sur une option DESTRUCTIVE, une
+      case orpheline de son libellé invite à cocher sans lire.
+   2. Le sélecteur de fichier restait le widget natif du navigateur : bouton
+      blanc sur une interface sombre, hors charte. */
+.checkbox-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: flex-start;
+  text-align: left;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--text);
+  padding: 4px 0;
+}
+
+.checkbox-field input[type="checkbox"] {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.checkbox-field span {
+  line-height: 1.4;
+}
+
+.checkbox-field:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: var(--radius);
+}
+
+.file-input {
+  font-size: 13px;
+  color: var(--text-dim);
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+/* Le bouton du sélecteur natif se style via ce pseudo-élément : sans lui, il
+   reste gris clair sur fond sombre, seul élément hors charte de l'écran. */
+.file-input::file-selector-button {
+  font: inherit;
+  color: var(--accent);
+  background: transparent;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 7px 14px;
+  margin-right: 12px;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.file-input::file-selector-button:hover {
+  background: var(--bg-raised);
+  border-color: var(--accent-dim);
+}
+
+/* ---------- Sélection de masse des entrées de configuration ----------
+
+   POURQUOI une colonne dédiée et étroite : la case doit rester alignée sur sa
+   ligne et sur la case maîtresse de l'en-tête. Une case posée dans une cellule
+   au gabarit libre dérive vers le centre et cesse d'être visuellement rattachée
+   à la ligne qu'elle sélectionne — même famille de défaut que la case détachée
+   de son libellé constatée le 2026-08-06 par capture d'écran. */
+.bulk-select__cell {
+  width: 34px;
+  text-align: center;
+  vertical-align: middle;
+  padding-right: 0;
+}
+
+/* Les règles ciblent les CLASSES `.bulk-select__master` / `.bulk-select__row`,
+   pas seulement `.bulk-select__cell input[type="checkbox"]` : une classe posée
+   dans le balisage sans règle correspondante est le défaut vécu deux fois le
+   2026-08-06 (`.view-card__akvorado-link`, puis `.secondary`), et un sélecteur
+   de descendance laisserait ces classes sans définition — invisible tant que
+   la case reste dans sa cellule, cassé le jour où elle en sort.
+
+   `accent-color` plutôt qu'une case redessinée : la case native reste
+   accessible au clavier et lisible par les technologies d'assistance, et cette
+   seule propriété la met à la charte sombre. Sans elle, la case se rend en
+   bleu système, seul élément hors charte de la colonne. */
+.bulk-select__master,
+.bulk-select__row {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+.bulk-select__master:focus-visible,
+.bulk-select__row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* POURQUOI `sticky` en bas : `saved_filters` compte 36 entrées en production.
+   Cocher une case en bas de liste puis devoir remonter en haut de page pour
+   trouver le bouton d'action fait perdre la sélection de vue — et un bouton de
+   suppression qu'on cherche est un bouton sur lequel on finit par cliquer sans
+   relire. La barre suit le défilement et reste à portée du geste.
+
+   L'élément porte `hidden` tant que rien n'est coché (posé par bulk-select.js) :
+   `display: flex` ne doit donc PAS l'emporter sur `hidden`, d'où la règle
+   `[hidden]` explicite plus bas — sans elle, une barre d'actions fantôme
+   resterait affichée sur une sélection vide. */
+/* `fixed` et NON `sticky` — mesuré au navigateur le 2026-08-06.
+   `position: sticky; bottom: 0` s'ancre au plus proche ancêtre créant un
+   contexte de défilement, pas à la fenêtre. Ici le parent
+   `#section-editor-panel` porte `overflow: auto` : la barre collait donc au
+   bas d'un conteneur de 2848 px et se retrouvait à `top: -204` — HORS ÉCRAN —
+   dès qu'on descendait vers le bloc CSV. Sur `saved_filters` (36 entrées en
+   prod), c'est précisément le geste normal : cocher en haut, faire défiler,
+   et ne plus trouver le bouton d'action.
+   Le DOM disait pourtant « visible » : ni `hidden`, ni `display: none`. Seule
+   la mesure du rectangle dans le viewport a montré le défaut. */
+.bulk-actions {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 18px;
+  width: min(960px, calc(100vw - 36px));
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 11px 14px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--crit);
+  border-radius: var(--radius);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 45%);
+}
+
+/* `display: flex` sur `.bulk-actions` écraserait `hidden` (dont la valeur par
+   défaut n'est qu'un `display: none` de la feuille de style du navigateur, de
+   spécificité inférieure). Sans cette règle, la barre resterait visible en
+   permanence, y compris sur une section vide. */
+.bulk-actions[hidden] {
+  display: none;
+}
+
+/* Le compte est la seule information qui distingue « je supprime la ligne que
+   je regarde » de « je supprime 36 entrées ». Il est donc rendu lisible, pas
+   en gris discret : couleur de texte pleine et chiffres tabulaires. */
+.bulk-actions__count {
+  margin-right: auto;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Traitement destructif assumé : le rouge de `button.danger`, jamais l'accent
+   turquoise réservé aux actions de confirmation sans perte. */
+.bulk-actions__submit {
+  background: var(--crit-bg);
+  border-color: var(--crit);
+  color: var(--crit);
+}
+
+.bulk-actions__submit:hover {
+  background: var(--crit);
+  color: var(--bg);
+}
+
+.bulk-actions__submit:focus-visible {
+  outline: 2px solid var(--crit);
+  outline-offset: 2px;
+}
+
+/* ---------- Paires label+champ indivisibles (`.field`) ----------
+
+   DÉFAUT VÉCU (2026-08-06, capture à l'appui) sur « Ports d'écoute des flux » :
+   dans `.config-form`, chaque `<label>` et chaque `<input>` sont des enfants
+   DIRECTS de la grille, donc des cases INDÉPENDANTES. La grille étant en
+   `auto-fit`, le nombre de colonnes varie avec la largeur de fenêtre : à 3
+   colonnes pour 8 cases, le retour à la ligne tombait AU MILIEU d'une paire.
+   « Port » se retrouvait seul en fin de ligne, son champ reporté en dessous,
+   et chaque label paraissait annoncer le champ SUIVANT au lieu du sien.
+
+   RAYON D'IMPACT : le défaut n'est PAS propre à `flow_inputs`. Il est LATENT
+   dans tout formulaire `.config-form` ayant assez de paires pour déborder —
+   les deux formulaires de config.html (« Déclarer un exportateur » : 2 paires,
+   « Déclarer une interface » : 5 paires) sont exposés au même découpage dès que
+   la fenêtre se rétrécit. Le correctif est donc posé au niveau de `.config-form`
+   (la règle commune), pas sur le seul écran signalé : `.field` emballe une paire
+   et devient l'unique case de grille, indivisible par construction. Les
+   formulaires non encore convertis gardent exactement leur rendu actuel — la
+   règle ne s'applique qu'aux paires réellement emballées. */
+.config-form .field {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 2px;
+  min-width: 0; /* sans quoi un champ large empêche la case de rétrécir */
+}
+
+/* Le label reprend le gabarit discret des libellés de formulaire : c'est la
+   VALEUR (le champ) qui doit accrocher l'œil, pas son étiquette. */
+.config-form .field label {
+  margin-bottom: 0;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+/* `host` + `port` forment UNE seule valeur YAML (`listen: 0.0.0.0:2055`).
+   Le groupe le rend visible : un encadré discret qui dit « ces deux champs
+   vont ensemble », au lieu de deux réglages d'apparence indépendante. */
+.config-form .field--group {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 4px 12px 10px;
+  margin: 0;
+  min-width: 0;
+}
+.config-form .field--group legend {
+  padding: 0 6px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+/* Adresse et port sur une même ligne : l'ordre de lecture reproduit celui de la
+   valeur écrite dans le YAML (`adresse:port`). `flex-wrap` autorise le passage
+   à la ligne sur fenêtre étroite — mais alors les DEUX paires descendent
+   ensemble, chacune avec son label : jamais un label orphelin. */
+.config-form .field__pair {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.config-form .field__pair .field { flex: 1 1 130px; }
+
+/* Le port tient en 5 caractères : lui donner la même largeur qu'une adresse
+   suggérerait qu'on peut y saisir davantage. */
+.config-form .field--narrow { flex: 0 1 108px; }
+
+/* ---------- Aide par l'exemple sur le mini-langage de classification ----------
+
+   POURQUOI un `<details>` et non un bloc toujours déployé : l'aide est longue
+   (4 à 5 exemples plus autant de contre-exemples). Déployée en permanence, elle
+   repousserait l'éditeur hors de l'écran pour quelqu'un qui vient simplement
+   corriger une expression existante. Elle est en revanche OUVERTE par défaut sur
+   `interface_classifiers`, section vide en prod : sur un écran sans aucune
+   expression, l'exemple EST le contenu utile. */
+.lang-help {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0 14px;
+  margin: 0 0 16px;
+}
+
+/* `cursor: pointer` et le marqueur par défaut conservé : le triangle natif est
+   le seul indice universellement compris qu'un bloc se replie. */
+.lang-help__summary {
+  cursor: pointer;
+  padding: 11px 0;
+  font-weight: 600;
+  color: var(--accent);
+  list-style-position: outside;
+}
+.lang-help__summary:hover { color: var(--text); }
+.lang-help__summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius);
+}
+
+.lang-help__intro {
+  margin: 0 0 12px;
+  color: var(--text-dim);
+  font-size: 12.5px;
+  max-width: 85ch;
+}
+
+/* Les deux colonnes (ce qui marche / ce qui ne marche pas) sont distinguées par
+   une barre latérale colorée plutôt que par un fond : sur fond sombre, deux
+   aplats verts et rouges côte à côte fatiguent la lecture d'un bloc long. */
+.lang-help__col {
+  border-left: 3px solid var(--border);
+  padding-left: 12px;
+  margin: 0 0 14px;
+}
+.lang-help__col--ok { border-left-color: var(--ok); }
+.lang-help__col--ko { border-left-color: var(--crit); }
+
+.lang-help__title {
+  margin: 0 0 8px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.lang-help__col--ok .lang-help__title { color: var(--ok); }
+.lang-help__col--ko .lang-help__title { color: var(--crit); }
+
+/* `list-style: none` : chaque entrée est déjà introduite par son expression en
+   monospace, qui joue le rôle de puce — une puce en plus n'ajouterait qu'un
+   décrochage visuel devant un bloc de code. */
+.lang-help__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.lang-help__list li { margin: 0 0 11px; }
+
+/* L'expression est affichée en bloc et non au fil du texte : c'est ce que
+   l'utilisateur doit pouvoir sélectionner et copier tel quel dans l'éditeur. */
+.lang-help__code {
+  display: block;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 9px;
+  margin-bottom: 4px;
+  color: var(--text);
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.lang-help__note {
+  display: block;
+  color: var(--text-dim);
+  font-size: 12.5px;
+  max-width: 85ch;
+}
+
+/* Le rappel de bas de bloc porte les limites du langage et ce qu'Akvorado ne
+   documente pas : atténué, car c'est de la nuance, pas le message principal. */
+.lang-help__caveat {
+  margin: 0 0 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  color: var(--text-faint);
+  font-size: 12px;
+  max-width: 85ch;
+}
+
+/* ---------- Composeur d'étiquettes réordonnables (dimensions Visualize) ----------
+
+   DÉFAUT CORRIGÉ (mesuré en prod le 2026-08-06) : les 6 dimensions de
+   `visualize_defaults` tenaient dans UN champ texte étroit, séparées par des
+   virgules. Verbatim utilisateur : « c'est dégueu ». Deux causes visuelles
+   distinctes, traitées ici :
+     - le contenu débordait du champ (largeur de grille) : la zone est
+       désormais PLEINE LARGEUR et chaque dimension a sa propre ligne, donc
+       tout le contenu est visible sans faire défiler au curseur ;
+     - l'ordre n'était pas manipulable : chaque dimension devient une
+       étiquette déplaçable, avec son rang affiché.
+
+   TOUTES les couleurs dérivent des variables de `:root`. Piège vécu le
+   2026-08-06 en stylant le sélecteur de fichier : une variable d'accent
+   inexistante (un nom proche de --accent-dim, mais absent de :root) a été
+   ignorée par le navigateur SANS le moindre avertissement — le hover ne
+   faisait simplement rien. Les variables employées ici (--accent,
+   --accent-dim, --bg, --bg-panel, --bg-raised, --border, --text, --text-dim,
+   --text-faint, --crit, --crit-bg, --warn, --warn-bg, --mono, --radius) sont
+   toutes lues dans :root avant écriture.
+
+   NOTE : ce commentaire nomme le piège SANS écrire la syntaxe `var(...)` d'une
+   variable inexistante. Les garde-fous du projet (test_design_system.py,
+   test_bulk_selection.py) analysent le fichier CSS commentaires COMPRIS : un
+   exemple de mauvaise pratique cité littéralement les ferait échouer sur leur
+   propre documentation. Même motif que les commentaires Jinja du template, que
+   les tests de rendu prennent soin de retirer avant analyse. */
+
+.field-composer {
+  grid-column: 1 / -1;
+  display: grid;
+  /* Deux zones côte à côte quand la place le permet, empilées sinon. La
+     largeur minimale de 280px est ce qui déclenche l'empilement avant que les
+     étiquettes ne deviennent illisibles. */
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+  width: 100%;
+}
+
+.field-composer__zone {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  min-width: 0; /* sans quoi un `code` long force la grille à déborder */
+}
+
+/* La zone « champs disponibles » est le CATALOGUE, pas la configuration : fond
+   moins appuyé pour que le regard aille d'abord aux dimensions retenues, qui
+   sont ce qui part réellement dans le YAML. */
+.field-composer__zone--available { background: var(--bg); }
+
+.field-composer__zone-head { margin-bottom: 10px; }
+
+.field-composer__zone-title {
+  margin: 0 0 4px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.field-composer__zone-hint {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 12px;
+  max-width: 60ch;
+}
+.field-composer__zone-hint strong { color: var(--accent); }
+
+/* ----- Zone 1 : les étiquettes retenues ----- */
+
+.field-composer__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  /* Hauteur minimale : la zone de dépôt doit rester ATTEIGNABLE même vide,
+     sinon on ne peut plus rien y glisser après avoir tout retiré. */
+  min-height: 44px;
+}
+
+.field-composer__tag {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  /* `grab` et non `pointer` : le curseur ANNONCE que l'élément se déplace.
+     Sans ce signal, le glisser-déposer n'est découvert par personne. */
+  cursor: grab;
+}
+.field-composer__tag:active { cursor: grabbing; }
+
+/* Étiquette en cours de déplacement : semi-transparente, pour qu'on voie
+   l'emplacement visé DERRIÈRE elle. */
+.field-composer__tag.is-dragging {
+  opacity: 0.4;
+  border-color: var(--accent);
+}
+
+/* Cible de dépôt : un liseré franc, pas un simple changement de fond — sur un
+   fond sombre, une nuance de gris ne se distingue pas à la volée. */
+.field-composer__tag.is-drop-target {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* Le rang est l'information qui donne son sens à l'ordre : la 1re dimension
+   est l'axe principal du graphe Akvorado. Chiffres tabulaires pour que la
+   colonne ne tremble pas au passage de 9 à 10. */
+.field-composer__rank {
+  flex: 0 0 auto;
+  min-width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-dim);
+  color: var(--accent);
+  border-radius: var(--radius);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.field-composer__tag-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.field-composer__tag-label {
+  color: var(--text);
+  font-size: 13px;
+}
+
+/* Le code technique reste affiché À CÔTÉ du libellé français, jamais à sa
+   place : c'est lui qui part dans le YAML, et c'est lui qu'on retrouve dans la
+   documentation Akvorado. Masquer le code rendrait la relecture du fichier
+   impossible pour qui n'a vu que l'interface. */
+.field-composer__tag-code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+.field-composer__move,
+.field-composer__remove {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* Bouton désactivé (étiquette en tête ou en queue) : visiblement inerte.
+   Un bouton grisé qu'on distingue mal d'un bouton actif invite à cliquer
+   plusieurs fois en croyant que la commande ne répond pas. */
+.field-composer__move:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.field-composer__move:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.field-composer__move:focus-visible,
+.field-composer__remove:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Retrait = perte d'une dimension : registre destructif (rouge), comme
+   `button.danger`, jamais l'accent turquoise réservé aux actions sans perte. */
+.field-composer__remove:hover {
+  background: var(--crit-bg);
+  border-color: var(--crit);
+  color: var(--crit);
+}
+
+/* État vide : jamais une zone muette. Le message nomme la CONSÉQUENCE. */
+.field-composer__empty {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  background: var(--warn-bg);
+  border-left: 3px solid var(--warn);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+/* ----- Zone 2 : les champs disponibles ----- */
+
+.field-composer__search-label {
+  display: block;
+  margin: 8px 0 4px;
+}
+
+.field-composer__search {
+  width: 100%;
+  background: var(--bg-raised);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  font-size: 13px;
+  font-family: inherit;
+}
+.field-composer__search:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.field-composer__available {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  /* Le catalogue compte une vingtaine d'entrées : il défile DANS sa zone
+     plutôt que d'allonger la page et d'éloigner le bouton d'enregistrement.
+     PAS de `position: sticky` ici — piège mesuré cette semaine sur ce projet :
+     `sticky` s'ancre au conteneur de défilement le plus proche, et un parent
+     en `overflow: auto` (ce bloc, précisément) l'envoie hors écran. */
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.field-composer__available-item { min-width: 0; }
+
+/* Le bouton d'ajout occupe TOUTE la ligne : une cible de clic large est ce qui
+   rend l'ajout par clic praticable dans une liste de vingt entrées. */
+.field-composer__add {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  padding: 5px 8px;
+}
+.field-composer__add:hover {
+  background: var(--bg-raised);
+  border-color: var(--accent);
+}
+.field-composer__add:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.field-composer__add-sign {
+  flex: 0 0 auto;
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+/* Recherche sans résultat / catalogue épuisé : message explicite plutôt qu'une
+   liste vide, indistinguable d'un écran cassé. */
+.field-composer__no-match {
+  margin: 8px 0 0;
+  color: var(--text-faint);
+  font-size: 12.5px;
+}
+
+/* ----- Bandeau de mode dégradé (JS non exécuté) -----
+
+   Visible par DÉFAUT, masqué par le JS quand il a pris la main. Jamais
+   l'inverse : un bandeau caché par défaut que le JS devrait révéler ne
+   s'afficherait justement PAS le jour où le JS ne tourne pas. */
+.field-composer__degraded {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--warn-bg);
+  border-left: 3px solid var(--warn);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 12.5px;
+}
+.field-composer[data-field-composer-ready] .field-composer__degraded { display: none; }
+
+/* Les commandes qui n'ont de sens qu'avec le JS sont masquées tant qu'il n'a
+   pas pris la main : des boutons ↑ / ↓ / ✕ présents mais inertes invitent à
+   cliquer, puis à recliquer, sur une commande qui ne répondra jamais. Les
+   ÉTIQUETTES, elles, restent visibles — elles sont rendues par Jinja, et c'est
+   ce qui corrige le défaut de lisibilité même JS éteint. */
+.field-composer:not([data-field-composer-ready]) .field-composer__move,
+.field-composer:not([data-field-composer-ready]) .field-composer__remove,
+.field-composer:not([data-field-composer-ready]) .field-composer__add,
+.field-composer:not([data-field-composer-ready]) .field-composer__search,
+.field-composer:not([data-field-composer-ready]) .field-composer__search-label {
+  display: none;
+}
+.field-composer:not([data-field-composer-ready]) .field-composer__tag { cursor: default; }
+
+/* Le formulaire du composeur repasse en colonne : la grille `config-form`
+   (colonnes de 180px) écraserait la zone d'étiquettes sur une largeur de
+   champ, ce qui recréerait exactement le défaut corrigé. */
+.field-composer-form { display: flex; flex-direction: column; gap: 10px; align-items: stretch; }
+.field-composer-form > label { margin-bottom: 0; }
+.field-composer-form > input[type="number"] { max-width: 200px; }
+.field-composer-form > button { align-self: start; }
+
+/* ---------- Liste exhaustive des widgets de la page d'accueil ----------
+
+   La liste des 9 widgets ÉTAIT déjà complète (vérifiée contre l'API Akvorado
+   le 2026-08-06 : les 9 répondent 200, 8 autres candidats répondent 400). Ce
+   qui manquait était la LISIBILITÉ : neuf codes bruts alignés ne disent pas à
+   un collègue ce que chaque case affichera, ni lesquelles sont retenues.
+   D'où : une ligne par widget, un libellé français, une description, et un
+   contraste franc entre coché et non coché. */
+
+.widget-checklist__intro {
+  flex: 1 1 100%;
+  margin: 0 0 6px;
+  color: var(--text-dim);
+  font-size: 12.5px;
+}
+.widget-checklist__tally {
+  color: var(--accent);
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Une ligne par widget plutôt qu'un rangement en flux : neuf cases réparties
+   sur trois colonnes irrégulières ne se dénombrent pas d'un coup d'œil, et
+   c'est précisément « la liste exhaustive » qui était demandée. */
+.widget-checklist { flex-direction: column; gap: 4px; }
+
+/* Le distinguo coché / non coché porte sur la LIGNE ENTIÈRE, pas sur la seule
+   case. Défaut vécu le 2026-08-06 sur ce projet : une case visuellement
+   détachée de son libellé n'a été vue qu'à la capture d'écran — le DOM était
+   pourtant correct. */
+.widget-checklist__item {
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  font-family: var(--sans);
+  cursor: pointer;
+}
+.widget-checklist__item:hover { background: var(--bg-raised); }
+.widget-checklist__item:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.widget-checklist__item.is-checked {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+}
+
+.widget-checklist__text {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  min-width: 0;
+}
+.widget-checklist__label { color: var(--text); font-size: 13px; }
+.widget-checklist__item.is-checked .widget-checklist__label { color: var(--accent); }
+.widget-checklist__code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+.widget-checklist__desc {
+  flex: 1 1 100%;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+/* ---------- Repli des formulaires auto-soumis ---------- */
+/* Le bouton « Appliquer » d'un formulaire `data-autosubmit` n'est masqué QUE
+   lorsque le script a pris la main (marqueur `data-autosubmit-ready`). Posé
+   masqué par défaut, il resterait invisible le seul jour où il sert — celui où
+   le JS ne s'exécute pas. Le sens du marquage compte plus que son effet.
+   Défaut d'origine mesuré le 2026-08-06 : un `onchange="this.form.submit()"`
+   inline, bloqué par la CSP, laissait le sélecteur de fenêtre sans aucun
+   effet et sans aucun moyen de valider. */
+[data-autosubmit-ready] .autosubmit-fallback {
+  display: none;
+}
+
+/* ---------- Compositeur d'expressions de filtre Akvorado ----------
+
+   POURQUOI CE BLOC EXISTE : la section « filtres enregistrés » rendait deux
+   champs texte nus. Enregistrer un filtre supposait de connaître par cœur la
+   syntaxe d'Akvorado et le nom exact de ses 61 colonnes. Le compositeur
+   renverse le geste — on part des valeurs RÉELLEMENT observées dans les
+   derniers flux, on clique, l'expression se construit.
+
+   Les classes `composer-*` (sans préfixe `filter-`) sont rendues par le
+   SERVEUR (app/routers/filter_composer.py) : cartes de champs, puces de
+   valeurs, verdicts, bandeau dégradé. Elles sont stylées ici parce qu'une
+   classe posée sans règle se rend avec le style par défaut du navigateur —
+   défaut vécu trois fois sur ce projet (.view-card__akvorado-link, .secondary,
+   .field-composer__zone--available). */
+
+.filter-composer {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px 18px;
+  margin: 18px 0;
+}
+
+.filter-composer__title {
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.filter-composer__intro {
+  margin: 0 0 14px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  max-width: 78ch;
+}
+
+/* La barre de recherche et son témoin d'activité sur une même ligne : le
+   témoin doit être vu SANS quitter des yeux le champ où l'on tape. */
+.filter-composer__search-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.filter-composer__search-row .field { flex: 1 1 280px; min-width: 0; }
+
+.filter-composer__search {
+  width: 100%;
+  font-family: var(--sans);
+}
+.filter-composer__search:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+/* Témoin de recherche en cours. Masqué par défaut et révélé par la classe
+   `htmx-request` que htmx pose sur la cible de `hx-indicator` pendant la
+   requête : sans repère, une recherche lente sur un gros échantillon donne
+   l'impression que la frappe n'a rien déclenché. */
+.filter-composer__indicator {
+  display: none;
+  font-size: 12px;
+  color: var(--accent);
+  padding-bottom: 6px;
+  white-space: nowrap;
+}
+.filter-composer__indicator.htmx-request { display: inline; }
+
+/* Conteneur des cartes rendues par le serveur. Hauteur bornée + défilement :
+   40 champs affichés d'un coup repousseraient le champ d'expression — donc le
+   but de l'écran — hors de la fenêtre. */
+.filter-composer__fields {
+  max-height: 340px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  padding: 8px;
+  margin-bottom: 14px;
+}
+
+/* ---- Cartes de champs (balisage serveur : <ul class="composer-fields">) ---- */
+
+.composer-fields {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 8px;
+}
+
+.composer-field {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  min-width: 0;
+}
+
+/* L'en-tête est un bouton pleine largeur : la cible de clic couvre toute la
+   ligne du champ, pas seulement les quelques pixels de son libellé. */
+.composer-field__head {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 0 0 6px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text);
+  font-family: var(--sans);
+}
+.composer-field__head:hover .composer-field__label { color: var(--accent); }
+.composer-field__head:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius);
+}
+
+.composer-field__label {
+  font-size: 12.5px;
+  font-weight: 600;
+  transition: color 0.12s;
+}
+.composer-field__name {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+.composer-field__values {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* Puce de valeur réellement observée. C'est le clic le plus utile de l'écran :
+   il insère `Champ = valeur` d'un coup. */
+.composer-value {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  padding: 2px 7px;
+  cursor: pointer;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: border-color 0.12s, color 0.12s;
+}
+.composer-value:hover { border-color: var(--accent); color: var(--accent); }
+.composer-value:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Champ au catalogue mais sans valeur dans l'échantillon. Rendu comme une
+   MENTION et non comme une puce cliquable : un élément d'apparence cliquable
+   qui ne fait rien est pire qu'une absence. */
+.composer-value--empty {
+  background: none;
+  border-style: dashed;
+  color: var(--text-faint);
+  cursor: default;
+  font-style: italic;
+}
+.composer-value--empty:hover { border-color: var(--border); color: var(--text-faint); }
+
+.composer-field__more {
+  font-size: 11px;
+  color: var(--text-faint);
+  align-self: center;
+  padding-left: 2px;
+}
+
+.composer-fields__note {
+  margin: 8px 0 0;
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+/* Bandeau de dégradation (ClickHouse ou console muette). Il hérite déjà de
+   `.notice.notice-warn` ; seul le détail a besoin d'une règle propre. Ce
+   bandeau dit « je n'ai PAS pu lire », état DISTINCT de « rien ne correspond ».
+   Les confondre ferait conclure à tort que l'infrastructure n'émet rien. */
+.composer-degraded__detail {
+  margin: 4px 0 0;
+  font-weight: 400;
+  font-size: 12.5px;
+}
+
+/* ---- Opérateurs ---- */
+
+.filter-composer__operators {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.filter-composer__operators-label {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-right: 4px;
+}
+
+/* Monospace et largeur minimale : `=` et `!=` alignés lisent comme une palette
+   d'opérateurs, pas comme de la ponctuation égarée. */
+.composer-operator {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  min-width: 38px;
+  padding: 4px 10px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color 0.12s, color 0.12s;
+}
+.composer-operator:hover { border-color: var(--accent); color: var(--accent); }
+.composer-operator:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Vider n'est pas destructif — rien n'est encore enregistré — d'où le registre
+   neutre plutôt que le rouge de `button.danger`, réservé aux suppressions
+   réelles. */
+.composer-clear {
+  margin-left: auto;
+  font-size: 12px;
+  padding: 4px 12px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: border-color 0.12s, color 0.12s;
+}
+.composer-clear:hover { border-color: var(--warn); color: var(--warn); }
+.composer-clear:focus-visible {
+  outline: 2px solid var(--warn);
+  outline-offset: 1px;
+}
+
+/* ---- Repli sans JS ----
+
+   Les commandes de composition sont rendues par le serveur puis MASQUÉES quand
+   le script a tourné, JAMAIS posées masquées puis révélées : posées masquées,
+   elles resteraient invisibles le seul jour où elles servent — celui où le
+   script échoue. Même raisonnement que `.autosubmit-fallback` ci-dessus. */
+.filter-composer__no-js {
+  margin: 10px 0 0;
+}
+[data-filter-composer-ready] .filter-composer__no-js {
+  display: none;
+}
+
+/* ---- Formulaire d'ajout + verdict ---- */
+
+/* Le formulaire d'ajout suit immédiatement le compositeur : cet espacement
+   marque la frontière entre « je compose un brouillon » et « j'enregistre ».
+   Sans lui, les deux blocs se lisent comme un seul et on ne sait plus lequel
+   des deux gestes le bouton « Ajouter » déclenche. */
+.filter-add-form {
+  margin-top: 4px;
+}
+
+.filter-add-form__expression {
+  width: 100%;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  resize: vertical;
+}
+.filter-add-form__expression:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+/* Le verdict occupe toute la largeur de la grille et garde une place réservée :
+   une zone qui apparaît et disparaît ferait sauter le bouton « Ajouter » sous
+   le curseur au moment précis où l'on va cliquer. */
+.filter-composer__verdict {
+  grid-column: 1 / -1;
+  margin: 4px 0 2px;
+}
+.filter-composer__verdict .notice { margin: 0; }
+
+/* Le message d'Akvorado porte la POSITION du caractère fautif (« at line 1,
+   position 15 »). Monospace pour que ce comptage reste lisible, et
+   `pre-wrap` pour ne jamais tronquer : c'est l'information qui distingue un
+   message utile d'un « filtre invalide » qui laisse chercher. */
+.composer-verdict {
+  font-size: 12.5px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.composer-verdict strong { display: block; margin-bottom: 2px; }
+
+/* ---------- Colonnes du schéma ClickHouse ----------
+
+   Trente cases à cocher sur un seul écran : la lisibilité tient entièrement au
+   regroupement par famille et à la visibilité du COÛT. Une colonne activée est
+   un champ stocké pour chaque flux — l'écran doit le dire avant le clic, pas
+   après la migration.
+
+   Aucune couleur en dur ici : tout dérive des variables de :root, comme le
+   vérifie test_design_system.py. */
+
+/* L'avertissement de coût précède les cases et ne doit pas se lire comme un
+   paragraphe d'ambiance : il conserve la largeur pleine et un espace franc
+   avant la première famille. */
+.schema-cost {
+  margin-bottom: 18px;
+}
+
+/* Chaque famille reprend la mise en colonne du `widget-checklist` (une ligne
+   par entrée) : c'est le dénombrement qui compte, pas la densité. La légende
+   porte le nom de la famille — c'est l'index par lequel on cherche réellement
+   (« la QoS »), le code technique restant affiché en second. */
+.schema-family {
+  margin-bottom: 12px;
+}
+.schema-family legend {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* Marqueur « table principale seulement ». En ambre (--warn) et non en gris :
+   ce n'est pas une note de bas de page, c'est une limite qui produit une
+   dimension VIDE sans le moindre message d'erreur sur les vues au long cours.
+   Le taire reviendrait au zéro silencieux que ce projet corrige ailleurs. */
+.schema-badge {
+  font-family: var(--sans);
+  font-size: 10.5px;
+  line-height: 1.4;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--warn);
+  background: var(--warn-bg);
+  border: 1px solid var(--warn);
+  border-radius: var(--radius);
+  padding: 1px 6px;
+  white-space: nowrap;
+  cursor: help;
+}
+
+/* ---------- Découverte des interfaces (cascade de fournisseurs) ---------- */
+
+/* Titres intermédiaires de la section : la page enchaîne deux tableaux (la
+   cascade, puis les communautés SNMP) séparés par des formulaires. Sans
+   respiration entre eux, on ne voit plus où finit un sujet et où commence
+   l'autre — et cette section est précisément celle où l'ORDRE des blocs porte
+   du sens. */
+.providers-cascade__title {
+  margin: 28px 0 6px;
+  font-size: 14px;
+  color: var(--text);
+}
+
+/* Les deux boutons de réordonnancement d'une même ligne. Chacun vit dans son
+   propre <form> (un champ caché par direction) : sans mise en ligne explicite,
+   deux formulaires successifs s'empilent verticalement et la cellule triple de
+   hauteur. */
+.providers-cascade__moves {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.providers-cascade__moves form { margin: 0; }
+
+/* Cellule portant une valeur masquée (communauté SNMP).
+
+   L'espacement des points de masquage est VOLONTAIRE : `••••••` rendu serré
+   ressemble à une valeur courte, ce qui invite à croire qu'on lit une donnée
+   tronquée plutôt qu'un secret masqué. Espacé, il se lit comme ce qu'il est —
+   une absence délibérée d'affichage.
+
+   La couleur est celle du texte atténué : le masque n'est pas une donnée, il
+   ne doit pas attirer l'œil comme le sous-réseau voisin, qui lui est lisible
+   et actionnable. */
+.secret-cell {
+  color: var(--text-dim);
+  letter-spacing: 0.18em;
+  user-select: none;
+}
+
+/* ---------- Cases à cocher DANS un formulaire ---------- */
+/* `.config-form label { display: block }` (règle générique des formulaires,
+   déclarée plus haut) l'emportait sur `.widget-checklist__item { display: flex }`
+   — spécificités comparables, le dernier déclaré gagne.
+
+   Conséquence MESURÉE au navigateur le 2026-08-07 sur les 30 colonnes du
+   schéma : `display` effectif à `block`, label de 502 px de large, et le texte
+   rendu AVANT la case (651 px contre 655). La case se retrouvait détachée,
+   flottant au milieu de la ligne.
+
+   C'est la troisième fois que ce motif frappe ce projet — case décollée de son
+   libellé sur l'option « remplacer entièrement », puis label orphelin sur les
+   ports d'écoute. Chaque fois invisible dans le DOM, chaque fois vu à la
+   capture. La règle est donc portée ici, avec la spécificité qui traduit
+   l'intention : dans une checklist, un label EST une ligne case + texte. */
+.config-form .widget-checklist__item,
+.config-form .checkbox-field {
+  display: flex;
+}
+
+/* ---------- Diagnostics réseau : convergence + écran exportateur ---------- */
+
+.convergence-form,
+.exporter-period-form {
+  display: flex;
+  align-items: end;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin: 14px 0 18px;
+}
+
+.convergence-total {
+  color: var(--text-dim);
+  font-size: 12.5px;
+  margin: 0 0 10px;
+}
+
+/* Ligne de convergence cliquable : le curseur et le hover signalent le
+   drill-down HTMX sans qu'aucun texte n'ait à l'expliciter à chaque ligne. */
+.convergence-row {
+  cursor: pointer;
+}
+.convergence-row:hover {
+  background: var(--bg-raised);
+}
+.convergence-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.convergence-detail-row td {
+  padding: 0;
+  border-bottom: 1px solid var(--border);
+}
+.convergence-detail:not(:empty) {
+  padding: 10px 14px;
+  background: var(--bg-raised);
+}
+
+.exporter-summary p {
+  margin: 4px 0;
+}
+
+/* Onglets de l'écran exportateur (Résumé, Trafic, Interfaces, Applications,
+   Sources, Destinations, Conversations, QoS) — même vocabulaire visuel que
+   `.nav` (barre supérieure) pour rester cohérent avec le reste de la charte. */
+.tabs {
+  margin-top: 16px;
+}
+
+.tabs__nav {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 8px;
+  margin-bottom: 14px;
+}
+
+.tabs__tab {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-dim);
+  padding: 6px 12px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  cursor: pointer;
+  transition:
+    background 0.12s,
+    color 0.12s;
+}
+.tabs__tab:hover {
+  background: var(--bg-raised);
+  color: var(--text);
+}
+.tabs__tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.tabs__tab[aria-selected="true"] {
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-weight: 550;
+}
+
+.tabs__panel {
+  min-height: 80px;
+}
+
+/* ---------- Inventaire équipement — écran « Device Summary » ----------
+   Reproduit la structure deux colonnes (libellé / valeur) de la capture de
+   référence ManageEngine : un panneau, deux colonnes, chaque ligne
+   libellé-deux points-valeur. Réutilise les tokens de couleur existants,
+   aucun nouveau système de design. */
+
+.device-summary {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 20px;
+  margin: 16px 0;
+}
+
+.device-summary h2 {
+  margin-top: 0;
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+
+.device-summary__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 4px 32px;
+}
+
+.device-summary__row {
+  display: grid;
+  grid-template-columns: 160px 12px 1fr;
+  gap: 6px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.device-summary__label {
+  color: var(--text-dim);
+}
+
+.device-summary__sep {
+  color: var(--text-faint);
+}
+
+.device-summary__value {
+  color: var(--text);
+  font-family: var(--mono);
+  word-break: break-word;
+}
+
+/* ---------- Écran Rétention — sections apply/purge (LOT 2 étendu) ----------
+   `.hint` était déjà utilisé dans retention.html (texte explicatif sous un
+   titre de section) sans jamais être défini ici — même défaut de classe
+   posée sans règle que celui documenté plus haut sur ce fichier
+   (.view-card__akvorado-link, .secondary, .field-composer__zone--available).
+   Toutes les couleurs viennent des variables de :root, aucune nouvelle
+   palette introduite. */
+.hint {
+  color: var(--text-dim);
+  font-size: 12.5px;
+  max-width: 80ch;
+  margin: 0 0 14px;
+}
+
+/* Formulaire d'application du TTL — même registre que .config-form (grille
+   de champs), mais bouton en `danger` puisque le geste peut détruire des
+   données : distinct visuellement du formulaire de prévisualisation
+   au-dessus, qui reste neutre. */
+.ttl-apply-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px 14px;
+  align-items: end;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px dashed var(--border);
+}
+.ttl-apply-form label { display: block; margin-bottom: 2px; }
+.ttl-apply-form select,
+.ttl-apply-form input { width: 100%; }
+.ttl-apply-form button { grid-column: 1 / -1; justify-self: start; }
+
+/* Un sous-bloc par table purgeable (audit_log, pending_config_changes,
+   snmp_inventory) — filet gauche discret pour les séparer sans repasser par
+   des `.panel` imbriqués (deux fonds superposés auraient cassé le contraste
+   sur l'interface sombre). */
+.internal-history__block {
+  border-left: 3px solid var(--border);
+  padding-left: 14px;
+  margin-bottom: 20px;
+}
+.internal-history__block:last-child { margin-bottom: 0; }
+.internal-history__block h3 { margin-top: 0; }
+
+/* ---------- Authentification (LOT auth) ---------- */
+
+.logout-form { margin: 0; }
+.logout-form button { font-size: 12.5px; }
+
+.default-password-banner { margin: 0 24px 0; border-radius: 0; }
+.default-password-banner a { color: inherit; font-weight: 600; }
+
+.login-body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 14px;
+}
+
+.login-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.login-card {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 28px;
+  width: 100%;
+  max-width: 340px;
+}
+.login-card .brand { justify-content: center; margin-bottom: 20px; }
+
+.login-form, .stacked-form {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.login-form label, .stacked-form label { margin-top: 10px; }
+.login-form input, .stacked-form input {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 8px 10px;
+  font-family: inherit;
+  font-size: 13.5px;
+}
+.login-form button, .stacked-form button { margin-top: 16px; }
+
+.totp-qr {
+  background: var(--qr-bg);
+  padding: 12px;
+  border-radius: var(--radius);
+  width: fit-content;
+  margin: 12px 0;
+}
+.totp-qr svg { display: block; width: 200px; height: 200px; }
+
+.totp-manual-secret code {
+  font-family: var(--mono);
+  background: var(--bg-raised);
+  padding: 2px 6px;
+  border-radius: 4px;
+  letter-spacing: 0.04em;
+}
+
+.backup-codes {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px;
+  list-style: none;
+  padding: 0;
+  margin: 12px 0;
+}
+.backup-codes code {
+  display: block;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px;
+  text-align: center;
+  font-family: var(--mono);
+  letter-spacing: 0.03em;
+}
+
+/* Écran Santé DB — met en évidence, dans le tableau des deux plafonds
+   mémoire (ClickHouse vs configuration du conteneur), lequel des deux MORD
+   EN PREMIER (défaut mesuré 2026-08-09 : l'écran ne montrait qu'une seule
+   valeur codée en dur sans dire d'où elle venait ni laquelle décidait). */
+.db-health-memory-limit-active {
+  background: var(--accent-dim);
+}
+
+/* Écran d'intégration de la console Akvorado (`console_embed.html`) — la
+   console Vue est encadrée DANS Okvorado plutôt qu'ouverte dans un onglet
+   séparé (demande utilisateur 2026-08-10 : « il manque l'intégration de
+   l'interface web d'akvorado dans okvorado »).
+
+   HAUTEUR — le point qui décide si l'écran est utilisable : un `<iframe>`
+   sans hauteur explicite retombe sur ~150 px (défaut CSS des éléments
+   remplacés), ce qui afficherait la console dans une bande étroite et
+   illisible. `100vh` moins la place prise par l'en-tête, le pied de page et
+   les marges donne un cadre qui occupe la hauteur utile réelle. `min-height`
+   garantit qu'il reste exploitable même sur une petite fenêtre, où la
+   soustraction deviendrait trop agressive.
+
+   Aucune couleur en dur : tout dérive des variables de :root, comme le reste
+   de cette feuille. */
+.console-frame {
+  display: block;
+  width: 100%;
+  height: calc(100vh - 220px);
+  min-height: 480px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+}
+
+/* La CAUSE de l'indisponibilité est rendue en police à chasse fixe : c'est un
+   message technique (erreur de connexion, statut HTTP) recopié tel quel
+   depuis la sonde — le lire en proportionnel rend les adresses et les codes
+   difficiles à distinguer. */
+.console-embed-cause {
+  font-family: var(--mono);
+  word-break: break-word;
+}

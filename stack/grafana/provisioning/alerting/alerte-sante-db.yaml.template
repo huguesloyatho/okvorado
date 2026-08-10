@@ -1,0 +1,104 @@
+# Règle d'alerte — Santé DB ClickHouse (parts actives).
+#
+# SIGNAL PRÉCOCE sur un parc de 350 routeurs : l'ancienne solution NetFlow
+# nécessitait de redémarrer régulièrement une base qui « crachait ». Mesuré
+# sur l'infrastructure de référence (.6, 2026-08-08) : ce n'est pas la base
+# qui « crache », c'est l'ACCUMULATION DE PARTS ACTIVES qui dépasse la
+# capacité de fusion de ClickHouse — au-delà d'un seuil (1000 parts, réglage
+# serveur `parts_to_delay_insert`), ClickHouse ralentit l'écriture ; au-delà
+# d'un second seuil (3000, `parts_to_throw_insert`), il la REFUSE
+# (`TOO_MANY_PARTS`). Cette alerte se déclenche BIEN AVANT ces seuils
+# ClickHouse (valeur par défaut : 500 parts) pour laisser le temps d'agir.
+#
+# Complète l'écran Okvorado « Santé DB » (/db-health), qui lit les seuils
+# RÉELS du serveur en direct (system.merge_tree_settings) et propose les
+# actions de maintien sûres (OPTIMIZE, purge de parts détachées) — jamais
+# de redémarrage automatique de ClickHouse, ni ici ni dans le code Okvorado.
+#
+# GABARIT résolu par le service `config-generator` (voir docker-compose.yml
+# et README.md de ce dossier) — Grafana ne résout AUCUN ${VAR} lui-même.
+#
+# Requête validée contre le VRAI ClickHouse de ce projet (2026-08-08,
+# akvorado-clickhouse-1, 192.0.2.6) : 109 parts actives sur `flows` au
+# moment de la mesure, très en dessous du seuil par défaut de cette alerte.
+#
+# CONTRAINTES DE CALCUL respectées (même famille que les 3 autres alertes) :
+# - aucune macro Grafana inexistante : lecture directe de system.parts, pas
+#   de $__timeFilter (les parts actives sont un état COURANT, pas une série
+#   temporelle bornée par la fenêtre du dashboard).
+# - aucune somme de volume (Bytes/Packets) : cette requête compte des PARTS
+#   ClickHouse, pas des flux réseau — le taux d'échantillonnage NetFlow
+#   (SamplingRate) n'a aucun sens ici, il ne s'applique qu'aux colonnes de
+#   la table `flows` elle-même.
+
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: okvorado-sante-db
+    folder: Okvorado
+    interval: 1m
+    rules:
+      - uid: okvorado-alerte-sante-db-parts-actives
+        title: "Santé DB — parts actives ClickHouse au-delà de ${ALERTE_DB_HEALTH_PARTS_ACTIVES_SEUIL}"
+        condition: seuil
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        data:
+          - refId: requete
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: ClickHouse
+            model:
+              rawSql: >-
+                SELECT
+                    table AS table_clickhouse,
+                    count() AS parts_actives
+                FROM system.parts
+                WHERE active AND database = 'default' AND table = 'flows'
+                GROUP BY table
+              format: 1
+              intervalMs: 60000
+              maxDataPoints: 100
+              refId: requete
+          - refId: reduction
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: requete
+              reducer: max
+              refId: reduction
+          - refId: seuil
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: reduction
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [${ALERTE_DB_HEALTH_PARTS_ACTIVES_SEUIL}]
+              refId: seuil
+        labels:
+          severite: avertissement
+          famille: capacite-db
+        annotations:
+          resume: "Le nombre de parts actives ClickHouse sur `flows` dépasse ${ALERTE_DB_HEALTH_PARTS_ACTIVES_SEUIL} — signal précoce avant le ralentissement forcé (seuil serveur, généralement 1000)."
+          # QUOI FAIRE, pas seulement ce qui ne va pas (exigence du prompt).
+          description: >-
+            Ouvrir l'écran Okvorado « Santé DB » (/db-health) et vérifier
+            dans l'ordre : (1) contrôler l'indicateur « Fusions en retard »
+            — si l'écart entre parts créées et parts fusionnées se creuse,
+            la fusion ne suit plus le rythme d'ingestion ; (2) identifier si
+            le rythme d'insertion a augmenté récemment (nouveaux routeurs
+            raccordés, changement de taille de lot côté Akvorado) ;
+            (3) si le retard est ponctuel, déclencher un OPTIMIZE TABLE
+            depuis l'écran Santé DB après avoir lu l'avertissement de coût
+            affiché ; (4) si la dérive est structurelle (parts actives qui
+            grimpent jour après jour dans l'historique de l'écran),
+            escalader vers un ajustement de la taille de lot côté Akvorado
+            ou du partitionnement — voir stack/README.md, section
+            « Capacité d'écriture ClickHouse ». Ne JAMAIS redémarrer
+            ClickHouse pour faire baisser ce chiffre : cela masque le
+            problème sans le résoudre et fait perdre la trace de la dérive.

@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+
+{% block title %}{{ item.address }} · Inventaire{% endblock %}
+
+{% block content %}
+<section id="inventory-detail-page">
+  <p><a href="{{ '/inventory' | prefixed }}" class="link-back"><span class="link-back__chevron">←</span> Tout l'inventaire</a></p>
+  <h1>{{ item.address }}</h1>
+
+  {% if item.has_auth_failure %}
+    <p class="notice notice-error">
+      <strong>Échec d'authentification SNMPv3</strong>
+      L'équipement a répondu mais a refusé l'authentification (mauvais
+      utilisateur, mot de passe ou niveau de sécurité) — distinct d'un agent
+      qui ne répond pas du tout : vérifie les identifiants SNMPv3 configurés.
+      Dernière tentative : {{ item.last_attempt_at }}.
+      {% if item.last_success_at %}Dernière collecte réussie : {{ item.last_success_at }}.{% else %}Aucune collecte n'a encore réussi pour cet équipement.{% endif %}
+    </p>
+  {% elif not item.is_responding %}
+    <p class="notice notice-warn">
+      <strong>Pas de réponse SNMP</strong>
+      Dernière tentative : {{ item.last_attempt_at }}.
+      {% if item.last_success_at %}Dernière collecte réussie : {{ item.last_success_at }}.{% else %}Aucune collecte n'a encore réussi pour cet équipement.{% endif %}
+    </p>
+  {% endif %}
+
+  <div class="device-summary">
+    <h2>Device Summary</h2>
+    <div class="device-summary__grid">
+      <div class="device-summary__col">
+        <div class="device-summary__row">
+          <span class="device-summary__label">IP Address</span>
+          <span class="device-summary__sep">:</span>
+          <span class="device-summary__value">{{ item.address }}</span>
+        </div>
+        <div class="device-summary__row">
+          <span class="device-summary__label">System Description</span>
+          <span class="device-summary__sep">:</span>
+          <span class="device-summary__value">{{ item.sys_descr if item.sys_descr else "—" }}</span>
+        </div>
+        <div class="device-summary__row">
+          <span class="device-summary__label">SNMP Version</span>
+          <span class="device-summary__sep">:</span>
+          <span class="device-summary__value">{{ "SNMPv3" if item.snmp_version == "v3" else "SNMPv2c" }}</span>
+        </div>
+        <div class="device-summary__row">
+          <span class="device-summary__label">Contact</span>
+          <span class="device-summary__sep">:</span>
+          <span class="device-summary__value">{{ item.sys_contact if item.sys_contact else "—" }}</span>
+        </div>
+      </div>
+      <div class="device-summary__col">
+        <div class="device-summary__row">
+          <span class="device-summary__label">Sys Name</span>
+          <span class="device-summary__sep">:</span>
+          <span class="device-summary__value">{{ item.sys_name if item.sys_name else "—" }}</span>
+        </div>
+        <div class="device-summary__row">
+          <span class="device-summary__label">System Location</span>
+          <span class="device-summary__sep">:</span>
+          <span class="device-summary__value">{{ item.sys_location if item.sys_location else "—" }}</span>
+        </div>
+        <div class="device-summary__row">
+          <span class="device-summary__label">Last System Up Time</span>
+          <span class="device-summary__sep">:</span>
+          <span class="device-summary__value">{{ item.uptime_label }}</span>
+        </div>
+        <div class="device-summary__row">
+          <span class="device-summary__label">Device added time</span>
+          <span class="device-summary__sep">:</span>
+          <span class="device-summary__value">{{ item.first_seen_at }}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <form id="inventory-detail-collect-form"
+        hx-post="{{ '/inventory/' | prefixed }}{{ item.address | urlencode }}/collect"
+        hx-target="#inventory-detail-page"
+        hx-select="#inventory-detail-page"
+        hx-swap="outerHTML"
+        hx-disabled-elt="find button">
+    <button type="submit" class="primary">Recollecter</button>
+  </form>
+
+  <div class="snmp-version-switch">
+    <h2>Version SNMP</h2>
+    <p class="notice notice-info">
+      Choisis la version SNMP utilisée pour interroger CET équipement — le
+      parc migre progressivement de SNMPv2c vers SNMPv3, les deux
+      coexistent. Le changement relance immédiatement une collecte avec la
+      nouvelle version.
+    </p>
+    <form id="inventory-detail-snmp-version-form"
+          hx-post="{{ '/inventory/' | prefixed }}{{ item.address | urlencode }}/snmp-version"
+          hx-target="#inventory-detail-page"
+          hx-select="#inventory-detail-page"
+          hx-swap="outerHTML"
+          hx-ext="json-enc"
+          hx-disabled-elt="find button">
+      <label for="snmp_version">Version SNMP à utiliser</label>
+      <select id="snmp_version" name="snmp_version">
+        <option value="v2c" {{ "selected" if item.snmp_version != "v3" else "" }}>SNMPv2c (communauté)</option>
+        <option value="v3" {{ "selected" if item.snmp_version == "v3" else "" }}>SNMPv3 (utilisateur authentifié)</option>
+      </select>
+      <button type="submit" class="primary">Appliquer et recollecter</button>
+    </form>
+  </div>
+</section>
+{% endblock %}

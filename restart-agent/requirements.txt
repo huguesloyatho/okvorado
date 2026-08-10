@@ -1,0 +1,12 @@
+# Dépendances de l'agent de restart — service séparé d'Okvorado, seul à monter
+# /var/run/docker.sock. Volontairement PAS géré par pyproject.toml (qui décrit
+# le package `app` d'Okvorado) : cet agent est un service indépendant avec son
+# propre cycle de build/déploiement.
+#
+# Versions alignées sur pyproject.toml [project.dependencies] d'Okvorado pour
+# rester cohérent (même famille FastAPI/uvicorn/pydantic sur l'infra).
+
+fastapi>=0.115
+uvicorn[standard]>=0.32
+pydantic>=2.9
+docker>=7.1

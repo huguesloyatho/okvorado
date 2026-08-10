@@ -1,0 +1,88 @@
+services:
+  okvorado:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: okvorado:0.1.0
+    container_name: okvorado
+    restart: unless-stopped
+
+    # ClickHouse (8123) et l'outlet (8080) ne sont PAS publiés sur l'hôte
+    # (vérifié : "8123/tcp": null). Okvorado DOIT donc rejoindre le réseau du
+    # stack pour les joindre par leur nom de service.
+    networks:
+      - akvorado
+
+    ports:
+      - "8099:8099"
+
+    environment:
+      # Résolution par nom DE SERVICE sur le réseau akvorado, pas par IP :
+      # les IP du bridge changent à chaque recréation des containers.
+      OKVORADO_AKVORADO_HOST: akvorado-outlet
+      OKVORADO_OUTLET_PORT: "8080"
+      OKVORADO_CLICKHOUSE_HOST: clickhouse
+      OKVORADO_CLICKHOUSE_PORT: "8123"
+      OKVORADO_CONSOLE_HOST: akvorado-console
+      OKVORADO_CONSOLE_PORT: "8080"
+      OKVORADO_AKVORADO_CONFIG_PATH: /etc/akvorado-config/outlet.yaml
+      # Collecte d inventaire SNMP. La valeur vient du .env, jamais en clair ici.
+      # Sans elle, l ecran Inventaire affiche « SNMP non configure » et la
+      # collecte reste desactivee — etat DISTINCT, pas un tableau vide trompeur.
+      OKVORADO_SNMP_COMMUNITY: ${SNMP_COMMUNITY:-public}
+      OKVORADO_SQLITE_PATH: /data/okvorado.db
+      OKVORADO_SILENT_THRESHOLD_HOURS: "1"
+
+      # Agent de restart (v2, écriture). Okvorado ne monte JAMAIS docker.sock :
+      # l'agent est un service séparé, joint par son NOM DNS sur akvorado_default.
+      OKVORADO_RESTART_AGENT_HOST: okvorado-restart-agent
+      OKVORADO_RESTART_AGENT_PORT: "8098"
+      # SECRETS_INLINE_OK: aucune valeur en clair ici — c'est une SUBSTITUTION
+      # docker-compose. La valeur réelle vit dans secrets-mcp sous
+      # `okvorado/RESTART_AGENT_TOKEN` et n'atterrit que dans le .env local
+      # (chmod 600, gitignored) au déploiement. Vide = restart désactivé (fail-safe).
+      OKVORADO_RESTART_AGENT_TOKEN: "${RESTART_AGENT_TOKEN:-}"
+      # Un restart + attente du retour healthy prend 60 à 120 s.
+      OKVORADO_RESTART_TIMEOUT_SECONDS: "180"
+
+      # Authentification autonome (LOT auth) — voir .env.example pour le
+      # détail de chaque variable. Sans OKVORADO_AUTH_PASSWORD, un mot de
+      # passe est généré et affiché UNE FOIS dans `docker logs okvorado` au
+      # premier démarrage (jamais un défaut faible type "admin").
+      OKVORADO_AUTH_USER: "${AUTH_USER:-admin}"
+      # SECRETS_INLINE_OK: substitution docker-compose, pas une valeur en
+      # clair — la vraie valeur vit dans le .env local (chmod 600, gitignored)
+      # ou secrets-mcp. Vide = mot de passe généré (voir ci-dessus).
+      OKVORADO_AUTH_PASSWORD: "${AUTH_PASSWORD:-}"
+      # SECRETS_INLINE_OK: idem — générer avec `openssl rand -hex 32`. Vide =
+      # clé générée au démarrage (sessions non persistantes entre redéploiements).
+      OKVORADO_AUTH_SESSION_SECRET: "${AUTH_SESSION_SECRET:-}"
+
+    volumes:
+      # Config Akvorado en LECTURE/ÉCRITURE depuis la v2.
+      #
+      # En v1 ce montage était `:ro` : Okvorado n'écrivait jamais, et le read-only
+      # garantissait qu'un bug ne pouvait pas corrompre la config. La v2 rend
+      # justement l'édition possible depuis l'UI — le `:ro` doit sauter, sinon
+      # toute la couche d'écriture est inerte.
+      #
+      # Ce que la sécurité ne repose PLUS sur le montage, et repose désormais sur
+      # le code (tout est testé) :
+      #   - écriture ATOMIQUE (tmp + os.replace) : jamais de YAML tronqué
+      #   - VALIDATION avant écriture : un YAML invalide n'est jamais écrit
+      #   - BACKUP horodaté avant chaque modification
+      #   - VERROU OPTIMISTE par hash : une édition manuelle concurrente est refusée
+      #   - ROLLBACK automatique si un container ne redevient pas healthy
+      # Le périmètre reste étroit : SEUL ce répertoire de config est accessible en
+      # écriture, pas le reste de l'hôte.
+      - /root/akvorado/config:/etc/akvorado-config
+      # Base locale (correspondances port->application, audit) — bind mount pour
+      # que les surcharges saisies par les utilisateurs survivent aux recréations.
+      - /data/okvorado:/data
+
+    mem_limit: 512m
+
+networks:
+  akvorado:
+    external: true
+    name: akvorado_default

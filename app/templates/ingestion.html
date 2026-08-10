@@ -1,0 +1,259 @@
+{% extends "base.html" %}
+
+{% block title %}Diagnostic d'ingestion{% endblock %}
+
+{% block content %}
+{# Les styles de cette page vivent dans style.css comme partout ailleurs.
+   Il y avait ici un bloc <style> inline avec des couleurs en dur, dont un fond
+   CLAIR sur une interface sombre — hors de la charte. Même famille de défaut
+   que le lien bleu souligné : du style qui ignore la direction artistique. #}
+<section id="ingestion-content" hx-get="{{ '/ingestion' | prefixed }}" hx-trigger="every 30s" hx-select="#ingestion-content" hx-swap="outerHTML">
+
+  <h1>Diagnostic d'ingestion</h1>
+
+  <p class="ingestion-note">
+    <strong>Pourquoi cette page existe :</strong> un flux rejeté par Akvorado n'est
+    <strong>jamais stocké dans ClickHouse</strong>. Il n'apparaît donc dans aucun
+    dashboard Akvorado, ni dans aucune requête ClickHouse — la liste des rejets est
+    structurellement incalculable depuis la base de données. La seule source de
+    vérité est le endpoint Prometheus de l'outlet : c'est la seule fenêtre sur ce
+    qui se perd à l'ingestion.
+  </p>
+
+  {% if error %}
+  <div class="error-banner" role="alert">
+    <strong>Erreur :</strong> {{ error }}
+  </div>
+  {% endif %}
+
+  {% if not error and total == 0 %}
+  <p class="ingestion-empty">Aucun rejet détecté sur les métriques actuelles de l'outlet.</p>
+  {% endif %}
+
+  {% if items %}
+  <h2 class="critical-heading">Exportateurs à fort taux de rejet</h2>
+  <p class="ingestion-note">
+    Les motifs sont triés du plus critique au moins critique (taux de rejet de
+    l'exportateur, puis volume). Un exportateur en tête à <strong>100% de rejet</strong>
+    émet des flux mais aucun n'arrive jamais dans Akvorado ni ClickHouse.
+  </p>
+  <table class="ingestion-critical-table">
+    <thead>
+      <tr>
+        <th>Exportateur</th>
+        <th>Motif</th>
+        <th>Flux perdus (cumul)</th>
+        <th>Tendance (5 min)</th>
+        <th>Purger</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in items %}
+      <tr class="rejection-row-critical{% if loop.first %} rejection-row-top{% endif %}">
+        <td>{{ item.exporter }}</td>
+        <td>{{ item.error }}</td>
+        <td>
+          {{ "{:,}".format(item.count).replace(",", " ") }}
+          {% if item.masked_baseline is not none %}
+          {# Ce motif a été purgé PUIS a repris : le chiffre ci-dessus est un
+             DELTA au-dessus de la ligne de base, pas le cumul brut. Sans cette
+             mention, l'exploitant verrait le compteur « chuter » de 555 961 à
+             42 et croirait à une perte de mesure. #}
+          <br>
+          <span class="hint">
+            depuis la purge (base mémorisée :
+            {{ "{:,}".format(item.masked_baseline).replace(",", " ") }})
+          </span>
+          {% endif %}
+        </td>
+        <td class="trend-{{ item.trend_state }}">
+          {% if item.trend_state == 'rising' %}
+            +{{ "{:,}".format(item.trend_delta).replace(",", " ") }} depuis 5 min — actif maintenant
+          {% elif item.trend_state == 'flat' %}
+            +0 depuis 5 min — cumul figé
+          {% else %}
+            tendance inconnue (première mesure)
+          {% endif %}
+        </td>
+        <td class="rejection-purge-cell" hx-select="unset">
+          {# `hx-select` est un attribut HÉRITÉ par htmx : la section
+             `#ingestion-content` en porte un pour son auto-rafraîchissement.
+             Sans `unset`, ce bouton insérerait un fragment VIDE en silence
+             (défaut mesuré à l'identique dans db_health.html et
+             retention.html). #}
+          {% if item.trend_state == 'flat' %}
+          <button
+            type="button"
+            class="btn-purge-rejection"
+            hx-post="{{ '/api/ingestion/purge' | prefixed }}"
+            hx-vals='{{ {"exporter": item.exporter, "error": item.error} | tojson }}'
+            hx-ext="json-enc"
+            hx-target="#ingestion-purge-result"
+            hx-swap="innerHTML"
+            hx-confirm="Masquer ce cumul figé ? Le compteur d'Akvorado n'est PAS remis à zéro : Okvorado mémorise le cumul actuel et n'affichera plus que ce qui s'y ajoute. Si ce rejet repart, la ligne réapparaît."
+          >Masquer ce cumul figé</button>
+          {% else %}
+          {# Un rejet ACTIF (ou de tendance non encore mesurée) n'expose même
+             pas le bouton : la règle du zéro silencieux se voit à l'écran,
+             elle n'est pas seulement appliquée côté serveur. Le refus reste
+             AUSSI vérifié par la route (un POST forgé est refusé). #}
+          <span class="hint">
+            {% if item.trend_state == 'rising' %}
+              non masquable — rejet actif
+            {% else %}
+              non masquable — tendance non encore mesurée
+            {% endif %}
+          </span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  <section class="ingestion-purge-actions panel" hx-select="unset">
+    {# `hx-select="unset"` coupe l'héritage de `hx-select="#ingestion-content"`
+       posé par la section racine pour son auto-rafraîchissement toutes les
+       30 s. Sans ça, TOUS les boutons de cette section recevraient leur
+       fragment, ne trouveraient pas `#ingestion-content` dedans, et
+       inséreraient un DocumentFragment VIDE sans lever la moindre erreur —
+       défaut mesuré et tracé dans db_health.html (2026-08-09). #}
+    <h2>Purge des cumuls figés</h2>
+
+    <p class="notice notice-warn">
+      <strong>Ce que fait exactement ce bouton — et ce qu'il ne fait pas.</strong>
+      Les compteurs de rejet viennent de <strong>Prometheus</strong> et sont
+      CUMULATIFS depuis le démarrage de l'outlet Akvorado : ils ne redescendent
+      jamais. Okvorado <strong>ne peut pas</strong> les remettre à zéro — seul un
+      redémarrage de l'outlet les efface, ce qui couperait l'ingestion et
+      perdrait les flux émis pendant la coupure.
+      <br>
+      « Purger » masque donc la ligne <strong>à l'écran, côté Okvorado</strong> :
+      le cumul actuel est mémorisé comme ligne de base, et seul ce qui s'y
+      ajoute ensuite sera affiché. <strong>Aucune donnée n'est modifiée chez
+      Akvorado</strong>, et le geste est réversible à tout moment ci-dessous.
+    </p>
+
+    <p class="hint">
+      Un rejet <strong>ACTIF</strong> (compteur qui grimpe encore) ne peut pas être
+      masqué, et un rejet masqué qui <strong>repart réapparaît automatiquement</strong> —
+      la purge nettoie du bruit historique, jamais une panne en cours.
+    </p>
+
+    <button
+      type="button"
+      class="btn-purge-all-flat"
+      hx-post="{{ '/api/ingestion/purge-all-flat' | prefixed }}"
+      hx-target="#ingestion-purge-result"
+      hx-swap="innerHTML"
+      hx-confirm="Masquer TOUS les cumuls figés ? Les rejets encore actifs seront conservés à l'écran. Aucun compteur Akvorado n'est modifié."
+      {% if not has_flat %}disabled{% endif %}
+    >Purger tous les cumuls figés</button>
+
+    {% if not has_flat %}
+    <p class="hint">
+      Aucun cumul figé à purger dans la mesure courante — le bouton reste
+      inactif tant qu'aucune ligne n'est prouvée figée.
+    </p>
+    {% endif %}
+
+    <div id="ingestion-purge-result" aria-live="polite"></div>
+  </section>
+
+  <section class="ingestion-masked-panel panel" hx-select="unset">
+    {# VISIBILITÉ : un masquage invisible serait lui-même un zéro silencieux.
+       L'écran doit toujours dire COMBIEN de lignes sont escamotées, LESQUELLES,
+       par qui et depuis quand — et permettre de les rétablir. #}
+    <h2>Rejets actuellement masqués ({{ masked_count }})</h2>
+
+    {% if masks %}
+    <p class="hint">
+      Ces lignes sont retirées du tableau ci-dessus tant que leur compteur ne
+      bouge plus. Le cumul mémorisé est la <strong>ligne de base</strong> : seul ce
+      qui s'y ajoute réapparaîtra.
+    </p>
+    <table class="ingestion-masked-table">
+      <thead>
+        <tr>
+          <th>Exportateur</th>
+          <th>Motif</th>
+          <th>Cumul mémorisé</th>
+          <th>Masqué le</th>
+          <th>Par</th>
+          <th>Rétablir</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for mask in masks %}
+        <tr>
+          <td>{{ mask.exporter }}</td>
+          <td>{{ mask.error }}</td>
+          <td>{{ "{:,}".format(mask.baseline_count).replace(",", " ") }}</td>
+          <td>{{ mask.masked_at }}</td>
+          <td>{{ mask.masked_by }}</td>
+          <td>
+            <button
+              type="button"
+              class="btn-unmask-rejection"
+              hx-post="{{ '/api/ingestion/unmask' | prefixed }}"
+              hx-vals='{{ {"exporter": mask.exporter, "error": mask.error} | tojson }}'
+              hx-ext="json-enc"
+              hx-target="#ingestion-unmask-result"
+              hx-swap="innerHTML"
+            >Réafficher</button>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <button
+      type="button"
+      class="btn-unmask-all"
+      hx-post="{{ '/api/ingestion/unmask-all' | prefixed }}"
+      hx-target="#ingestion-unmask-result"
+      hx-swap="innerHTML"
+      hx-confirm="Réafficher TOUS les rejets masqués ? Leur cumul brut redeviendra visible."
+    >Tout réafficher (annuler les purges)</button>
+    {% else %}
+    <p class="hint">
+      Aucun rejet masqué — le tableau ci-dessus montre l'intégralité de ce que
+      rapporte Akvorado.
+    </p>
+    {% endif %}
+
+    <div id="ingestion-unmask-result" aria-live="polite"></div>
+  </section>
+
+  <h2>Détail des motifs de rejet ({{ total }})</h2>
+
+  {% if items %}
+  <ul class="ingestion-reasons-list">
+    {% for item in items %}
+    <li class="ingestion-reason">
+      <div class="reason-header">
+        <span class="reason-exporter">{{ item.exporter }}</span>
+        <span class="reason-count">{{ "{:,}".format(item.count).replace(",", " ") }} flux rejetés (cumul)</span>
+        <span class="trend-{{ item.trend_state }}">
+          {% if item.trend_state == 'rising' %}
+            +{{ "{:,}".format(item.trend_delta).replace(",", " ") }} depuis 5 min
+          {% elif item.trend_state == 'flat' %}
+            +0 depuis 5 min (figé)
+          {% else %}
+            tendance inconnue
+          {% endif %}
+        </span>
+      </div>
+      <div class="reason-error">Motif : {{ item.error }}</div>
+      <div class="reason-explanation">{{ item.explanation }}</div>
+      {% if item.remediation %}
+      <div class="reason-remediation"><strong>Remédiation :</strong> {{ item.remediation }}</div>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+</section>
+{% endblock %}

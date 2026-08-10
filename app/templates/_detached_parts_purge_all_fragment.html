@@ -1,0 +1,56 @@
+{# Fragment rendu par `GET /api/db-health/detached-parts/preview-all` UNIQUEMENT
+   pour un appel HTMX (header `HX-Request`) — même convention que
+   `_purge_preview_fragment.html` (app.routers.retention).
+
+   Affiche le détail par (base, table, raison) — contexte métier demandé
+   (2026-08-09) : une part `broken-on-start` à 0 octet se purge sans réfléchir,
+   une part volumineuse mérite examen. Embarque le JSON du preview
+   (`preview_json`, déjà sérialisé serveur, jamais reconstruit côté client)
+   dans le champ caché qu'`/execute-all` exige — protection anti-TOCTOU :
+   ce que l'exploitant voit ici est EXACTEMENT ce qui sera supprimé au clic
+   sur "Purger tout", jamais un nouveau scan divergent au moment de
+   l'exécution.
+
+   `hx-confirm` (attribut HTMX natif) ajoute la confirmation navigateur — CSP
+   `script-src 'self'` sans `unsafe-eval` interdit `onclick=`/`hx-vals="js:..."`,
+   ce gabarit n'en utilise aucun. #}
+<p class="hint">
+  {{ preview.detail.count }} part(s) détachée(s) au total
+  ({{ preview.detail.total_bytes | humanize_bytes }}) —
+  {{ preview.targets | length }} table(s) purgeable(s) depuis cet écran
+  (tables de flux + tables système).
+</p>
+
+{% if preview.detail.by_group %}
+<table>
+  <thead>
+    <tr><th>Base</th><th>Table</th><th>Raison</th><th>Parts</th><th>Taille</th></tr>
+  </thead>
+  <tbody>
+    {% for g in preview.detail.by_group %}
+    <tr>
+      <td><code>{{ g.database }}</code></td>
+      <td><code>{{ g.table }}</code></td>
+      <td>{{ g.reason }}</td>
+      <td class="num">{{ g.count }}</td>
+      <td class="num mono">{{ g.bytes_on_disk | humanize_bytes }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if preview.targets %}
+<form
+  hx-post="{{ '/api/db-health/detached-parts/execute-all' | prefixed }}"
+  hx-target="this"
+  hx-swap="outerHTML"
+  hx-ext="json-enc"
+  hx-confirm="Purger TOUTES les parts détachées listées ci-dessus (tables de flux et tables système) ? Action définitive — aucune donnée de flux active n'est affectée, seules les parts déjà détachées sont supprimées."
+>
+  <input type="hidden" name="preview" value='{{ preview_json }}'>
+  <button type="submit" class="danger">Purger tout ({{ preview.targets | length }} table(s))</button>
+</form>
+{% else %}
+  <p class="hint">Rien à purger pour le moment.</p>
+{% endif %}

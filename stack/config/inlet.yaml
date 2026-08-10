@@ -1,0 +1,42 @@
+# Config inlet — collecteur de flux, stack PORTABLE.
+#
+# Écoute les TROIS protocoles NetFlow/IPFIX/sFlow sur les ports standards.
+# `listen: 0.0.0.0:PORT` : on écoute sur TOUTES les interfaces du conteneur,
+# c'est le compose qui décide ensuite quelle interface hôte est exposée
+# (`ports:` dans docker-compose.yml) — rien ici n'est spécifique à un réseau
+# particulier.
+#
+# VALEURS `workers` LITTÉRALES (mesuré 2026-08-07) : Akvorado ne résout PAS
+# les substitutions shell/compose (dollar-accolade-VAR) dans ses YAML — seul
+# Docker Compose le fait, jamais le binaire Akvorado qui les lit ensuite.
+# Une telle substitution laissée ici provoquait au démarrage réel, sur les
+# 3 inputs :
+#   'Inlet[0].Flow.Inputs[0].Config.Workers' cannot parse value as 'int':
+#   strconv.ParseInt: invalid syntax
+# 2 workers par protocole = 6 goroutines de décodage au total, un défaut
+# raisonnable pour démarrer sur un parc de 350 routeurs répartis sur les 3
+# protocoles (peu de sites parlent les trois à la fois). Ce réglage se change
+# désormais depuis l'écran Okvorado (section « Collecte »), jamais en éditant
+# ce fichier à la main.
+
+flow:
+  inputs:
+    # NetFlow v9 / IPFIX classique — port historique 2055.
+    - type: udp
+      decoder: netflow
+      listen: 0.0.0.0:2055
+      workers: 2
+
+    # IPFIX pur — port IANA officiel 4739. Certains équipements (dont
+    # plusieurs modèles opérateur) l'utilisent au lieu de 2055.
+    - type: udp
+      decoder: netflow
+      listen: 0.0.0.0:4739
+      workers: 2
+
+    # sFlow — port standard 6343. Alternative à NetFlow sur des équipements
+    # qui ne parlent que ce protocole (switches notamment).
+    - type: udp
+      decoder: sflow
+      listen: 0.0.0.0:6343
+      workers: 2

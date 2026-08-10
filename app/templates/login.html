@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Connexion · Okvorado</title>
+  <link rel="icon" type="image/svg+xml" href="{{ '/static/favicon.svg' | prefixed }}">
+  <link rel="stylesheet" href="{{ '/static/style.css?v=' | prefixed }}{{ static_version }}">
+</head>
+<body class="login-body">
+  {# Page de connexion volontairement HORS `base.html` : elle ne doit exposer
+     aucun lien vers le reste de l'application (toute route protégée
+     redirigerait ici de toute façon), et ne doit dépendre d'aucun script
+     (htmx compris) — un exploitant qui n'a pas encore de session doit
+     pouvoir se connecter même si un script tiers venait à échouer. #}
+  <main class="login-page">
+    <div class="login-card">
+      <div class="brand">
+        <span class="brand-mark">◆</span>
+        <span class="brand-name">Okvorado</span>
+      </div>
+
+      {% if error %}
+        <p class="notice notice-error" role="alert">{{ error }}</p>
+      {% endif %}
+
+      {% if require_totp %}
+        <p class="notice notice-info">
+          Identifiant et mot de passe corrects. Ressaisissez-les avec votre code de
+          vérification à 6 chiffres (ou un code de secours) pour terminer la connexion.
+        </p>
+        <form method="post" action="{{ '/login' | prefixed }}" class="login-form">
+          <label for="username">Identifiant</label>
+          <input type="text" id="username" name="username" value="{{ username }}"
+                 autocomplete="username" required>
+          <label for="password">Mot de passe</label>
+          <input type="password" id="password" name="password"
+                 autocomplete="current-password" autofocus required>
+          <label for="totp_code">Code de vérification</label>
+          <input type="text" id="totp_code" name="totp_code" inputmode="numeric"
+                 autocomplete="one-time-code" required maxlength="9"
+                 placeholder="123456 ou code de secours">
+          <button type="submit" class="btn primary">Se connecter</button>
+        </form>
+      {% else %}
+        <form method="post" action="{{ '/login' | prefixed }}" class="login-form">
+          <label for="username">Identifiant</label>
+          <input type="text" id="username" name="username" autocomplete="username" autofocus required>
+          <label for="password">Mot de passe</label>
+          <input type="password" id="password" name="password" autocomplete="current-password" required>
+          <button type="submit" class="btn primary">Se connecter</button>
+        </form>
+      {% endif %}
+    </div>
+  </main>
+</body>
+</html>

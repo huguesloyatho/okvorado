@@ -1,0 +1,268 @@
+{% extends "base.html" %}
+
+{% block title %}Exportateurs{% endblock %}
+
+{% block content %}
+<section id="exporters-page">
+  <h1>Exportateurs</h1>
+
+  <p class="notice notice-info">
+    <strong>Avant de conclure à une panne :</strong> l'absence de flux sur une fenêtre courte
+    n'est pas forcément un signe de panne. Un exportateur à flux longs peut n'émettre qu'un
+    datagramme toutes les 75 secondes ; il peut disparaître d'une fenêtre de quelques minutes
+    tout en fonctionnant normalement. Toutes les fenêtres proposées ici sont d'au moins 1 heure
+    pour cette raison.
+  </p>
+
+  {# CE POLL EST SUSPENDU TANT QU'UN COMPTE RENDU SNMP EST AFFICHÉ.
+     DÉFAUT MESURÉ À L'ÉCRAN (2026-08-10) : après « Tout résoudre par SNMP »,
+     le tableau de résultats s'affichait puis DISPARAISSAIT tout seul. Ce
+     `every 30s` remplace `#exporters-page` en `outerHTML` — donc la section
+     ENTIÈRE, y compris le conteneur de compte rendu et son contenu.
+     L'exploitant lançait la résolution, commençait à lire quelles machines
+     avaient répondu, et le tableau s'effaçait sous ses yeux : le travail était
+     fait (changements en attente) mais il ne savait plus qui avait échoué.
+     Invisible aux tests — aucun ne laisse s'écouler 30 s de vie de page.
+
+     La suspension est faite par `app/static/snmp-poll-guard.js`, PAS par une
+     condition htmx `every 30s [ ... ]` : DEUXIÈME DÉFAUT MESURÉ le même jour,
+     cette syntaxe fait évaluer la condition en JavaScript DYNAMIQUE, ce que la
+     CSP du projet (`script-src 'self'`, sans `unsafe-eval`) interdit. Le
+     navigateur levait `EvalError` à chaque tick, la condition était donc
+     ignorée et le poll s'exécutait quand même — le compte rendu disparaissait
+     toujours, avec en prime trois erreurs console. Le garde retire et remet
+     l'attribut `hx-trigger`, sans jamais évaluer de chaîne.
+
+     On NE SUPPRIME PAS le rafraîchissement : il tient les compteurs de flux à
+     jour, le retirer serait une régression. Il reprend dès que l'exploitant
+     ferme le compte rendu (bouton « Fermer » plus bas). #}
+  <form id="exporters-window-form"
+        hx-get="{{ '/exporters' | prefixed }}"
+        hx-target="#exporters-page"
+        hx-trigger="change, every 30s"
+        hx-select="#exporters-page"
+        hx-swap="outerHTML">
+    <label for="window-select">Fenêtre d'observation</label>
+    <select id="window-select" name="window"
+            hx-get="{{ '/exporters' | prefixed }}"
+            hx-target="#exporters-page"
+            hx-select="#exporters-page"
+            hx-swap="outerHTML"
+            hx-trigger="change">
+      {% for choice in window_choices %}
+        <option value="{{ choice }}" {% if choice == window %}selected{% endif %}>{{ choice }}</option>
+      {% endfor %}
+    </select>
+  </form>
+
+  {% if error %}
+    <p class="notice notice-error">{{ error }}</p>
+  {% endif %}
+
+  <p class="exporters-total">{{ total }} exportateur{{ "s" if total != 1 else "" }} sur la fenêtre {{ window }}.</p>
+
+  {# ------------------------------------------------------------------------
+     RÉSOLUTION AUTOMATIQUE DES ifIndex — le geste qui remplace la saisie
+     manuelle un-par-un (2026-08-10).
+
+     DÉFAUT MESURÉ : `outlet.yaml` portait une liste `if-indexes` ÉCRITE À LA
+     MAIN par machine (serveur-fichiers=[2,152], routeur-agence-02=[2,999], clm=[2,1222],
+     routeur-agence-21=[2,235]...). Vérifié par SSH sur 4 machines : les ifIndex réels
+     sont 1=lo, 2=eth0/ens18, 3=tailscale0, 4+=bridges Docker — les nombres
+     999/1222/235/2932 n'existent NULLE PART. Un flux arrivant avec ifIndex 3
+     ne matchait donc rien, Akvorado appliquait le bloc `default:` et écrivait
+     `unknown` : d'où « Interface inconnue » sur 4 exportateurs sur 11.
+
+     POURQUOI UN BOUTON GLOBAL : la cible est un parc de 350 routeurs. Une
+     liste nominative par machine croît linéairement avec le parc — c'est
+     exactement le geste que ce projet supprime, pas un confort.
+
+     ⚠️ `hx-select="unset"` EST OBLIGATOIRE ICI. Le conteneur `#exporters-page`
+     porte `hx-select="#exporters-page"` (auto-rafraîchissement toutes les
+     30 s) et htmx PROPAGE cet attribut aux enfants. Les fragments rendus par
+     ces boutons ne contiennent pas cet id : htmx chercherait `#exporters-page`
+     dans la réponse, ne trouverait rien, et insérerait un fragment VIDE EN
+     SILENCE. Piège déjà payé à l'identique sur db_health.html et
+     retention.html — ne pas retirer cet attribut.
+     ------------------------------------------------------------------------ #}
+  <section class="exporters-snmp-actions panel" hx-select="unset">
+    <h2>Résolution automatique des interfaces</h2>
+    <p class="hint">
+      Okvorado demande à chaque équipement sa propre table d'interfaces
+      (SNMP <code class="mono">IF-MIB::ifName</code>, repli
+      <code class="mono">ifDescr</code>) et remplace les
+      <code class="mono">if-indexes</code> déclarés à la main. Les réglages
+      d'exploitant (<em>boundary</em>, description, débit) sont conservés :
+      ils sont rapprochés par NOM d'interface, jamais par index.
+    </p>
+    {% if snmp_configured is defined and not snmp_configured %}
+      <p class="notice notice-warn">
+        SNMP n'est pas configuré (ni communauté v2c, ni utilisateur v3) : la
+        résolution automatique est indisponible tant que
+        <code class="mono">OKVORADO_SNMP_COMMUNITY</code> ou
+        <code class="mono">OKVORADO_SNMP_V3_USERNAME</code> n'est pas renseigné.
+      </p>
+    {% endif %}
+    {# `hx-indicator` EST OBLIGATOIRE ICI, pas décoratif. DÉFAUT MESURÉ À
+       L'ÉCRAN (2026-08-10) : interroger un équipement dont l'agent SNMP est
+       muet coûte son timeout complet (3,4 s mesurées). Le bouton mettait donc
+       9,8 s à rendre son tableau pour 11 exportateurs — et pendant ces 10
+       secondes l'écran ne montrait STRICTEMENT RIEN. Un exploitant conclut que
+       le bouton est cassé et reclique. `hx-disabled-elt` empêche le double
+       envoi, mais un bouton grisé SANS message n'explique pas l'attente :
+       c'est un zéro silencieux d'interface. Le sondage est désormais
+       concurrent (voir `post_resolve_snmp_all`), donc l'attente est bien plus
+       courte — elle reste NON NULLE, et doit rester visible. #}
+    <button type="button"
+            class="primary"
+            hx-post="{{ '/exporters/resolve-snmp-all' | prefixed }}"
+            hx-target="#snmp-resolve-all-result"
+            hx-swap="innerHTML"
+            hx-select="unset"
+            hx-indicator="#snmp-resolve-all-progress"
+            hx-disabled-elt="this">
+      Tout résoudre par SNMP
+    </button>
+    <p id="snmp-resolve-all-progress" class="htmx-indicator snmp-progress" role="status">
+      Interrogation SNMP des équipements en cours — chaque agent muet coûte
+      quelques secondes d'attente avant d'être déclaré sans réponse.
+    </p>
+    {# Fermer le compte rendu RELANCE le rafraîchissement automatique (voir la
+       condition du poll sur `#exporters-window-form`). Sans ce bouton, le
+       poll resterait suspendu indéfiniment après une résolution : les
+       compteurs de flux se figeraient sans que rien ne l'explique — on
+       remplacerait un défaut par un autre. Masqué tant qu'il n'y a rien à
+       fermer (`:empty + button` en CSS). #}
+    <div id="snmp-resolve-all-result" class="snmp-resolve-result"></div>
+    {# Vidage par HTMX, PAS par `onclick` : la CSP du projet est
+       `script-src 'self'` SANS `unsafe-inline` (app/main.py) — un gestionnaire
+       inline serait bloqué par le navigateur, en silence. `hx-get` sur une
+       route qui rend une chaîne vide fait le travail avec le seul script déjà
+       autorisé (htmx, servi localement). #}
+    <button type="button"
+            id="snmp-resolve-all-close"
+            class="secondary snmp-resolve-close"
+            hx-get="{{ '/exporters/resolve-snmp-clear' | prefixed }}"
+            hx-target="#snmp-resolve-all-result"
+            hx-swap="innerHTML"
+            hx-select="unset">
+      Fermer le compte rendu (relance l'actualisation automatique)
+    </button>
+  </section>
+
+  <table class="exporters-table">
+    <thead>
+      <tr>
+        <th>État</th>
+        <th>Exportateur</th>
+        <th>Adresse</th>
+        <th>Flux transmis</th>
+        <th>Flux rejetés</th>
+        <th>Volume</th>
+        <th>Dernier flux</th>
+        <th>Interfaces observées</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in items %}
+        <tr class="health-{{ item.health.value }}">
+          <td>
+            <span class="badge badge-{{ item.health.value }}">{{ item.health.label }}</span>
+          </td>
+          <td><a href="{{ '/exporters/' | prefixed }}{{ item.name | urlencode }}" class="link-action">{{ item.name }}</a></td>
+          <td>{{ item.address }}</td>
+          <td class="num">{{ item.forwarded_total | humanize_number }}</td>
+          <td class="num">{{ item.rejected_total | humanize_number }}</td>
+          <td class="num">{{ (item.observed.bytes if item.observed else 0) | humanize_bytes }}</td>
+          <td>{{ item.observed.last_seen if item.observed and item.observed.last_seen else "jamais sur cette fenêtre" }}</td>
+          <td>
+            {% if item.observed and item.observed.interfaces %}
+              {{ item.observed.interfaces | join(", ") }}
+            {% else %}
+              —
+            {% endif %}
+          </td>
+          <td class="exporters-table__action" hx-select="unset">
+            {% if item.health.value == "unknown_interface" and item.declared and item.observed %}
+              {# GESTE PRINCIPAL (2026-08-10) : demander sa table d'interfaces à
+                 l'équipement plutôt que la ressaisir. Voir le commentaire de la
+                 section « Résolution automatique des interfaces » plus haut pour
+                 le défaut mesuré. Le formulaire manuel qui suit reste le REPLI
+                 pour un équipement sans agent SNMP (cas réel : deux machines du
+                 parc n'ont pas de snmpd installé). #}
+              {# Indicateur : MÊME RAISON QUE LE BOUTON GLOBAL (défaut mesuré
+                 le 2026-08-10). Un agent SNMP muet coûte 3,4 s de timeout
+                 mesurées — sans retour visuel, l'exploitant croit le bouton
+                 inerte et reclique. L'indicateur est propre à CETTE ligne
+                 (identifiant dérivé de l'adresse) : un indicateur partagé
+                 s'allumerait sur toutes les lignes à la fois. #}
+              <button type="button"
+                      class="primary"
+                      hx-post="{{ '/exporters/' | prefixed }}{{ item.address | urlencode }}/resolve-snmp"
+                      hx-target="closest td"
+                      hx-swap="beforeend"
+                      hx-select="unset"
+                      hx-indicator="#snmp-progress-{{ loop.index }}"
+                      hx-disabled-elt="this">
+                Résoudre par SNMP
+              </button>
+              <span id="snmp-progress-{{ loop.index }}"
+                    class="htmx-indicator snmp-progress"
+                    role="status">interrogation SNMP…</span>
+
+              {# Contexte réel : l'ifIndex d'une interface TUN (tailscale0) change à
+                 chaque redémarrage du démon tailscale. Ce bouton met en attente le
+                 correctif sans passer par SSH (deux nœuds corrigés à la main : .17
+                 219→409, .21 3→235, faute de ce bouton). L'ancien ifIndex déclaré est
+                 pris sur la première interface connue de cet exportateur : à ajuster
+                 dans le formulaire de /config si plusieurs interfaces divergent. #}
+              {% set unknown_names = item.observed.interfaces | reject("in", item.declared.if_indexes.values() | map(attribute="name") | list) | list %}
+              {% set old_spec = (item.declared.if_indexes.values() | list)[0] if item.declared.if_indexes else none %}
+              <form method="post"
+                    action="/config/exporters/{{ item.declared.cidr | urlencode }}/fix-ifindex"
+                    hx-post="{{ '/config/exporters/' | prefixed }}{{ item.declared.cidr | urlencode }}/fix-ifindex"
+                    hx-target="closest tr"
+                    hx-swap="afterend"
+                    hx-sync="closest tr:replace"
+                    hx-disabled-elt="find button">
+                <input type="hidden" name="interface_name" value="{{ unknown_names[0] if unknown_names else (old_spec.name if old_spec else '') }}">
+                <input type="hidden" name="old_if_index" value="{{ old_spec.if_index if old_spec else 0 }}">
+                <input type="number" name="new_if_index" placeholder="nouvel ifIndex" min="1" required class="exporters-table__ifindex-input">
+                <button type="submit" class="primary">Corriger l'ifIndex</button>
+              </form>
+            {% elif item.health.value == "undeclared" %}
+              {# Pré-rempli avec l'IP et le nom observés : il ne reste plus qu'à
+                 confirmer pour mettre l'ajout en file d'attente sur /config. #}
+              <form method="post"
+                    action="/config/exporters"
+                    hx-post="{{ '/config/exporters' | prefixed }}"
+                    hx-target="closest tr"
+                    hx-swap="afterend"
+                    hx-sync="closest tr:replace"
+                    hx-disabled-elt="find button">
+                <input type="hidden" name="cidr" value="{{ item.address }}/32">
+                <input type="text" name="name" value="{{ item.name }}" maxlength="128" required class="exporters-table__name-input">
+                <button type="submit" class="primary">Déclarer cet exportateur</button>
+              </form>
+            {% else %}
+              —
+            {% endif %}
+          </td>
+        </tr>
+        {% if item.health.value in ("rejected", "silent") and item.explanation %}
+          <tr class="explanation-row explanation-{{ item.health.value }}">
+            <td colspan="9">
+              <p class="explanation">{{ item.explanation }}</p>
+            </td>
+          </tr>
+        {% endif %}
+      {% else %}
+        <tr>
+          <td colspan="9">Aucun exportateur à afficher sur cette fenêtre.</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

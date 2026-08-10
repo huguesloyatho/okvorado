@@ -1,0 +1,322 @@
+# Config outlet — stack PORTABLE, mode AUTO-DÉCOUVERTE (cible : 350 routeurs).
+#
+# CE QUE CE FICHIER SUPPRIME : le point de rupture mesuré en prod homelab
+# (2026-08-07) où `outlet.yaml` déclarait 13 adresses en dur pour 11
+# exportateurs, ~18 lignes NOMINATIVES par exportateur (nom, if-indexes,
+# description, speed, boundary). Ce modèle ne tient pas à 350 routeurs.
+#
+# ICI : AUCUN exportateur n'est déclaré par IP. Un routeur pointé vers ce
+# collecteur apparaît tout seul — exactement le comportement NetFlow attendu
+# par l'utilisateur : « je l'ai installé avec le wizard sans rien faire, il a
+# détecté les flux netflow arrivant et déclaré automatiquement les sources.
+# J'ai juste eu à activer le SNMPv2 (avec la communauté) [...] pour qu'il les
+# requête et ajoute les compléments d'infos qu'il n'avait pas. »
+
+geoip:
+  # GeoIP est optionnel : le stack démarre sans base MaxMind/IPinfo montée.
+  # Sans ce `optional: true`, l'absence de fichier ferait échouer l'outlet
+  # au démarrage — sur une toute première installation, avant que l'exploitant
+  # ait pensé à fournir une base.
+  optional: true
+  asn-database:
+    - /usr/share/GeoIP/asn.mmdb
+  geo-database:
+    - /usr/share/GeoIP/country.mmdb
+
+networks:
+  # Plages GÉNÉRIQUES par RÔLE (RFC1918, l'espace d'adressage privé standard),
+  # pas par machine : elles servent à qualifier un exportateur DÉCOUVERT
+  # (interne/externe, étiquette de lisibilité dans la console), jamais à en
+  # DÉCLARER un. Ce ne sont PAS des exportateurs — juste les plages qu'un parc
+  # d'entreprise rencontre le plus couramment ; à adapter au plan d'adressage
+  # réel au déploiement si besoin (aucune n'est l'IP d'un routeur précis).
+  networks:
+    10.0.0.0/8:
+      name: reseau-prive-classe-a
+      role: internal
+    172.16.0.0/12:
+      name: reseau-prive-classe-b
+      role: internal
+    192.168.0.0/16:
+      name: reseau-prive-classe-c
+      role: internal
+  network-sources: []
+
+metadata:
+  # -----------------------------------------------------------------------
+  # CAUSE RÉELLE MESURÉE (2026-08-07, .7) : `default:` ET
+  # `skip-missing-interfaces: true` ENSEMBLE sur la même entrée `static` ne
+  # cohabitent PAS — Akvorado le déclare lui-même dans sa validation de
+  # configuration (`outlet/metadata/provider/static/config.go` : le champ
+  # `Default` porte le tag `validate:"omitempty,excluded_with=SkipMissingInterfaces"`,
+  # littéralement MUTUELLEMENT EXCLUSIFS). Preuve par le code
+  # (`outlet/metadata/provider/static/root.go`, fonction `Query`) :
+  #
+  #   iface, ok := exporter.IfIndexes[query.IfIndex]
+  #   if !ok {
+  #       if exporter.SkipMissingInterfaces {
+  #           return provider.Answer{}, provider.ErrSkipProvider  // <- sort ICI
+  #       }
+  #       if exporter.Default == (provider.Interface{}) { return ... }
+  #       iface = exporter.Default  // <- jamais atteint si Skip est true
+  #   }
+  #
+  # Avec les deux combinés (l'ancienne version de ce fichier), `static` saute
+  # TOUJOURS (aucun ifIndex n'est jamais déclaré ici) sans jamais consulter
+  # `default:` — puis `snmp`, qui ne connaît PAS `ErrSkipProvider` et tente
+  # TOUJOURS de poller, timeout sur un exportateur sans agent SNMP actif.
+  # Cette vraie erreur (pas un skip) arrête la cascade entière
+  # (`outlet/metadata/root.go`, `queryProviders` : `if err != nil { return err }`,
+  # sort de la boucle SANS revenir consulter le `default:` de `static`, quel
+  # que soit l'ordre des providers). Mesuré : 100% des flux reçus marqués
+  # `metadata missing` (métrique `akvorado_outlet_core_flows_errors_total`),
+  # zéro ligne dans ClickHouse malgré une consommation Kafka par ailleurs
+  # saine — le `default:` documenté comme filet « zéro silencieux » ne
+  # servait jamais.
+  #
+  # CORRECTIF : retirer `skip-missing-interfaces`. `static` répond alors
+  # IMMÉDIATEMENT et TOUJOURS via `default:` pour tout exportateur inconnu —
+  # aucun flux jeté, le vrai comportement « zéro silencieux ». Ceci n'éteint
+  # PAS l'auto-découverte SNMP : le cache métadonnées se RAFRAÎCHIT tout seul
+  # (`metadata.cacherefresh`, 1h par défaut — `outlet/metadata/root.go`,
+  # `expireCache` + `NeedUpdates` + `refreshCacheEntry`), et ce rafraîchissement
+  # req-interroge TOUS les providers, y compris `snmp`, même pour une entrée
+  # déjà résolue par `default:`. Résultat : un exportateur apparaît
+  # INSTANTANÉMENT (comptabilisé dès le premier flux, jamais perdu), puis ses
+  # vraies métadonnées SNMP (nom d'interface, description, boundary) le
+  # remplacent progressivement dans l'heure qui suit, sans jamais avoir
+  # bloqué la remontée des flux entre-temps.
+  #
+  # ⚠️ CAUSE RÉELLE MESURÉE (2026-08-08, .7) : le cache métadonnées est
+  # PERSISTANT sur disque (`AKVORADO_CFG_OUTLET_METADATA_CACHEPERSISTFILE`,
+  # voir docker-compose.yml — nécessaire pour ne pas reperdre toutes les
+  # métadonnées connues à chaque redémarrage du service, utile à 350
+  # routeurs). Conséquence non anticipée par le paragraphe ci-dessus :
+  # `cacherefresh` (1h par défaut) se base sur `LastUpdated` (dernière
+  # ÉCRITURE en cache), jamais rafraîchi par une lecture — alors que le
+  # cache est purgé de ses entrées PÉRIMÉES via `LastAccessed` (dernier
+  # ACCÈS), lui perpétuellement repoussé par chaque flux qui tape le cache.
+  # Résultat : une entrée mise en cache via `default:` (repli, PAS SNMP) dès
+  # le tout premier flux — avant même que SNMP ait eu la moindre chance de
+  # répondre au démarrage — est SAUVEGARDÉE sur le volume persistant au
+  # premier arrêt du composant metadata (reload de config par
+  # l'orchestrateur, `docker compose restart`, ou tout redémarrage du
+  # service), puis RECHARGÉE telle quelle au redémarrage suivant. Avec un
+  # flux constant, elle ne redevient jamais "perimee" par accès et
+  # `cacherefresh` (1h) ne se déclenche donc qu'une fois par heure au mieux
+  # — mesuré : `akvorado_outlet_metadata_provider_requests_total` reste
+  # bloqué à 0 en continu (aucun provider, ni `snmp` ni `static`, n'est
+  # plus jamais interrogé), `ExporterName`/`InIfName` restent figés sur
+  # `exportateur-non-resolu`/`interface-non-resolue` indéfiniment, et
+  # l'agent SNMP (`snmpInPkts`, OID 1.3.6.1.2.1.11.1.0) n'est plus jamais
+  # sollicité — malgré une config SNMP saine et un agent joignable. Preuve
+  # par la purge : supprimer le fichier de cache persistant (arrêt propre
+  # du service, `rm` du fichier, puis démarrage) débloque IMMÉDIATEMENT le
+  # provider SNMP (`akvorado_outlet_metadata_provider_snmp_poller_success_requests_total`
+  # > 0 dès le prochain flux, `ExporterName` résolu au `sysName` réel).
+  #
+  # CORRECTIF : `cache-refresh` court (5 minutes, largement sous l'heure
+  # par défaut) — le vrai filet de rattrapage promis par le paragraphe
+  # ci-dessus redevient effectif dans tous les cas, y compris celui d'un
+  # cache persistant figé par une race de démarrage. Ne supprime PAS le
+  # bénéfice de la persistance entre redémarrages (les VRAIES métadonnées
+  # SNMP déjà résolues restent en cache et ne sont pas reperdues) ; force
+  # seulement une nouvelle tentative provider assez tôt pour qu'un
+  # exportateur mal résolu au tout premier flux soit corrigé en quelques
+  # minutes plutôt qu'en jusqu'à une heure — voire jamais en pratique, tant
+  # que le service n'a pas connu un cycle Stop/Start SANS trafic entre
+  # temps (le seul cas où `LastAccessed` peut expirer une entrée figée).
+  #
+  # `cache-duration` DOIT accompagner `cache-refresh` : validation Akvorado
+  # (`outlet/metadata/config.go`, tag `validate:"eq=0|min=1m,eq=0|gtefield=CacheDuration"`
+  # sur `CacheRefresh`) — `cache-refresh` doit être ≥ `cache-duration`
+  # (30 minutes par défaut), sinon l'orchestrateur refuse la config au
+  # démarrage. Les deux sont donc alignés ici à 5 minutes : une entrée
+  # inaccédée (silence complet de l'exportateur) sort du cache après 5 min
+  # plutôt que 30 — cohérent avec `SILENT_THRESHOLD_HOURS` côté Okvorado qui
+  # détecte de toute façon le silence à une granularité bien plus large.
+  cache-duration: 5m
+  cache-refresh: 5m
+  providers:
+    # ⚠️ SNMP D'ABORD, `static` EN REPLI — ordre établi par mesure (2026-08-08).
+    #
+    # La cascade s'arrête au PREMIER provider qui accepte la requête. Avec
+    # `static` en tête portant `"::/0"`, il accepte TOUTES les adresses :
+    # SNMP n'est JAMAIS interrogé. Mesuré sur un agent SNMP réel — son
+    # compteur `snmpInPkts` n'a pas bougé d'une requête pendant que l'outlet
+    # traitait 370 000 flux, et les exportateurs gardaient le nom de repli.
+    #
+    # Deux fausses pistes écartées par l'expérience, notées pour qu'on ne
+    # les reprenne pas :
+    #   - le CACHE n'y est pour rien : après un `down -v` (tous volumes
+    #     détruits, cache vide, stack neuf), l'agent restait non interrogé.
+    #   - « un timeout SNMP arrête la cascade et fait jeter les flux » est
+    #     FAUX : avec SNMP en tête, 7154 nouveaux flux ont été enregistrés.
+    #
+    # ⚠️ PIÈGE DE MESURE qui a coûté plusieurs essais : éditer
+    # `config/outlet.yaml` à la main NE SERT À RIEN. Le service
+    # `config-generator` le RÉGÉNÈRE depuis ce gabarit à chaque `up`, et
+    # écrase la modification. C'est ICI, dans le gabarit versionné, que
+    # l'ordre se décide.
+    #
+    # `static` reste APRÈS comme filet anti-flux-jetés : la doc Akvorado est
+    # explicite, « Flows missing any interface information are discarded ».
+    - type: snmp
+      # AUTO-DÉCOUVERTE : Akvorado interroge automatiquement, en SNMPv2,
+      # l'adresse SOURCE de CHAQUE flux reçu — sans qu'aucun exportateur ne
+      # soit déclaré nominativement ici. C'est la capacité qui remplace les
+      # 13 adresses en dur du homelab et qui tient à 350 routeurs.
+      credentials:
+        # ::/0 = toute adresse (v4 et v6-mappée) : une seule communauté pour
+        # tout le parc. Un site/segment avec une communauté différente peut
+        # ajouter une entrée plus spécifique (ex: 10.20.0.0/16) — Akvorado
+        # prend la plage la plus précise qui correspond.
+        "::/0":
+          communities:
+            # RÉFÉRENCE D'ENVIRONNEMENT, jamais une valeur en clair : la
+            # communauté SNMP est un secret d'authentification.
+            #
+            # CE FICHIER EST UN GABARIT (`outlet.yaml.template`), PAS le YAML
+            # lu par Akvorado. Vérifié dans la doc officielle Akvorado
+            # (50-configuration.md, 2026-08-07) : le seul mécanisme natif de
+            # variables d'environnement est `AKVORADO_CFG_<SERVICE>_...`, qui
+            # ne documente aucune syntaxe pour une clé de MAP dynamique comme
+            # `credentials."::/0".communities` (index de liste + clé CIDR
+            # contenant `/` et `:`) — parier la découverte SNMP de 350
+            # routeurs sur une syntaxe non documentée est écarté. Akvorado ne
+            # résout de toute façon AUCUN `${VAR}` lui-même (mesuré : la
+            # chaîne littérale `${SNMP_COMMUNITY}` provoquait avant ce fichier
+            # un `cannot parse value` sur d'autres clés du même type). Le
+            # conteneur `config-generator` (voir docker-compose.yml) résout
+            # ${SNMP_COMMUNITY} via `envsubst` AVANT que l'orchestrateur ne
+            # démarre, et écrit `outlet.yaml` (gitignoré, jamais versionné) à
+            # côté de ce gabarit. Le secret réel ne vit que dans le `.env`
+            # local de l'exploitant.
+            - ${SNMP_COMMUNITY}
+        # --------------------------------------------------------------
+        # COEXISTENCE SNMPv2c / SNMPv3 — migration progressive (350 routeurs)
+        # --------------------------------------------------------------
+        # Doc Akvorado officielle (section metadata.providers, provider
+        # type: snmp, clé `credentials`) : « credentials is a map from
+        # exporter subnets to credentials. Use ::/0 to set the default
+        # value. » et « Akvorado uses SNMPv2 if `communities` is present
+        # and SNMPv3 if `user-name` is present. You need one of them. »
+        # Une entrée `credentials` est SOIT v2c (`communities`) SOIT v3
+        # (`user-name`), JAMAIS les deux dans la MÊME entrée CIDR — mais
+        # `credentials` est une MAP CIDR → config, donc PLUSIEURS entrées
+        # CIDR coexistent dans la même liste : "::/0" en v2c ci-dessus
+        # reste le défaut global (le parc, majoritairement en v2c, continue
+        # de fonctionner sans rien changer), et une entrée CIDR PLUS
+        # SPÉCIFIQUE en v3 peut s'y ajouter pour le sous-réseau déjà migré.
+        #
+        # POURQUOI UN SOUS-RÉSEAU (CIDR) ET PAS UNE IP PAR ROUTEUR : la clé
+        # de `credentials` est un CIDR, pas un identifiant de device. Akvorado
+        # résout les credentials PAR SOUS-RÉSEAU, pas par équipement individuel
+        # annoncé à l'avance — un gabarit statique ne peut pas énumérer "ces
+        # 12 IP précises migrent cette semaine" sans casser le principe
+        # d'auto-découverte (zéro déclaration nominative, cf. tête de ce
+        # fichier). Un opérateur migre donc un LOT de routeurs vers SNMPv3 en
+        # les regroupant sur un sous-réseau dédié (ou en indiquant la plage
+        # déjà migrée dans SNMP_V3_SUBNET) — cohérent avec "migration
+        # progressive par sous-réseau", pas par device isolé.
+        #
+        # GÉNÉRATION CONDITIONNELLE : Akvorado ne résout aucune logique
+        # conditionnelle en YAML (mesuré, cf. commentaires SNMP_COMMUNITY
+        # ci-dessus) — ce gabarit ne peut donc pas écrire "ajoute cette
+        # entrée SEULEMENT SI SNMP_V3_USERNAME est renseigné" nativement.
+        # Le marqueur ci-dessous est remplacé par `generate-config.sh`
+        # (shell, dans le conteneur config-generator) : par le bloc YAML v3
+        # complet si `SNMP_V3_USERNAME` est non vide, ou par rien (ligne
+        # supprimée) sinon — auquel cas `credentials` ne contient QUE
+        # "::/0" en v2c, comportement STRICTEMENT IDENTIQUE à aujourd'hui
+        # pour les 350 routeurs pas encore migrés.
+        # __SNMP_V3_CREDENTIALS_PLACEHOLDER__
+      # Tolérance réseau : sur 350 sites, la latence et la perte de paquets
+      # varient. Des valeurs par défaut trop strictes multiplieraient les
+      # "exportateur-non-resolu" du repli ci-dessus pour des raisons de
+      # timing plutôt que de vraies pannes SNMP.
+      #
+      # VALEURS LITTÉRALES (mesuré 2026-08-07) : Akvorado ne résout PAS les
+      # `${VAR}` dans ses YAML — seul Docker Compose le fait, jamais le
+      # binaire Akvorado qui les lit ensuite. `${SNMP_POLLER_RETRIES:-3}` et
+      # `${SNMP_POLLER_TIMEOUT:-5s}` littéraux provoquaient au démarrage réel :
+      #   'Outlet[0].Metadata.Providers[1].Config.PollerRetries' cannot
+      #   parse value as 'int': strconv.ParseInt: invalid syntax
+      #   'Outlet[0].Metadata.Providers[1].Config.PollerTimeout' time:
+      #   invalid duration
+      # 3 tentatives / 5s : marge raisonnable pour un parc de 350 sites à
+      # latence variable, sans faire traîner la découverte en cas de panne
+      # SNMP réelle. Ce réglage se change désormais depuis l'écran Okvorado
+      # (section « Découverte des interfaces (SNMP) »), jamais en éditant ce
+      # fichier à la main.
+      poller-retries: 3
+      poller-timeout: 5s
+    - type: static
+      exporters:
+        # Entrée GÉNÉRIQUE uniquement : aucun exportateur nominatif. Un
+        # opérateur qui a besoin d'une exception pour UN routeur particulier
+        # (ex: équipement sans SNMP) ajoute une clé IP spécifique ICI, dans
+        # cette section — c'est le seul endroit prévu pour ce cas, et il
+        # reste l'exception, pas la règle.
+        "::/0":
+          # ZÉRO SILENCIEUX (mesure du 2026-08-07 sur ce projet) : la doc
+          # Akvorado est explicite — « Flows missing any interface
+          # information are discarded. » Sans repli, un exportateur dont
+          # SNMP échoue (pare-feu, mauvaise communauté, ACL trop stricte)
+          # verrait TOUS ses flux jetés en silence. À l'échelle de 350
+          # routeurs, c'est une perte de visibilité invisible : aucune
+          # erreur, juste un routeur absent des graphes sans explication.
+          #
+          # TROISIÈME CAUSE MESURÉE (2026-08-07, .7, après les deux fix
+          # précédents) : `name:` posé UNIQUEMENT dans `default:` ne suffit
+          # PAS. Preuve par le code source Akvorado :
+          #   - `ExporterConfiguration` (outlet/metadata/provider/static/config.go)
+          #     inclut `provider.Exporter` en SQUASH (mapstructure:",squash") —
+          #     son champ `Name` (marqué `validate:"required"` dans
+          #     `provider.Exporter`, outlet/metadata/provider/root.go) doit
+          #     être posé au MÊME niveau que `default:`/`ifIndexes:`, PAS
+          #     dedans. `default:` est un `provider.Interface` — un type
+          #     DIFFÉRENT, qui ne porte que les attributs d'INTERFACE
+          #     (name/description/speed/boundary d'une interface réseau).
+          #   - `enricher.go` (`enrichFlow`) : `flowExporterName =
+          #     answer.Exporter.Name` (PAS `answer.Interface.Name`) — puis
+          #     `if flowExporterName == "" { ... "metadata missing" }`.
+          # Résultat mesuré : `static.Query()` répondait bien `Found:true`
+          # via `default:` (les deux fix précédents avaient fonctionné), mais
+          # `Exporter.Name` restait "" (jamais renseigné à ce niveau) →
+          # `flowExporterName` vide → 100% des flux marqués "metadata
+          # missing" malgré un `Found:true`. Le nom d'EXPORTATEUR (ci-dessous)
+          # et le nom d'INTERFACE (dans `default:`) sont deux champs
+          # distincts, à renseigner chacun à son niveau.
+          name: exportateur-non-resolu
+          # Ce `default:` générique garantit qu'un exportateur SANS réponse
+          # SNMP est quand même comptabilisé — avec un nom générique plutôt
+          # que d'être purement et simplement perdu. SANS
+          # `skip-missing-interfaces` (voir commentaire plus haut) : c'est ce
+          # qui permet à `default:` de RÉPONDRE réellement, immédiatement,
+          # pour tout exportateur inconnu — au prix de reporter la vraie
+          # découverte SNMP au cycle de rafraîchissement du cache
+          # (`metadata.cacherefresh`) plutôt qu'au tout premier flux.
+          default:
+            name: interface-non-resolue
+            description: "SNMP n'a pas encore repondu (ou est desactive) pour cet exportateur"
+            speed: 1000
+            boundary: undefined
+core:
+  # Classification GÉNÉRIQUE (par règle), jamais par IP nominative — c'est
+  # le même principe que l'auto-découverte appliqué à la classification :
+  # une règle décrit une CATÉGORIE d'exportateurs, pas une machine.
+  exporter-classifiers:
+    - 'ClassifyRegion("defaut")'
+  # La classification interne/externe des interfaces vient du `boundary`
+  # posé par le fournisseur qui résout l'interface (SNMP renseigne
+  # généralement ifAlias/description ; à défaut le `default:` ci-dessus).
+  interface-classifiers: []
+
+# Réglage homelab hérité (mesuré utile sur petit volume : sans lui l'outlet
+# attend 1 Mo de messages Kafka avant de consommer, ce qui introduit une
+# latence perceptible sur un flux faible — typique d'un site pilote avant
+# le déploiement complet des 350 routeurs).
+kafkainput:
+  fetch-min-bytes: 1000
+  fetch-max-wait-time: 5s

@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+
+{% block title %}Akvorado{% endblock %}
+
+{% block content %}
+{# ÉCRAN D'INTÉGRATION de la console Akvorado — voir la docstring de tête de
+   `app/routers/console_embed.py` pour le POURQUOI complet (choix iframe vs
+   rendu direct, et les deux blocages d'encadrement mesurés le 2026-08-10).
+
+   Le style vit dans `app/static/style.css` (règles `.console-frame`), PAS
+   dans un attribut `style=` : c'est la convention du projet — `base.html` ne
+   charge QUE cette feuille, un fichier CSS séparé ne serait jamais chargé.
+   Tout est servi localement (aucun actif distant, cf. contrainte CSP). #}
+<section id="console-embed-page">
+
+  {% if console_disponible %}
+    {# CADRE MÊME ORIGINE : la source est le PROXY d'Okvorado
+       (`console_src` = `proxy_akvorado.PROXY_PREFIX`), jamais l'URL directe
+       de la console — qui ne publie plus aucun port sur l'hôte et ne
+       répondrait pas. Même origine = aucune restriction cross-origin, et la
+       session Okvorado du navigateur est envoyée avec les requêtes du cadre,
+       donc la console reste protégée par l'authentification d'Okvorado.
+
+       PAS d'attribut `sandbox` : il retirerait à la SPA Vue l'exécution de
+       ses propres scripts et l'accès à son stockage — la console serait
+       rendue inerte. La protection ne vient pas d'un bac à sable ici, mais
+       du fait que ce contenu est servi par NOTRE proxy, derrière NOTRE
+       authentification. #}
+    <iframe
+      class="console-frame"
+      src="{{ console_src | prefixed }}"
+      title="Console Akvorado"
+      loading="lazy"></iframe>
+  {% else %}
+    {# ZÉRO SILENCIEUX — règle dure du projet. Un iframe dont la source ne
+       répond pas rend un CADRE BLANC, que rien ne distingue à l'œil d'une
+       page encore en chargement. On ne rend donc AUCUN cadre ici : un état
+       explicite, nommé, PORTANT SA CAUSE, pour que l'exploitant sache que
+       c'est la console — et non Okvorado — qui n'a pas répondu, et qu'il
+       puisse distinguer un service arrêté d'une erreur de configuration. #}
+    <p class="notice notice-warn">
+      <strong>Console Akvorado indisponible.</strong>
+      Okvorado fonctionne, mais la console n'a pas répondu à la sonde : elle
+      ne peut pas être affichée ici.
+    </p>
+    <p class="notice notice-info console-embed-cause">
+      <strong>Cause :</strong> {{ console_cause }}
+    </p>
+    <p class="notice notice-info">
+      La console tourne sur le réseau docker interne et n'est joignable qu'à
+      travers Okvorado. Vérifiez que le service <code>akvorado-console</code>
+      est démarré, puis rechargez cette page.
+    </p>
+  {% endif %}
+
+</section>
+{% endblock %}

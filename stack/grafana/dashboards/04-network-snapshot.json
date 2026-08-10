@@ -1,0 +1,557 @@
+{
+  "uid": "okvorado-network-snapshot",
+  "title": "Okvorado — Network Snapshot",
+  "description": "Réplique la page 'Network Snapshot' de NetFlow Analyzer : tableaux de classement du parc (314 équipements / 772 interfaces chez lui, borné par LIMIT ici). Top N Interfaces by Speed, Top N Interfaces by Utilization (%), Top N Devices by Speed, Top N Application. Chaque ligne Device IP / Device Name pointe vers la fiche exportateur (dataLink var-exporter).",
+  "tags": [
+    "okvorado",
+    "netflow",
+    "snapshot"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "refresh": "1m",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "30s",
+      "1m",
+      "5m",
+      "15m"
+    ],
+    "time_options": [
+      "5m",
+      "15m",
+      "1h",
+      "6h",
+      "24h",
+      "7d",
+      "30d"
+    ]
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "exporter",
+        "type": "query",
+        "label": "Exportateur",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "ClickHouse"
+        },
+        "query": "SELECT DISTINCT ExporterName FROM flows WHERE $__timeFilter(TimeReceived) ORDER BY ExporterName",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "sort": 1
+      }
+    ]
+  },
+  "links": [
+    {
+      "title": "Accueil — Traffic Summary",
+      "type": "dashboards",
+      "tags": [
+        "okvorado",
+        "accueil"
+      ],
+      "asDropdown": false,
+      "icon": "external link",
+      "targetBlank": false,
+      "keepTime": true,
+      "includeVars": true
+    },
+    {
+      "title": "Vue d'ensemble — Parc",
+      "type": "dashboards",
+      "tags": [
+        "okvorado",
+        "vue-ensemble"
+      ],
+      "asDropdown": false,
+      "icon": "external link",
+      "targetBlank": false,
+      "keepTime": true,
+      "includeVars": true
+    },
+    {
+      "title": "Par exportateur",
+      "type": "dashboards",
+      "tags": [
+        "okvorado",
+        "exportateur"
+      ],
+      "asDropdown": false,
+      "icon": "external link",
+      "targetBlank": false,
+      "keepTime": true,
+      "includeVars": true
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "table",
+      "title": "Top N Interfaces by Speed — Device IP / Interface / Speed IN / Speed OUT",
+      "description": "Débit calculé sur la fenêtre sélectionnée : sum(Bytes * SamplingRate) * 8 / durée_s, séparé par direction (InIfName vs OutIfName, potentiellement des interfaces différentes selon le sens du flux). LIMIT 20.",
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "vitesse_in"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bps"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "vitesse_out"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bps"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "ip"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": false
+              },
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Voir les anomalies pour cette adresse",
+                    "url": "/d/okvorado-anomalies/okvorado-anomalies?var-adresse=${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "exportateur"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Voir la fiche de cet exportateur",
+                    "url": "/d/okvorado-par-exportateur/okvorado-par-exportateur?var-exporter=${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "footer": {
+          "show": true,
+          "enablePagination": true
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT\n    exportateur,\n    any(ip) AS ip,\n    interface,\n    sum(debit_in) AS vitesse_in,\n    sum(debit_out) AS vitesse_out\nFROM (\n    SELECT\n        ExporterName AS exportateur,\n        any(replaceOne(IPv6NumToString(ExporterAddress), '::ffff:', '')) AS ip,\n        InIfName AS interface,\n        sum(Bytes * SamplingRate) * 8 / greatest(toUnixTimestamp($__toTime) - toUnixTimestamp($__fromTime), 1) AS debit_in,\n        0 AS debit_out\n    FROM flows\n    WHERE $__timeFilter(TimeReceived)\n        AND ExporterName IN (${exporter:singlequote})\n        AND InIfName != ''\n    GROUP BY exportateur, interface\n    UNION ALL\n    SELECT\n        ExporterName AS exportateur,\n        any(replaceOne(IPv6NumToString(ExporterAddress), '::ffff:', '')) AS ip,\n        OutIfName AS interface,\n        0 AS debit_in,\n        sum(Bytes * SamplingRate) * 8 / greatest(toUnixTimestamp($__toTime) - toUnixTimestamp($__fromTime), 1) AS debit_out\n    FROM flows\n    WHERE $__timeFilter(TimeReceived)\n        AND ExporterName IN (${exporter:singlequote})\n        AND OutIfName != ''\n    GROUP BY exportateur, interface\n)\nGROUP BY exportateur, interface\nORDER BY vitesse_in DESC\nLIMIT 20",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Top N Interfaces by Utilization — Device IP / Interface / Utilization IN / OUT (%)",
+      "description": "Débit rapporté à InIfSpeed/OutIfSpeed — vitesse d'interface mesurée en Mbps sur ce ClickHouse (vérifié : DISTINCT InIfSpeed = 1000, cohérent avec des interfaces 1 Gbps homelab), d'où le facteur *1000000 pour convertir en bps avant le ratio. LIMIT 20.",
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "utilisation_in"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "utilisation_out"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "ip"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Voir les anomalies pour cette adresse",
+                    "url": "/d/okvorado-anomalies/okvorado-anomalies?var-adresse=${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "exportateur"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Voir la fiche de cet exportateur",
+                    "url": "/d/okvorado-par-exportateur/okvorado-par-exportateur?var-exporter=${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "footer": {
+          "show": true,
+          "enablePagination": true
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT\n    exportateur,\n    any(ip) AS ip,\n    interface,\n    least(100, sum(debit_in) / (greatest(max(vitesse_if), 1) * 1000000) * 100) AS utilisation_in,\n    least(100, sum(debit_out) / (greatest(max(vitesse_if), 1) * 1000000) * 100) AS utilisation_out\nFROM (\n    SELECT\n        ExporterName AS exportateur,\n        any(replaceOne(IPv6NumToString(ExporterAddress), '::ffff:', '')) AS ip,\n        InIfName AS interface,\n        any(InIfSpeed) AS vitesse_if,\n        sum(Bytes * SamplingRate) * 8 / greatest(toUnixTimestamp($__toTime) - toUnixTimestamp($__fromTime), 1) AS debit_in,\n        0 AS debit_out\n    FROM flows\n    WHERE $__timeFilter(TimeReceived)\n        AND ExporterName IN (${exporter:singlequote})\n        AND InIfName != ''\n    GROUP BY exportateur, interface\n    UNION ALL\n    SELECT\n        ExporterName AS exportateur,\n        any(replaceOne(IPv6NumToString(ExporterAddress), '::ffff:', '')) AS ip,\n        OutIfName AS interface,\n        any(OutIfSpeed) AS vitesse_if,\n        0 AS debit_in,\n        sum(Bytes * SamplingRate) * 8 / greatest(toUnixTimestamp($__toTime) - toUnixTimestamp($__fromTime), 1) AS debit_out\n    FROM flows\n    WHERE $__timeFilter(TimeReceived)\n        AND ExporterName IN (${exporter:singlequote})\n        AND OutIfName != ''\n    GROUP BY exportateur, interface\n)\nGROUP BY exportateur, interface\nORDER BY utilisation_in DESC\nLIMIT 20",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "Top N Devices by Speed — Speed (max) / Avg Speed",
+      "description": "Débit par bucket de 1 minute (toStartOfMinute), puis max() et avg() par exportateur — reproduit exactement la paire 'Speed / Avg Speed' de NetFlow Analyzer. LIMIT 20.",
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 10
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": true
+          },
+          "links": [
+            {
+              "title": "Voir la fiche de cet exportateur",
+              "url": "/d/okvorado-par-exportateur/okvorado-par-exportateur?var-exporter=${__data.fields.exportateur}",
+              "targetBlank": false
+            }
+          ]
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "vitesse_max"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bps"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "vitesse_moyenne"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bps"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "footer": {
+          "show": true,
+          "enablePagination": true
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT\n    exportateur,\n    max(debit_min) AS vitesse_max,\n    avg(debit_min) AS vitesse_moyenne\nFROM (\n    SELECT\n        ExporterName AS exportateur,\n        toStartOfMinute(TimeReceived) AS minute,\n        sum(Bytes * SamplingRate) * 8 / 60 AS debit_min\n    FROM flows\n    WHERE $__timeFilter(TimeReceived)\n        AND ExporterName IN (${exporter:singlequote})\n    GROUP BY exportateur, minute\n)\nGROUP BY exportateur\nORDER BY vitesse_max DESC\nLIMIT 20",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "piechart",
+      "title": "Top N Application",
+      "description": "sum(Bytes * SamplingRate) par application déduite du protocole/port, LIMIT 20 — même calcul que sur l'accueil, disponible ici aussi (constante n°2 : chaque graphe a son tableau, voir panneau ci-dessous).",
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 10
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "links": [
+            {
+              "title": "Voir cette application dans Applications & QoS",
+              "url": "/d/okvorado-applications-qos/okvorado-applications-qos?var-application=${__data.fields.application}",
+              "targetBlank": false
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "pieType": "donut",
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "value",
+            "percent"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT\n    multiIf(\n        Proto = 6 AND (DstPort = 443 OR SrcPort = 443), 'HTTPS',\n        Proto = 6 AND (DstPort = 80 OR SrcPort = 80), 'HTTP',\n        Proto = 17 AND (DstPort = 53 OR SrcPort = 53), 'DNS',\n        Proto = 6, 'TCP autre',\n        Proto = 17, 'UDP autre',\n        Proto = 1, 'ICMP',\n        'Autre'\n    ) AS application,\n    sum(Bytes * SamplingRate) AS volume\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\nGROUP BY application\nORDER BY volume DESC\nLIMIT 20",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "Top N Application — tableau de valeurs",
+      "description": "Le tableau de valeurs sous le camembert 'Top N Application' (constante n°2 des captures : chaque graphe a son tableau).",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 20
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": true
+          },
+          "links": [
+            {
+              "title": "Voir cette application dans Applications & QoS",
+              "url": "/d/okvorado-applications-qos/okvorado-applications-qos?var-application=${__data.fields.application}",
+              "targetBlank": false
+            }
+          ]
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "volume"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "footer": {
+          "show": true,
+          "enablePagination": true
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT\n    multiIf(\n        Proto = 6 AND (DstPort = 443 OR SrcPort = 443), 'HTTPS',\n        Proto = 6 AND (DstPort = 80 OR SrcPort = 80), 'HTTP',\n        Proto = 17 AND (DstPort = 53 OR SrcPort = 53), 'DNS',\n        Proto = 6, 'TCP autre',\n        Proto = 17, 'UDP autre',\n        Proto = 1, 'ICMP',\n        'Autre'\n    ) AS application,\n    sum(Bytes * SamplingRate) AS volume\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\nGROUP BY application\nORDER BY volume DESC\nLIMIT 20",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Top N Devices by Speed — tableau détaillé (Device IP inclus)",
+      "description": "Complète le panneau 'Top N Devices by Speed' avec l'IP du device — deux vues du même classement, comme les captures qui déclinent Device IP ET Device Name selon l'écran.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 20
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "vitesse_max"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bps"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "exportateur"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Voir la fiche de cet exportateur",
+                    "url": "/d/okvorado-par-exportateur/okvorado-par-exportateur?var-exporter=${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "ip"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Voir les anomalies pour cette adresse",
+                    "url": "/d/okvorado-anomalies/okvorado-anomalies?var-adresse=${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "footer": {
+          "show": true,
+          "enablePagination": true
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT\n    exportateur,\n    any(ip) AS ip,\n    max(debit_min) AS vitesse_max\nFROM (\n    SELECT\n        ExporterName AS exportateur,\n        any(replaceOne(IPv6NumToString(ExporterAddress), '::ffff:', '')) AS ip,\n        toStartOfMinute(TimeReceived) AS minute,\n        sum(Bytes * SamplingRate) * 8 / 60 AS debit_min\n    FROM flows\n    WHERE $__timeFilter(TimeReceived)\n        AND ExporterName IN (${exporter:singlequote})\n    GROUP BY exportateur, minute\n)\nGROUP BY exportateur\nORDER BY vitesse_max DESC\nLIMIT 20",
+          "format": 1
+        }
+      ]
+    }
+  ]
+}

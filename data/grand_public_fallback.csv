@@ -1,0 +1,109 @@
+port;proto;application
+6881;tcp;[P2P] BitTorrent
+6881;udp;[P2P] BitTorrent (DHT/uTP)
+6882;tcp;[P2P] BitTorrent
+6883;tcp;[P2P] BitTorrent
+6884;tcp;[P2P] BitTorrent
+6885;tcp;[P2P] BitTorrent
+6886;tcp;[P2P] BitTorrent
+6887;tcp;[P2P] BitTorrent
+6888;tcp;[P2P] BitTorrent
+6889;tcp;[P2P] BitTorrent
+6969;tcp;[P2P] BitTorrent (tracker)
+6969;udp;[P2P] BitTorrent (tracker)
+51413;tcp;[P2P] BitTorrent (Transmission)
+51413;udp;[P2P] BitTorrent (Transmission)
+4070;tcp;[Streaming] Spotify
+4070;udp;[Streaming] Spotify
+57621;udp;[Streaming] Spotify (découverte locale)
+3478;tcp;[Visio] Teams/Skype (STUN/TURN)
+3479;udp;[Visio] Teams/Skype
+3480;udp;[Visio] Teams/Skype
+3481;udp;[Visio] Teams/Skype
+50000;udp;[Visio] Teams/Skype (média)
+8801;udp;[Visio] Zoom
+8802;udp;[Visio] Zoom
+8803;udp;[Visio] Zoom
+8804;udp;[Visio] Zoom
+8805;udp;[Visio] Zoom
+8806;udp;[Visio] Zoom
+8807;udp;[Visio] Zoom
+8808;udp;[Visio] Zoom
+8809;udp;[Visio] Zoom
+8810;udp;[Visio] Zoom
+9000;tcp;[Visio] Webex
+9000;udp;[Visio] Webex
+5004;udp;[Visio] RTP (flux audio/vidéo)
+5005;udp;[Visio] RTP (flux audio/vidéo)
+50002;tcp;[Messagerie] Signal
+27015;tcp;[Jeu] Steam / Source engine
+27015;udp;[Jeu] Steam / Source engine
+27016;udp;[Jeu] Steam
+27017;udp;[Jeu] Steam
+27018;udp;[Jeu] Steam
+27019;udp;[Jeu] Steam
+27020;udp;[Jeu] Steam
+27021;udp;[Jeu] Steam
+27022;udp;[Jeu] Steam
+27023;udp;[Jeu] Steam
+27024;udp;[Jeu] Steam
+27025;udp;[Jeu] Steam
+27026;udp;[Jeu] Steam
+27027;udp;[Jeu] Steam
+27028;udp;[Jeu] Steam
+27029;udp;[Jeu] Steam
+27030;udp;[Jeu] Steam
+27036;tcp;[Jeu] Steam (client)
+27036;udp;[Jeu] Steam (client, découverte)
+27037;udp;[Jeu] Steam (découverte LAN)
+3074;tcp;[Jeu] Xbox Live
+3074;udp;[Jeu] Xbox Live
+3480;tcp;[Jeu] PlayStation Network
+1119;tcp;[Jeu] Battle.net
+1119;udp;[Jeu] Battle.net
+6112;tcp;[Jeu] Battle.net (legacy)
+6113;tcp;[Jeu] Battle.net (legacy)
+5222;tcp;[Jeu] Riot Games (League of Legends)
+5223;tcp;[Jeu] Riot Games
+2099;tcp;[Jeu] Riot Games (client)
+500;udp;[VoWiFi] Appel WiFi / VoWiFi (IPsec IKE) / VPN grand public (NordVPN, ProtonVPN...)
+500;tcp;[VoWiFi] Appel WiFi / VoWiFi (IPsec IKE)
+4500;udp;[VoWiFi] Appel WiFi / VoWiFi (IPsec NAT-T)
+4500;tcp;[VoWiFi] Appel WiFi / VoWiFi (IPsec NAT-T)
+5060;udp;[VoIP/VoWiFi] SIP (signalisation appel)
+5060;tcp;[VoIP/VoWiFi] SIP (signalisation appel)
+5061;tcp;[VoIP/VoWiFi] SIP sur TLS
+16384;udp;[VoIP/VoWiFi] RTP (flux voix, début de plage)
+32767;udp;[VoIP/VoWiFi] RTP (flux voix, fin de plage usuelle)
+17500;tcp;[Cloud] Dropbox (découverte LAN)
+17500;udp;[Cloud] Dropbox (découverte LAN)
+51820;udp;[VPN] WireGuard
+1194;tcp;[VPN] OpenVPN
+1194;udp;[VPN] OpenVPN
+1701;udp;[VPN] L2TP
+1723;tcp;[VPN] PPTP
+1883;tcp;[IoT] MQTT
+1883;udp;[IoT] MQTT
+8883;tcp;[IoT] MQTT sur TLS
+8883;udp;[IoT] MQTT sur TLS
+8008;tcp;[IoT] Chromecast
+8009;tcp;[IoT] Chromecast
+8443;tcp;[IoT] Chromecast (contrôle)
+7000;tcp;[IoT] AirPlay
+7000;udp;[IoT] AirPlay
+7001;tcp;[IoT] AirPlay (metadata)
+5353;tcp;[IoT] mDNS/Bonjour (découverte AirPlay/Chromecast)
+5353;udp;[IoT] mDNS/Bonjour (découverte AirPlay/Chromecast)
+1900;tcp;[IoT] SSDP/UPnP (découverte domotique)
+1900;udp;[IoT] SSDP/UPnP (découverte domotique)
+6667;tcp;[Messagerie] IRC (legacy, encore vu en entreprise)
+19305;udp;[Visio] Discord (voix)
+19306;udp;[Visio] Discord (voix)
+19307;udp;[Visio] Discord (voix)
+19308;udp;[Visio] Discord (voix)
+19309;udp;[Visio] Discord (voix)
+19310;udp;[Visio] Discord (voix)
+19311;udp;[Visio] Discord (voix)
+19312;udp;[Visio] Discord (voix)
+19313;udp;[Visio] Discord (voix)
+19314;udp;[Visio] Discord (voix)

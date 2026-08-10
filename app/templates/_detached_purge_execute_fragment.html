@@ -1,0 +1,8 @@
+{# Fragment rendu par `POST /api/db-health/detached-parts/execute` UNIQUEMENT
+   pour un appel HTMX (header `HX-Request`) — un appel API direct reçoit du
+   JSON brut. Même défaut/motif que les autres fragments de cet écran
+   (2026-08-09). #}
+<p class="notice notice-ok">
+  <strong>Purge exécutée</strong> sur la table <code>{{ result.table }}</code> —
+  {{ result.parts_avant }} part(s) détachée(s) supprimée(s).
+</p>

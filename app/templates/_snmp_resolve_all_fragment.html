@@ -1,0 +1,91 @@
+{# Fragment rendu par `POST /exporters/resolve-snmp-all` — le bouton global
+   « Tout résoudre » de l'écran /exporters.
+
+   DÉFAUT MESURÉ (2026-08-10) : /exporters affichait « Interface inconnue » sur
+   4 exportateurs sur 11 parce que `outlet.yaml` déclarait des if-indexes écrits
+   À LA MAIN (999, 2932, 1222, 235…) ne correspondant à AUCUNE interface réelle.
+   Cible produit : 350 routeurs — la résolution unitaire ne tient pas à cette
+   échelle, d'où ce geste global.
+
+   POURQUOI LE DÉTAIL PAR LIGNE EST OBLIGATOIRE (zéro silencieux, CLAUDE.md) :
+   sur 350 exportateurs, un lot renvoie forcément un mélange de succès et
+   d'échecs hétérogènes (agent muet, communauté refusée, SNMP non configuré,
+   table vide). Un compteur global seul — « 340/350 résolus » — masquerait
+   QUI a échoué et POURQUOI, et laisserait les 10 restants invisibles, donc
+   jamais traités. Le récapitulatif chiffré n'est donc rendu qu'EN COMPLÉMENT
+   du tableau ligne à ligne, JAMAIS à sa place. Pour la même raison un statut
+   inattendu est affiché tel quel plutôt qu'ignoré : une valeur qu'on ne sait
+   pas nommer doit se VOIR, pas disparaître. #}
+{% if not rows %}
+<p class="notice notice-info">
+  <strong>Aucun exportateur en anomalie d'interface</strong> — aucune résolution
+  SNMP n'était nécessaire, donc aucune n'a été tentée. Ce n'est pas un échec :
+  toutes les interfaces déclarées correspondent à des index réels.
+</p>
+{% else %}
+<table>
+  <thead>
+    <tr>
+      <th>Exportateur</th>
+      <th>Adresse</th>
+      <th>Résultat</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in rows %}
+    <tr>
+      <td>{{ row.name }}</td>
+      <td class="mono">{{ row.address }}</td>
+      <td>
+        {% if row.status == "ok" %}
+          <span class="badge badge-healthy">Résolu</span>
+          <span class="hint">{{ row.interface_count }} interface(s)</span>
+        {% elif row.status == "no_response" %}
+          <span class="badge badge-silent">Sans réponse</span>
+        {% elif row.status == "auth_failure" %}
+          <span class="badge badge-rejected">Authentification refusée</span>
+        {% elif row.status == "not_configured" %}
+          <span class="badge badge-undeclared">SNMP non configuré</span>
+        {% elif row.status == "invalid_address" %}
+          <span class="badge badge-rejected">Adresse invalide</span>
+        {% elif row.status == "empty_table" %}
+          <span class="badge badge-unknown_interface">Aucune interface déclarée</span>
+        {% else %}
+          {# Statut hors énumération connue : on l'affiche BRUT plutôt que de
+             rendre une cellule vide, qui se confondrait avec un succès muet. #}
+          <span class="badge badge-unknown_interface">Statut inattendu : {{ row.status }}</span>
+        {% endif %}
+        {% if row.status != "ok" and row.message %}
+        <div class="hint">{{ row.message }}</div>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+{# Récapitulatif chiffré : COMPLÉMENT du détail ci-dessus, jamais son substitut. #}
+<div class="stat-row">
+  <div class="stat">
+    <div class="stat-label">Exportateurs traités</div>
+    <div class="stat-value mono">{{ total_traites }}</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">Tables résolues</div>
+    <div class="stat-value mono">{{ total_resolus }}</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">En échec</div>
+    <div class="stat-value mono">{{ total_traites - total_resolus }}</div>
+  </div>
+</div>
+
+{% if rows | selectattr("staged") | list %}
+<p class="notice notice-warn">
+  <strong>Changements EN FILE D'ATTENTE</strong> — rien n'est encore écrit dans
+  <code class="mono">outlet.yaml</code>. Ouvrez l'écran
+  <a href="{{ '/config' | prefixed }}">Configuration</a> pour relire les
+  modifications en attente et les appliquer.
+</p>
+{% endif %}
+{% endif %}

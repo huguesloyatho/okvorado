@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Okvorado{% endblock %} · Okvorado</title>
+  <link rel="icon" type="image/svg+xml" href="{{ '/static/favicon.svg' | prefixed }}">
+  {# `?v=` = empreinte du fichier CSS. Sans elle, le navigateur reconduit sa
+     version en cache apres un deploiement : constate le 2026-08-05, l'ecran de
+     configuration s'affichait SANS AUCUN STYLE (texte bleu souligne, cartes
+     sans bordure) parce que le navigateur servait un CSS anterieur, arrete au
+     @media, ignorant toutes les regles ajoutees ensuite. #}
+  <link rel="stylesheet" href="{{ '/static/style.css?v=' | prefixed }}{{ static_version }}">
+  {# htmx-config APRÈS htmx, et l'ordre n'est pas indifférent : htmx REMPLACE
+     `window.htmx` par sa propre instance à l'initialisation. Une config posée
+     avant est donc écrasée — mesuré au navigateur le 2026-08-06,
+     `responseHandling` contenait la valeur par défaut de htmx malgré le
+     fichier chargé. Sans cette config, HTMX ne swappe que les 2xx : les
+     messages d'erreur métier renvoyés en 4xx (import CSV refusé, validation de
+     section, section inconnue…) partaient sur le réseau sans JAMAIS être
+     affichés. Les deux scripts sont `defer` : l'ordre du document est respecté. #}
+  <script src="{{ '/static/htmx.min.js' | prefixed }}" defer></script>
+  {# json-enc APRÈS htmx (même raison que htmx-config ci-dessous : besoin de
+     `htmx.defineExtension`, posé par htmx à son initialisation) et AVANT tout
+     template qui pose `hx-ext="json-enc"` sur un formulaire — sans ce script,
+     l'extension est un nom sans effet et htmx retombe sur l'encodage form
+     classique, que les endpoints à body Pydantic refusent en 422 (défaut
+     constaté sur l'écran Rétention, 2026-08-08). #}
+  <script src="{{ '/static/json-enc.js?v=' | prefixed }}{{ static_version }}" defer></script>
+  <script src="{{ '/static/htmx-config.js?v=' | prefixed }}{{ static_version }}" defer></script>
+  <script src="{{ '/static/tabs.js?v=' | prefixed }}{{ static_version }}" defer></script>
+  <script src="{{ '/static/confirm-submit.js?v=' | prefixed }}{{ static_version }}" defer></script>
+  {# Suspend le rafraîchissement 30s de l'écran Exportateurs tant qu'un compte
+     rendu SNMP est affiché — sans quoi le tableau de résultats s'efface sous
+     les yeux de l'exploitant (défaut mesuré le 2026-08-10). Fichier local :
+     la CSP `script-src 'self'` interdit à la fois l'inline et l'eval, ce qui
+     exclut la condition htmx `every 30s [ ... ]`. Voir le fichier. #}
+  <script src="{{ '/static/snmp-poll-guard.js?v=' | prefixed }}{{ static_version }}" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">◆</span>
+      <span class="brand-name">Okvorado</span>
+      <span class="brand-sub">management des flux réseau</span>
+    </div>
+    {# ⚠️ TOUTE page servie DOIT avoir son lien ici. Défaut vécu (2026-08-06) :
+       les écrans de configuration existaient, étaient testés et déployés — mais
+       n'étaient atteignables QU'EN TAPANT L'URL. L'utilisateur a exploré les
+       onglets et n'a rien trouvé, à juste titre : une page sans lien de menu
+       n'existe pas pour qui l'utilise. #}
+    <nav class="nav">
+      <a href="{{ '/exporters' | prefixed }}" class="{{ 'active' if active_page == 'exporters' else '' }}">Exportateurs</a>
+      <a href="{{ '/inventory' | prefixed }}" class="{{ 'active' if active_page == 'inventory' else '' }}">Inventaire</a>
+      <a href="{{ '/diagnostics/convergence' | prefixed }}" class="{{ 'active' if active_page == 'diagnostics_convergence' else '' }}">Convergence</a>
+      <a href="{{ '/views' | prefixed }}" class="{{ 'active' if active_page == 'views' else '' }}">Vues métier</a>
+      <a href="{{ '/app-catalog' | prefixed }}" class="{{ 'active' if active_page == 'app_catalog' else '' }}">Catalogue applicatif</a>
+      <a href="{{ '/ingestion' | prefixed }}" class="{{ 'active' if active_page == 'ingestion' else '' }}">Ingestion</a>
+      <a href="{{ '/retention' | prefixed }}" class="{{ 'active' if active_page == 'retention' else '' }}">Rétention</a>
+      <a href="{{ '/db-health' | prefixed }}" class="{{ 'active' if active_page == 'db_health' else '' }}">Santé DB</a>
+      <a href="{{ '/config/sections' | prefixed }}" class="{{ 'active' if active_page in ('config', 'config_sections') else '' }}">Configuration</a>
+      <a href="{{ '/settings/security' | prefixed }}" class="{{ 'active' if active_page == 'security_settings' else '' }}">Sécurité</a>
+      {# Lien visible UNIQUEMENT pour un administrateur — mais ce n'est qu'un
+         confort d'affichage : la protection RÉELLE est côté SERVEUR, dans
+         `app.routers.accounts` (403 pour un lecteur qui atteindrait l'URL
+         directement). Un menu sans lien n'a jamais protégé une route. #}
+      {% if auth_role == 'admin' %}
+        <a href="{{ '/accounts' | prefixed }}" class="{{ 'active' if active_page == 'accounts' else '' }}">Comptes</a>
+      {% endif %}
+      {# INTÉGRATION DE LA CONSOLE — demande utilisateur (2026-08-10) : « il
+         manque l'intégration de l'interface web d'akvorado dans okvorado ».
+
+         Pointe vers l'ÉCRAN D'INTÉGRATION (`/akvorado`,
+         app/routers/console_embed.py), qui encadre la console SOUS cette
+         barre de navigation — et non plus directement vers le proxy
+         (`/akvorado-console`), qui sert le flux brut de la console.
+
+         `target="_blank"` RETIRÉ, c'était le défaut : il faisait SORTIR
+         d'Okvorado vers un onglet séparé, alors que l'attendu est de rester
+         dans l'application. `rel="noopener"` et la classe `external`
+         disparaissent avec lui — ce lien n'a plus rien d'externe, c'est un
+         onglet interne comme les autres, avec son état actif. #}
+      <a href="{{ '/akvorado' | prefixed }}" class="{{ 'active' if active_page == 'akvorado_console' else '' }}">Akvorado</a>
+    </nav>
+    {# État de connexion (LOT accounts) : QUI est connecté et avec QUEL rôle —
+       jusqu'ici seul le bouton « Déconnexion » était affiché, sans dire qui
+       l'utilisait (demande utilisateur : « etat de connexion user »). #}
+    <div class="session-info">
+      <span class="session-user">{{ auth_username }}</span>
+      <span class="badge badge-{{ 'admin' if auth_role == 'admin' else 'lecteur' }}">{{ 'Administrateur' if auth_role == 'admin' else 'Lecteur' }}</span>
+      <form method="post" action="{{ '/logout' | prefixed }}" class="logout-form">
+        <button type="submit" class="btn">Déconnexion</button>
+      </form>
+    </div>
+  </header>
+
+  {# Bandeau AFFICHÉ SUR TOUTES LES PAGES tant que le mot de passe par défaut
+     (fourni ou généré au premier démarrage) n'a pas été changé — un
+     avertissement visible seulement sur l'écran Sécurité serait trop facile
+     à ne jamais rencontrer. Posé par app.main (voir add_security_headers /
+     wiring) via `request.state.auth_default_password_warning`. #}
+  {% if auth_default_password_warning %}
+    <p class="notice notice-warn default-password-banner">
+      <strong>Mot de passe par défaut toujours actif.</strong>
+      <a href="{{ '/settings/security' | prefixed }}">Changez-le depuis l'écran Sécurité</a>.
+    </p>
+  {% endif %}
+
+  <main class="content">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="footer">
+    <span>Okvorado — surcouche de pilotage. Les flux et leur stockage restent gérés par Akvorado.</span>
+  </footer>
+</body>
+</html>

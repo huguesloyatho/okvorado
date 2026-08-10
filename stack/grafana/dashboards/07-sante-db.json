@@ -1,0 +1,288 @@
+{
+  "uid": "okvorado-sante-db",
+  "title": "Okvorado — Santé DB",
+  "description": "Capacité d'écriture ClickHouse : parts actives rapportées aux seuils réels du serveur (parts_to_delay_insert / parts_to_throw_insert), fusions en retard, mémoire, erreurs, et le volume de trafic réel qui alimente cette écriture. Complète l'écran /db-health d'Okvorado — ce dashboard donne la vue temporelle, l'écran donne l'action (OPTIMIZE, purge de parts détachées).",
+  "tags": ["okvorado", "netflow", "sante-db", "capacite"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "refresh": "1m",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "templating": {
+    "list": []
+  },
+  "links": [
+    {
+      "title": "Vue d'ensemble — Parc",
+      "type": "dashboards",
+      "tags": ["okvorado", "vue-ensemble"],
+      "asDropdown": false,
+      "icon": "external link",
+      "targetBlank": false,
+      "keepTime": true,
+      "includeVars": true
+    },
+    {
+      "title": "Accueil — Traffic Summary",
+      "type": "dashboards",
+      "tags": ["okvorado", "accueil"],
+      "asDropdown": false,
+      "icon": "external link",
+      "targetBlank": false,
+      "keepTime": true,
+      "includeVars": true
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Parts actives — capacité d'écriture",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 2,
+      "type": "gauge",
+      "title": "Parts actives — flows",
+      "description": "Parts actives sur la table `flows`, rapportées au seuil de ralentissement forcé ClickHouse (parts_to_delay_insert, généralement 1000) — pas une constante Okvorado, lue en direct sur le serveur.",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 1 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "max": 1000,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 500 },
+              { "color": "red", "value": 1000 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT count() AS parts_actives FROM system.parts WHERE active AND database = 'default' AND table = 'flows'",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Seuil de ralentissement (serveur)",
+      "description": "parts_to_delay_insert lu en direct depuis system.merge_tree_settings — réglable côté ClickHouse, jamais codé en dur côté Okvorado.",
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT value AS seuil_ralentissement FROM system.merge_tree_settings WHERE name = 'parts_to_delay_insert'",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Seuil de refus d'écriture (serveur)",
+      "description": "parts_to_throw_insert lu en direct depuis system.merge_tree_settings — au-delà, ClickHouse REFUSE l'insertion (TOO_MANY_PARTS).",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 1 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT value AS seuil_refus FROM system.merge_tree_settings WHERE name = 'parts_to_throw_insert'",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Parts détachées",
+      "description": "Occupent le disque sans servir aux requêtes. Purgeables depuis l'écran Okvorado /db-health, jamais automatiquement.",
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 5 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 10 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT count() AS parts_detachees FROM system.detached_parts",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Mutations bloquées",
+      "description": "Mutations is_done=0 avec un motif d'échec renseigné — une mutation simplement en cours n'apparaît pas ici.",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 5 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT count() AS mutations_bloquees FROM system.mutations WHERE is_done = 0 AND latest_fail_reason != ''",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "gauge",
+      "title": "Mémoire ClickHouse",
+      "description": "Mémoire résidente (system.asynchronous_metrics, MemoryResident) rapportée à la limite du conteneur (2 Gio mesurés sur l'infrastructure de référence — ajuster si le conteneur est dimensionné différemment).",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 1 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 75 },
+              { "color": "red", "value": 90 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT (value / 2147483648) * 100 AS pct_memoire FROM system.asynchronous_metrics WHERE metric = 'MemoryResident'",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "row",
+      "title": "Dérive dans le temps",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Parts créées vs parts consommées par fusion (flows) — l'écart qui compte",
+      "description": "Si les parts créées dépassent durablement les parts consommées par fusion, ClickHouse accumule plus vite qu'il n'absorbe : c'est le prodrome du refus d'écriture (TOO_MANY_PARTS), pas sa conséquence. C'est l'indicateur d'alerte n°1 pour anticiper une dérive à 350 routeurs. IMPORTANT : les parts consommées comptent sum(length(merged_from)) sur les événements MergeParts, PAS le nombre d'événements de fusion — un seul événement fusionne plusieurs parts sources, un simple count() sous-estimerait fortement la fusion et déclencherait un faux signal (mesuré sur l'infra de référence le 2026-08-08).",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 10 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT toStartOfInterval(event_time, INTERVAL 5 minute) AS temps, countIf(event_type = 'NewPart') AS parts_creees, sumIf(length(merged_from), event_type = 'MergeParts') AS parts_consommees FROM system.part_log WHERE $__timeFilter(event_time) AND database = 'default' AND table = 'flows' GROUP BY temps ORDER BY temps",
+          "format": 0
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Volume de trafic ingéré — met la charge d'écriture en contexte",
+      "description": "Volume réel (octets, taux d'échantillonnage réappliqué) ingéré dans `flows` sur la période — permet de relier une dérive des parts actives (panneau ci-dessus) à une hausse réelle du trafic plutôt qu'à un problème indépendant. Sans cette mise en contexte, un pic de parts actives serait indiscernable d'une dérive structurelle.",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 19 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT $__timeInterval(TimeReceived) AS temps, sum(Bytes * SamplingRate) AS volume_octets FROM flows WHERE $__timeFilter(TimeReceived) GROUP BY temps ORDER BY temps",
+          "format": 0
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "barchart",
+      "title": "Erreurs cumulées — TOO_MANY_PARTS / mémoire / timeout",
+      "description": "Compteurs system.errors pour les 3 codes qui correspondent au mécanisme de crash décrit (accumulation de parts, mémoire, requêtes bloquées) — cumul depuis le démarrage du serveur, pas une série temporelle (une remise à zéro n'a lieu qu'à un redémarrage serveur).",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 28 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "fieldConfig": {
+        "defaults": { "unit": "short" },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT name AS code_erreur, value AS occurrences FROM system.errors WHERE name IN ('TOO_MANY_PARTS', 'MEMORY_LIMIT_EXCEEDED', 'TIMEOUT_EXCEEDED') ORDER BY value DESC LIMIT 10",
+          "format": 1
+        }
+      ]
+    }
+  ]
+}

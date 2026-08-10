@@ -1,0 +1,46 @@
+# Config console — interface web Akvorado, stack PORTABLE.
+
+# Vue par défaut à l'ouverture de l'écran « Visualize ».
+#
+# ⚠️ DÉFAUT MESURÉ (2026-08-07) en montant le stack sur une machine vierge :
+# `dimensions: [src-as]` faisait boucler la console en Restarting avec
+#     unable to initialize console component: unknown column name src-as
+#
+# LES DEUX CLÉS N'UTILISENT PAS LA MÊME CONVENTION, et c'est le piège :
+#   - `dimensions` attend les NOMS DE COLONNES ClickHouse  -> SrcAS, SrcAddr…
+#   - `homepage-top-widgets` attend des IDENTIFIANTS de widget -> src-as, dst-as…
+# `src-as` est donc valide dans l'une et refusé dans l'autre.
+#
+# Dimensions retenues pour un parc de 350 routeurs : de QUEL routeur vient le
+# flux, entre QUI et QUI, sur QUEL service. C'est ce qu'on regarde en premier
+# un jour d'incident. Chaque dimension supplémentaire multiplie la cardinalité,
+# d'où une limite volontairement basse — le tout se règle depuis l'écran.
+default-visualize-options:
+  graph-type: stacked
+  start: "1 hour ago"
+  end: "now"
+  filter: ""
+  dimensions:
+    - ExporterName # quel routeur a vu le flux
+    - SrcAddr # qui parle
+    - DstAddr # à qui
+    - DstPort # quel service
+    - Proto # TCP/UDP/ICMP — indispensable pour lire un port
+  limit: 20
+  limit-type: avg
+
+# Widgets de la page d'accueil — ici la convention est bien en tirets.
+# Choix orienté exploitation : quel routeur, quels services, quels protocoles.
+# Les AS et pays viennent ensuite : sur un réseau d'entreprise le trafic est
+# majoritairement interne, ces deux widgets y sont souvent vides.
+homepage-top-widgets:
+  - exporter
+  - dst-port
+  - protocol
+  - src-as
+  - dst-as
+
+database:
+  # Aucun filtre sauvegardé par défaut : à la charge de l'exploitant, tout
+  # se règle à l'écran (console web ou Okvorado), jamais en éditant ce YAML.
+  saved-filters: []

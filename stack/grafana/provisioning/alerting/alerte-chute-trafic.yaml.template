@@ -1,0 +1,94 @@
+# Règle d'alerte — Chute brutale de trafic.
+#
+# Effondrement du volume d'un exportateur par rapport à la demi-heure
+# précédente (défaut : chute > 50%) — signe d'un lien coupé, d'une panne
+# partielle, ou d'un routage cassé qui détourne le trafic ailleurs SANS que
+# l'exportateur devienne totalement muet (sinon c'est l'alerte
+# « exportateur muet » qui se déclenche, pas celle-ci).
+#
+# GABARIT résolu par `config-generator` — voir README.md de ce dossier.
+#
+# Requête validée contre le VRAI ClickHouse (2026-08-08, stack-clickhouse-1,
+# 192.0.2.7) : routeur-test-01 rend volume_recent=134515605,
+# volume_precedent=58136479, chute_pct=-131.38 (trafic en HAUSSE ici, donc
+# valeur négative — cohérent : une vraie chute produirait un pourcentage
+# positif, capté par la comparaison > seuil ci-dessous).
+#
+# CONTRAINTES DE CALCUL respectées :
+# - sum(Bytes * SamplingRate) — jamais sum(Bytes) nu, dans les DEUX sumIf.
+# - HAVING volume_precedent > 0 : évite une division par zéro ET un faux
+#   positif sur un exportateur qui vient d'apparaître (pas de trafic
+#   "précédent" pour comparer — un exportateur neuf n'est pas en chute).
+# - fenêtres littérales (1800 = 30 min, 3600 = 1h) : pas de $__timeFilter
+#   dans une règle d'alerte (pas de fenêtre de dashboard à ce niveau), même
+#   raisonnement que les deux autres alertes de ce lot.
+
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: okvorado-chute-trafic
+    folder: Okvorado
+    interval: 1m
+    rules:
+      - uid: okvorado-alerte-chute-trafic
+        title: "Chute de trafic — effondrement de plus de ${ALERTE_CHUTE_TRAFIC_SEUIL_PCT}% vs période précédente"
+        condition: seuil
+        for: 3m
+        noDataState: OK
+        execErrState: Error
+        data:
+          - refId: requete
+            relativeTimeRange:
+              from: 3600
+              to: 0
+            datasourceUid: ClickHouse
+            model:
+              rawSql: >-
+                SELECT
+                    ExporterName AS exportateur,
+                    sumIf(Bytes * SamplingRate, TimeReceived >= now() - 1800) AS volume_recent,
+                    sumIf(Bytes * SamplingRate, TimeReceived < now() - 1800 AND TimeReceived >= now() - 3600) AS volume_precedent,
+                    (volume_precedent - volume_recent) / volume_precedent * 100 AS chute_pct
+                FROM flows
+                WHERE TimeReceived >= now() - 3600
+                GROUP BY ExporterName
+                HAVING volume_precedent > 0
+                    AND chute_pct > ${ALERTE_CHUTE_TRAFIC_SEUIL_PCT}
+                ORDER BY chute_pct DESC
+                LIMIT 50
+              format: 1
+              intervalMs: 60000
+              maxDataPoints: 100
+              refId: requete
+          - refId: reduction
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: requete
+              reducer: count
+              refId: reduction
+          - refId: seuil
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: reduction
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]
+              refId: seuil
+        labels:
+          severite: avertissement
+          famille: disponibilite
+        annotations:
+          resume: "Le volume de trafic d'un exportateur s'est effondré de plus de ${ALERTE_CHUTE_TRAFIC_SEUIL_PCT}% par rapport à la demi-heure précédente."
+          description: >-
+            Ouvrir « Okvorado — Vue d'ensemble du parc » et comparer le
+            panneau « Trafic total dans le temps » sur les dernières heures
+            pour confirmer la tendance (éliminer un simple creux d'activité
+            nocturne/hors-heures). Si la chute est confirmée et durable :
+            vérifier l'état du lien opérateur (SFR) pour ce site, contrôler
+            que le routage n'a pas basculé vers un lien de secours qui
+            n'exporte pas vers ce collecteur, et rapprocher avec les tickets
+            d'incident réseau en cours sur ce site avant d'escalader.

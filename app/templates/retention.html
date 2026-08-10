@@ -1,0 +1,306 @@
+{% extends "base.html" %}
+
+{% block title %}Rétention — Okvorado{% endblock %}
+
+{% block content %}
+<div id="retention-page"
+     hx-get="{{ '/retention' | prefixed }}"
+     hx-select="#retention-page"
+     hx-target="#retention-page"
+     hx-swap="outerHTML"
+     hx-trigger="every 60s">
+<h1>Rétention des données ClickHouse</h1>
+<p class="lede">
+  Pilotage du TTL (durée de conservation) des tables de flux NetFlow et projection
+  de l'occupation disque avant tout changement.
+</p>
+
+<section class="disk-gauge">
+  <h2>Occupation disque</h2>
+  {% set used_pct = (disk_used_bytes / disk_total_bytes * 100) if disk_total_bytes else 0 %}
+  <div class="gauge-track" role="progressbar"
+       aria-valuenow="{{ '%.1f'|format(used_pct) }}" aria-valuemin="0" aria-valuemax="100">
+    <div class="gauge-fill" style="width: {{ '%.2f'|format(used_pct) }}%;"></div>
+  </div>
+  <p class="gauge-legend">
+    {{ format_bytes(disk_used_bytes) }} utilisés sur {{ format_bytes(disk_total_bytes) }}
+    ({{ '%.1f'|format(used_pct) }}% — marge confortable au regard des volumes de flux actuels).
+  </p>
+</section>
+
+<section class="recommendation">
+  <h2>Recommandation</h2>
+  <p>
+    Conserver les données brutes (<code>flows</code>) <strong>15 à 30 jours</strong> et
+    prolonger l'agrégat horaire (<code>flows_1h0m0s</code>) jusqu'à <strong>1 an (365 jours)</strong> :
+    c'est le meilleur ratio valeur/coût du projet. L'agrégat horaire ne pèse aujourd'hui
+    que quelques centaines de kilooctets ; le conserver un an ne coûte que quelques
+    dizaines de mégaoctets, pour une visibilité longue durée sur les tendances de trafic.
+  </p>
+</section>
+
+<section class="retention-table">
+  <h2>État actuel par table</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Table</th>
+        <th>Moteur</th>
+        <th>TTL actuel</th>
+        <th>Taille sur disque</th>
+        <th>Lignes</th>
+        <th>Croissance estimée / jour</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in items %}
+      <tr>
+        <td><code>{{ item.table }}</code></td>
+        <td>{{ item.engine }}</td>
+        <td>
+          {% if item.ttl_days is not none %}
+            {{ '%.0f'|format(item.ttl_days) }} j
+          {% else %}
+            <span class="ttl-unknown">inconnu (expression TTL non reconnue)</span>
+          {% endif %}
+        </td>
+        <td>{{ format_bytes(item.bytes_on_disk) }}</td>
+        <td>{{ '{:,}'.format(item.rows).replace(',', ' ') }}</td>
+        <td>
+          {% if item.ttl_seconds and item.ttl_seconds > 0 %}
+            ≈ {{ format_bytes((item.bytes_on_disk / (item.ttl_seconds / 86400)) | round | int) }}
+            <span class="estimate-flag">(estimation)</span>
+          {% else %}
+            —
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6">Aucune table de rétention trouvée.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="hint">
+    La croissance quotidienne est une <strong>estimation</strong> qui suppose un régime
+    stationnaire (volume ingéré stable sur la durée du TTL) — pas une mesure directe.
+  </p>
+</section>
+
+<section class="ttl-preview panel" hx-select="unset">
+  {# `hx-select="unset"` coupe l'héritage de `hx-select="#retention-page"` posé
+     sur le conteneur racine pour son auto-rafraîchissement périodique — même
+     piège mesuré et corrigé sur `db_health.html` (voir sa docstring
+     détaillée, 2026-08-09) : sans ce garde-fou, les fragments de résultat
+     HTMX de cette section (aucun ne contient l'id `#retention-page`)
+     s'insèrent silencieusement dans du vide. #}
+  <h2>Prévisualiser puis appliquer un changement de TTL</h2>
+  <p class="not-active-warning">
+    Geste en <strong>deux temps</strong> : la prévisualisation calcule et affiche
+    l'ordre SQL et le volume estimé purgé, sans rien modifier. Le bouton
+    « Appliquer » n'apparaît qu'une fois une prévisualisation affichée pour la
+    table et le TTL actuellement saisis.
+  </p>
+
+  <form
+    id="ttl-form"
+    hx-post="{{ '/api/retention/preview' | prefixed }}"
+    hx-target="#preview-result"
+    hx-swap="innerHTML"
+    hx-ext="json-enc"
+  >
+    <label for="table">Table</label>
+    <select id="table" name="table">
+      {% for item in items %}
+      <option value="{{ item.table }}">{{ item.table }}</option>
+      {% endfor %}
+    </select>
+
+    <label for="ttl_days">Nouveau TTL (jours)</label>
+    <input type="number" id="ttl_days" name="ttl_days" min="1" max="3650" value="15" required>
+
+    <button type="submit">Prévisualiser</button>
+  </form>
+
+  <div id="preview-result" aria-live="polite">
+    <!-- Rempli par HTMX depuis /api/retention/preview -->
+  </div>
+
+  {# Formulaire d'application SÉPARÉ du formulaire de prévisualisation
+     ci-dessus : mêmes deux champs (table, ttl_days) ressaisis explicitement,
+     jamais partagés en JS avec le formulaire de preview — ce qui garantit
+     que la valeur envoyée à /apply est TOUJOURS celle visible à l'écran au
+     moment du clic, jamais un état caché qui aurait pu diverger.
+     hx-confirm est l'attribut HTMX natif — aucun JavaScript custom, la
+     confirmation reste gérée par le navigateur (CSP : aucun onclick inline). #}
+  <form
+    hx-post="{{ '/api/retention/apply' | prefixed }}"
+    hx-target="#apply-result"
+    hx-swap="innerHTML"
+    hx-ext="json-enc"
+    hx-confirm="Appliquer ce nouveau TTL ? Si vous baissez la durée de rétention, les données au-delà de la nouvelle limite seront détruites de façon IRRÉVERSIBLE — relisez le volume purgé estimé affiché dans la prévisualisation ci-dessus avant de confirmer."
+    class="ttl-apply-form"
+  >
+    <label for="apply_table">Table</label>
+    <select id="apply_table" name="table">
+      {% for item in items %}
+      <option value="{{ item.table }}">{{ item.table }}</option>
+      {% endfor %}
+    </select>
+    <label for="apply_ttl_days">TTL à appliquer (jours)</label>
+    <input type="number" id="apply_ttl_days" name="ttl_days" min="1" max="3650" value="15" required>
+    <button type="submit" class="danger">Appliquer le TTL</button>
+  </form>
+
+  <div id="apply-result" aria-live="polite">
+    <!-- Rempli par HTMX depuis /api/retention/apply -->
+  </div>
+
+  <div class="purge-warning notice notice-warn">
+    ⚠️ <strong>Baisser un TTL détruit des données de façon irréversible.</strong>
+    Le volume qui serait purgé est calculé et affiché dans la prévisualisation
+    ci-dessus AVANT toute décision. Ne jamais appliquer une baisse de TTL sans
+    avoir lu ce chiffre.
+  </div>
+</section>
+
+<section class="projection-6m panel">
+  <h2>Occupation projetée à {{ projection_days }} jours (6 mois)</h2>
+  <p class="hint">
+    Projection dérivée de la croissance quotidienne mesurée sur chaque table, au
+    TTL <strong>actuellement configuré</strong> (pas celui saisi ci-dessus) — c'est
+    la trajectoire « si rien ne change ».
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>Table</th>
+        <th>Taille actuelle</th>
+        <th>Projection à {{ projection_days }} j</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in projection_rows %}
+      <tr>
+        <td><code>{{ row.table }}</code></td>
+        <td class="num">{{ format_bytes(row.current_bytes) }}</td>
+        <td class="num">
+          {% if row.projected_bytes is not none %}
+            {{ format_bytes(row.projected_bytes | round | int) }}
+          {% else %}
+            <span class="ttl-unknown">indéterminée (TTL inconnu)</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="3">Aucune table de rétention trouvée.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="docker-logs panel" hx-select="unset">
+  <h2>Logs Docker</h2>
+  <p class="hint">
+    Docker limite les logs par <strong>taille</strong>, pas par durée : une valeur
+    de rotation ne garantit donc aucune durée de conservation exacte, seulement un
+    volume maximal par conteneur. Un changement de ces réglages nécessite un
+    <code>docker compose up -d</code> pour s'appliquer — les conteneurs déjà créés
+    conservent leur configuration de logging actuelle jusqu'à leur recréation.
+  </p>
+  <div class="stat-row">
+    <div class="stat">
+      <div class="stat-label">Taille max par fichier</div>
+      <div class="stat-value mono">{{ docker_log_max_size }}</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Fichiers conservés</div>
+      <div class="stat-value mono">{{ docker_log_max_file }}</div>
+    </div>
+  </div>
+
+  <form
+    hx-post="{{ '/api/retention/settings' | prefixed }}"
+    hx-target="#docker-logs-result"
+    hx-swap="innerHTML"
+    hx-ext="json-enc"
+  >
+    <label for="docker_log_max_size_mb">Nouvelle taille max (Mo)</label>
+    <input type="number" id="docker_log_max_size_mb" name="docker_log_max_size_mb" min="1" required>
+
+    <label for="docker_log_max_file">Nouveau nombre de fichiers conservés</label>
+    <input type="number" id="docker_log_max_file" name="docker_log_max_file" min="1" required>
+
+    <button type="submit">Enregistrer</button>
+  </form>
+  <div id="docker-logs-result" aria-live="polite"></div>
+</section>
+
+<section class="backups-purge panel" hx-select="unset">
+  <h2>Sauvegardes de configuration</h2>
+  <p class="hint">
+    Fichiers <code>outlet.yaml.bak-*</code> produits à chaque écriture de
+    configuration. Le réglage <code>backup_keep_n</code> détermine combien de
+    sauvegardes récentes sont conservées lors d'une purge ; les plus anciennes
+    au-delà de ce nombre sont candidates à la suppression.
+  </p>
+  <div class="stat-row">
+    <div class="stat">
+      <div class="stat-label">backup_keep_n actuel</div>
+      <div class="stat-value mono">{{ settings.get('backup_keep_n', '—') }}</div>
+    </div>
+  </div>
+
+  <form
+    hx-post="{{ '/api/retention/purge/preview' | prefixed }}"
+    hx-target="#purge-preview-result-backups"
+    hx-swap="innerHTML"
+    hx-ext="json-enc"
+  >
+    <input type="hidden" name="target" value="backups">
+    <label for="backups_keep_n">Conserver les N plus récentes</label>
+    <input type="number" id="backups_keep_n" name="keep_n" min="0" value="{{ settings.get('backup_keep_n', 5) }}" required>
+    <button type="submit">Prévisualiser la purge</button>
+  </form>
+
+  <div id="purge-preview-result-backups" aria-live="polite">
+    <!-- Rempli par HTMX depuis /api/retention/purge/preview -->
+  </div>
+</section>
+
+<section class="internal-history panel" hx-select="unset">
+  <h2>Historique interne</h2>
+  <p class="hint">
+    Trois tables SQLite internes accumulent de l'historique au fil de l'usage.
+    Chaque bloc prévisualise puis purge indépendamment — aucune suppression sans
+    confirmation explicite après lecture du preview.
+  </p>
+
+  {% for table in purgeable_tables %}
+  <div class="internal-history__block">
+    <h3><code>{{ table }}</code></h3>
+    <form
+      hx-post="{{ '/api/retention/purge/preview' | prefixed }}"
+      hx-target="#purge-preview-result-{{ table }}"
+      hx-swap="innerHTML"
+      hx-ext="json-enc"
+    >
+      <input type="hidden" name="target" value="{{ table }}">
+      <label for="{{ table }}_max_age_days">Âge maximal conservé (jours)</label>
+      <input
+        type="number"
+        id="{{ table }}_max_age_days"
+        name="max_age_days"
+        min="1"
+        value="{{ settings.get(table ~ '_max_age_days', 90) }}"
+        required
+      >
+      <button type="submit">Prévisualiser la purge</button>
+    </form>
+    <div id="purge-preview-result-{{ table }}" aria-live="polite">
+      <!-- Rempli par HTMX depuis /api/retention/purge/preview -->
+    </div>
+  </div>
+  {% endfor %}
+</section>
+</div>
+{% endblock %}

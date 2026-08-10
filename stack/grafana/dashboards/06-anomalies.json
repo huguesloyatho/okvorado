@@ -1,0 +1,664 @@
+{
+  "uid": "okvorado-anomalies",
+  "title": "Okvorado — Anomalies",
+  "description": "Dashboard dédié : détection de rupture par rapport à l'historique — « voir monter en anomalie les flux anormaux en quantité qu'on voyait pas avant ». Un flux suspect n'est PAS seulement du P2P ou du BitTorrent : c'est TOUT flux qui sort de l'ordinaire, quelle que soit l'application (leçon retenue : l'exemple SCCM/BitTorrent du prompt initial n'est pas le périmètre, la FAMILLE l'est). SCORE = somme de 4 composantes calculables en SQL, chacune affichée séparément dans le tableau (jamais un total opaque) : 1) écart_normale — z-score du volume de l'heure courante vs moyenne/écart-type des heures précédentes (stddevPop), plafonné à 15, seulement si >=4 buckets historiques existent (sinon 0, cf. nouveauté) ; 2) nouveauté — +3 si le couple (source,destination,application) a moins de 4 buckets horaires d'historique sur les 24h précédentes (clé neuve ou trop rare pour un z-score fiable) ; 3) rareté — +2 si l'application est utilisée par 3 sources internes ou moins ET porte plus de 500 Ko sur l'heure courante (gros volume sur un service peu répandu) ; 4) catégorie_a_risque — +2 si l'application est taguée [P2P]/[VPN]/[VoWiFi]/[VoIP]/[Jeu] par le catalogue grand public — AGGRAVANT SEULEMENT, jamais une preuve : un flux BitTorrent en entreprise mérite un regard, sans être une faute en soi (prompt). MESURÉ sur ce homelab (2026-08-08, fenêtre 1h courante / 24h historique, 11 exportateurs) : le classement obtenu a du sens — les premières lignes sont des z-scores réels sur des flux HTTPS/IMAPS/SSH avec un vrai historique (7.5, 6.5, 5.6...), suivies d'un flux broadcast udp/9999 vers l'adresse de diffusion locale (nouveau + rare, score 5) et d'un service peu courant tcp/9696 (z-score 2.4 + rareté, score 4.4) — pas de faux positif évident en tête. LIMITE HONNÊTE (prompt) : sans historique long (ce homelab n'a qu'une semaine de données), une 'anomalie' détectée peut être un simple pic légitime plutôt qu'un incident — d'où le seuil RÉGLABLE ($seuil_score, défaut 3) plutôt qu'un couperet arbitraire en dur, et la composante nouveauté qui reste faible (+3, pas +15) précisément parce qu'une clé neuve n'est pas automatiquement suspecte. Table de correspondance port->application : UNE SEULE dans tout le dépôt (celle de 03-applications-qos.json), ÉTENDUE ici avec les 108 entrées du catalogue grand public (data/grand_public_fallback.csv, catégories [P2P]/[Streaming]/[Visio]/[Messagerie]/[Jeu]/[VoWiFi]/[VoIP]/[Cloud]/[VPN]/[IoT]) — jamais une deuxième table qui pourrait diverger. Filtre $exporter (multi) : ExporterName IN (${exporter:singlequote}). Filtre $categorie (multi) : catégorie du catalogue, peuplée dynamiquement depuis les applications réellement vues.",
+  "tags": [
+    "okvorado",
+    "netflow",
+    "anomalies",
+    "securite"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "refresh": "1m",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "30s",
+      "1m",
+      "5m",
+      "15m"
+    ],
+    "time_options": [
+      "1h",
+      "6h",
+      "24h",
+      "48h",
+      "7d"
+    ]
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "exporter",
+        "type": "query",
+        "label": "Exportateur",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "ClickHouse"
+        },
+        "query": "SELECT DISTINCT ExporterName FROM flows WHERE $__timeFilter(TimeReceived) ORDER BY ExporterName",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "sort": 1
+      },
+      {
+        "name": "categorie",
+        "type": "query",
+        "label": "Catégorie applicative",
+        "description": "Catégories du catalogue grand public + 'Standard' (tout le reste). Peuplée dynamiquement depuis les applications réellement vues sur la fenêtre courante, jamais une liste figée.",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "ClickHouse"
+        },
+        "query": "SELECT categorie FROM (\n    SELECT\n        multiIf(\n        application LIKE '[P2P]%', 'P2P',\n        application LIKE '[Streaming]%', 'Streaming',\n        application LIKE '[Visio]%', 'Visio',\n        application LIKE '[Messagerie]%', 'Messagerie',\n        application LIKE '[Jeu]%', 'Jeu',\n        application LIKE '[VoWiFi%', 'VoWiFi/VoIP',\n        application LIKE '[VoIP%', 'VoWiFi/VoIP',\n        application LIKE '[Cloud]%', 'Cloud',\n        application LIKE '[VPN]%', 'VPN',\n        application LIKE '[IoT]%', 'IoT',\n        'Standard'\n    ) AS categorie\n    FROM (\n        SELECT\n            multiIf(\n        least(SrcPort,DstPort) = 443, 'HTTPS',\n        least(SrcPort,DstPort) = 80, 'HTTP',\n        least(SrcPort,DstPort) = 8080, 'HTTP-ALT',\n        least(SrcPort,DstPort) = 8443, 'HTTPS-ALT',\n        least(SrcPort,DstPort) = 22, 'SSH',\n        least(SrcPort,DstPort) = 3389, 'RDP',\n        least(SrcPort,DstPort) = 445, 'SMB (microsoft-ds)',\n        least(SrcPort,DstPort) = 139, 'NetBIOS-SSN',\n        least(SrcPort,DstPort) = 137, 'NetBIOS-NS',\n        least(SrcPort,DstPort) = 138, 'NetBIOS-DGM',\n        least(SrcPort,DstPort) = 53, 'DNS',\n        least(SrcPort,DstPort) = 67, 'DHCP',\n        least(SrcPort,DstPort) = 68, 'DHCP',\n        least(SrcPort,DstPort) = 25, 'SMTP',\n        least(SrcPort,DstPort) = 110, 'POP3',\n        least(SrcPort,DstPort) = 143, 'IMAP',\n        least(SrcPort,DstPort) = 993, 'IMAPS',\n        least(SrcPort,DstPort) = 995, 'POP3S',\n        least(SrcPort,DstPort) = 21, 'FTP',\n        least(SrcPort,DstPort) = 20, 'FTP-DATA',\n        least(SrcPort,DstPort) = 123, 'NTP',\n        least(SrcPort,DstPort) = 161, 'SNMP',\n        least(SrcPort,DstPort) = 162, 'SNMP-TRAP',\n        least(SrcPort,DstPort) = 389, 'LDAP',\n        least(SrcPort,DstPort) = 636, 'LDAPS',\n        least(SrcPort,DstPort) = 1433, 'MSSQL',\n        least(SrcPort,DstPort) = 3306, 'MySQL',\n        least(SrcPort,DstPort) = 5432, 'PostgreSQL',\n        least(SrcPort,DstPort) = 6379, 'Redis',\n        least(SrcPort,DstPort) = 27017, 'MongoDB',\n        least(SrcPort,DstPort) = 2049, 'NFS',\n        least(SrcPort,DstPort) = 179, 'BGP',\n        least(SrcPort,DstPort) >= 6881 AND least(SrcPort,DstPort) <= 6889, '[P2P] BitTorrent',\n        least(SrcPort,DstPort) = 6969, '[P2P] BitTorrent (tracker)',\n        least(SrcPort,DstPort) = 51413, '[P2P] BitTorrent (Transmission)',\n        least(SrcPort,DstPort) = 4070, '[Streaming] Spotify',\n        least(SrcPort,DstPort) = 57621, '[Streaming] Spotify (découverte locale)',\n        least(SrcPort,DstPort) = 3478, '[Visio] Teams/Skype (STUN/TURN)',\n        least(SrcPort,DstPort) >= 3479 AND least(SrcPort,DstPort) <= 3481, '[Visio] Teams/Skype',\n        least(SrcPort,DstPort) = 50000, '[Visio] Teams/Skype (média)',\n        least(SrcPort,DstPort) >= 8801 AND least(SrcPort,DstPort) <= 8810, '[Visio] Zoom',\n        least(SrcPort,DstPort) = 9000, '[Visio] Webex',\n        least(SrcPort,DstPort) IN (5004, 5005), '[Visio] RTP (flux audio/vidéo)',\n        least(SrcPort,DstPort) >= 19305 AND least(SrcPort,DstPort) <= 19314, '[Visio] Discord (voix)',\n        least(SrcPort,DstPort) = 50002, '[Messagerie] Signal',\n        least(SrcPort,DstPort) = 6667, '[Messagerie] IRC',\n        least(SrcPort,DstPort) >= 27015 AND least(SrcPort,DstPort) <= 27030, '[Jeu] Steam / Source engine',\n        least(SrcPort,DstPort) IN (27036, 27037), '[Jeu] Steam (client/découverte)',\n        least(SrcPort,DstPort) = 3074, '[Jeu] Xbox Live',\n        least(SrcPort,DstPort) = 3480, '[Jeu] PlayStation Network',\n        least(SrcPort,DstPort) = 1119, '[Jeu] Battle.net',\n        least(SrcPort,DstPort) IN (6112, 6113), '[Jeu] Battle.net (legacy)',\n        least(SrcPort,DstPort) IN (5222, 5223, 2099), '[Jeu] Riot Games',\n        least(SrcPort,DstPort) IN (500, 4500), '[VoWiFi] Appel WiFi (IPsec IKE/NAT-T) / VPN grand public',\n        least(SrcPort,DstPort) IN (5060, 5061), '[VoIP/VoWiFi] SIP',\n        least(SrcPort,DstPort) >= 16384 AND least(SrcPort,DstPort) <= 32767, '[VoIP/VoWiFi] RTP (flux voix)',\n        least(SrcPort,DstPort) = 17500, '[Cloud] Dropbox (découverte LAN)',\n        least(SrcPort,DstPort) = 51820, '[VPN] WireGuard',\n        least(SrcPort,DstPort) = 1194, '[VPN] OpenVPN',\n        least(SrcPort,DstPort) = 1701, '[VPN] L2TP',\n        least(SrcPort,DstPort) = 1723, '[VPN] PPTP',\n        least(SrcPort,DstPort) IN (1883, 8883), '[IoT] MQTT',\n        least(SrcPort,DstPort) IN (8008, 8009, 8443), '[IoT] Chromecast',\n        least(SrcPort,DstPort) IN (7000, 7001), '[IoT] AirPlay',\n        least(SrcPort,DstPort) = 5353, '[IoT] mDNS/Bonjour',\n        least(SrcPort,DstPort) = 1900, '[IoT] SSDP/UPnP',\n        concat(if(Proto = 6, 'tcp/', 'udp/'), toString(least(SrcPort,DstPort)))\n    ) AS application\n        FROM flows\n        WHERE $__timeFilter(TimeReceived) AND Proto IN (6, 17)\n        GROUP BY application\n    )\n) GROUP BY categorie ORDER BY categorie",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "sort": 1
+      },
+      {
+        "name": "seuil_score",
+        "type": "textbox",
+        "label": "Seuil de score",
+        "description": "Score minimum pour qu'un flux soit affiché comme suspect. RÉGLABLE, pas un couperet arbitraire en dur (limite honnête du prompt : sans historique long, une anomalie peut être un pic légitime — l'exploitant ajuste selon son contexte). Défaut 3 : un seul signal fort (nouveauté OU catégorie+rareté) ou un écart modéré à la normale suffit à apparaître.",
+        "current": {
+          "value": "3",
+          "text": "3"
+        },
+        "query": "3"
+      },
+      {
+        "name": "adresse",
+        "type": "textbox",
+        "label": "Source ou destination (IP)",
+        "description": "Adresse IP à inspecter en détail (panneau 'Détail d'un flux'). Vide par défaut = aucun résultat tant qu'une adresse n'est pas saisie ; coller une IP vue dans les autres panneaux pour voir TOUT ce qu'elle fait (source ou destination), toutes applications confondues.",
+        "current": {
+          "value": "0.0.0.0",
+          "text": "0.0.0.0"
+        },
+        "query": "0.0.0.0"
+      }
+    ]
+  },
+  "links": [
+    {
+      "title": "Accueil — Traffic Summary",
+      "type": "dashboards",
+      "tags": [
+        "okvorado",
+        "accueil"
+      ],
+      "asDropdown": false,
+      "icon": "external link",
+      "targetBlank": false,
+      "keepTime": true,
+      "includeVars": true
+    },
+    {
+      "title": "Applications & Diagnostic",
+      "type": "dashboards",
+      "tags": [
+        "okvorado",
+        "applications"
+      ],
+      "asDropdown": false,
+      "icon": "external link",
+      "targetBlank": false,
+      "keepTime": true,
+      "includeVars": true
+    },
+    {
+      "title": "Diagnostic incidents",
+      "type": "dashboards",
+      "tags": [
+        "okvorado",
+        "incident"
+      ],
+      "asDropdown": false,
+      "icon": "external link",
+      "targetBlank": false,
+      "keepTime": true,
+      "includeVars": true
+    },
+    {
+      "title": "Par exportateur",
+      "type": "dashboards",
+      "tags": [
+        "okvorado",
+        "exportateur"
+      ],
+      "asDropdown": false,
+      "icon": "external link",
+      "targetBlank": false,
+      "keepTime": true,
+      "includeVars": true
+    },
+    {
+      "title": "Vue d'ensemble du parc",
+      "type": "dashboards",
+      "tags": [
+        "okvorado",
+        "vue-ensemble"
+      ],
+      "asDropdown": false,
+      "icon": "external link",
+      "targetBlank": false,
+      "keepTime": true,
+      "includeVars": true
+    }
+  ],
+  "panels": [
+    {
+      "id": 60,
+      "type": "row",
+      "title": "Flux suspects classés par score — le score EXPLIQUE (composantes affichées)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 61,
+      "type": "table",
+      "title": "Flux suspects — classement par score, composantes détaillées",
+      "description": "COMMENT LIRE : une ligne = un flux (source, destination, application) sur l'heure courante. Colonnes ecart_normale / nouveaute / rarete / categorie_a_risque = LES COMPOSANTES du score, affichées séparément (jamais un total opaque, prompt) — une ligne en tête s'explique en lisant quelle(s) composante(s) contribuent. sources_app_historique = nombre de sources internes ayant utilisé cette application sur les 24h précédentes (sert à juger la composante rareté). Filtrable par $categorie et $seuil_score (HAVING score >= $seuil_score, RÉGLABLE — pas un couperet arbitraire, limite honnête : sans historique long, une anomalie peut être un pic légitime). LIMIT 50.",
+      "gridPos": {
+        "h": 14,
+        "w": 24,
+        "x": 0,
+        "y": 1
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "left",
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "volume"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "source"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Voir tout ce que fait cette adresse source",
+                    "url": "/d/okvorado-anomalies/okvorado-anomalies?var-adresse=${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "destination"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Voir tout ce que fait cette adresse destination",
+                    "url": "/d/okvorado-anomalies/okvorado-anomalies?var-adresse=${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "application"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Voir cette application",
+                    "url": "/d/okvorado-applications-qos/okvorado-applications-qos?var-application=${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "categorie"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Filtrer sur cette catégorie",
+                    "url": "/d/okvorado-anomalies/okvorado-anomalies?var-categorie=${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "score"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 3
+                    },
+                    {
+                      "color": "red",
+                      "value": 7
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "footer": {
+          "show": true,
+          "enablePagination": true
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "rawSql": "WITH\n    toStartOfHour($__toTime) - toIntervalHour(1) AS debut_courant,\n    toStartOfHour($__toTime) AS fin_courant,\n    greatest(debut_courant - toIntervalHour(24), $__fromTime) AS debut_historique,\n    par_heure AS (\n        SELECT\n            SrcAddr, DstAddr,\n            least(SrcPort,DstPort) AS port_service,\n            multiIf(\n        least(SrcPort,DstPort) = 443, 'HTTPS',\n        least(SrcPort,DstPort) = 80, 'HTTP',\n        least(SrcPort,DstPort) = 8080, 'HTTP-ALT',\n        least(SrcPort,DstPort) = 8443, 'HTTPS-ALT',\n        least(SrcPort,DstPort) = 22, 'SSH',\n        least(SrcPort,DstPort) = 3389, 'RDP',\n        least(SrcPort,DstPort) = 445, 'SMB (microsoft-ds)',\n        least(SrcPort,DstPort) = 139, 'NetBIOS-SSN',\n        least(SrcPort,DstPort) = 137, 'NetBIOS-NS',\n        least(SrcPort,DstPort) = 138, 'NetBIOS-DGM',\n        least(SrcPort,DstPort) = 53, 'DNS',\n        least(SrcPort,DstPort) = 67, 'DHCP',\n        least(SrcPort,DstPort) = 68, 'DHCP',\n        least(SrcPort,DstPort) = 25, 'SMTP',\n        least(SrcPort,DstPort) = 110, 'POP3',\n        least(SrcPort,DstPort) = 143, 'IMAP',\n        least(SrcPort,DstPort) = 993, 'IMAPS',\n        least(SrcPort,DstPort) = 995, 'POP3S',\n        least(SrcPort,DstPort) = 21, 'FTP',\n        least(SrcPort,DstPort) = 20, 'FTP-DATA',\n        least(SrcPort,DstPort) = 123, 'NTP',\n        least(SrcPort,DstPort) = 161, 'SNMP',\n        least(SrcPort,DstPort) = 162, 'SNMP-TRAP',\n        least(SrcPort,DstPort) = 389, 'LDAP',\n        least(SrcPort,DstPort) = 636, 'LDAPS',\n        least(SrcPort,DstPort) = 1433, 'MSSQL',\n        least(SrcPort,DstPort) = 3306, 'MySQL',\n        least(SrcPort,DstPort) = 5432, 'PostgreSQL',\n        least(SrcPort,DstPort) = 6379, 'Redis',\n        least(SrcPort,DstPort) = 27017, 'MongoDB',\n        least(SrcPort,DstPort) = 2049, 'NFS',\n        least(SrcPort,DstPort) = 179, 'BGP',\n        least(SrcPort,DstPort) >= 6881 AND least(SrcPort,DstPort) <= 6889, '[P2P] BitTorrent',\n        least(SrcPort,DstPort) = 6969, '[P2P] BitTorrent (tracker)',\n        least(SrcPort,DstPort) = 51413, '[P2P] BitTorrent (Transmission)',\n        least(SrcPort,DstPort) = 4070, '[Streaming] Spotify',\n        least(SrcPort,DstPort) = 57621, '[Streaming] Spotify (découverte locale)',\n        least(SrcPort,DstPort) = 3478, '[Visio] Teams/Skype (STUN/TURN)',\n        least(SrcPort,DstPort) >= 3479 AND least(SrcPort,DstPort) <= 3481, '[Visio] Teams/Skype',\n        least(SrcPort,DstPort) = 50000, '[Visio] Teams/Skype (média)',\n        least(SrcPort,DstPort) >= 8801 AND least(SrcPort,DstPort) <= 8810, '[Visio] Zoom',\n        least(SrcPort,DstPort) = 9000, '[Visio] Webex',\n        least(SrcPort,DstPort) IN (5004, 5005), '[Visio] RTP (flux audio/vidéo)',\n        least(SrcPort,DstPort) >= 19305 AND least(SrcPort,DstPort) <= 19314, '[Visio] Discord (voix)',\n        least(SrcPort,DstPort) = 50002, '[Messagerie] Signal',\n        least(SrcPort,DstPort) = 6667, '[Messagerie] IRC',\n        least(SrcPort,DstPort) >= 27015 AND least(SrcPort,DstPort) <= 27030, '[Jeu] Steam / Source engine',\n        least(SrcPort,DstPort) IN (27036, 27037), '[Jeu] Steam (client/découverte)',\n        least(SrcPort,DstPort) = 3074, '[Jeu] Xbox Live',\n        least(SrcPort,DstPort) = 3480, '[Jeu] PlayStation Network',\n        least(SrcPort,DstPort) = 1119, '[Jeu] Battle.net',\n        least(SrcPort,DstPort) IN (6112, 6113), '[Jeu] Battle.net (legacy)',\n        least(SrcPort,DstPort) IN (5222, 5223, 2099), '[Jeu] Riot Games',\n        least(SrcPort,DstPort) IN (500, 4500), '[VoWiFi] Appel WiFi (IPsec IKE/NAT-T) / VPN grand public',\n        least(SrcPort,DstPort) IN (5060, 5061), '[VoIP/VoWiFi] SIP',\n        least(SrcPort,DstPort) >= 16384 AND least(SrcPort,DstPort) <= 32767, '[VoIP/VoWiFi] RTP (flux voix)',\n        least(SrcPort,DstPort) = 17500, '[Cloud] Dropbox (découverte LAN)',\n        least(SrcPort,DstPort) = 51820, '[VPN] WireGuard',\n        least(SrcPort,DstPort) = 1194, '[VPN] OpenVPN',\n        least(SrcPort,DstPort) = 1701, '[VPN] L2TP',\n        least(SrcPort,DstPort) = 1723, '[VPN] PPTP',\n        least(SrcPort,DstPort) IN (1883, 8883), '[IoT] MQTT',\n        least(SrcPort,DstPort) IN (8008, 8009, 8443), '[IoT] Chromecast',\n        least(SrcPort,DstPort) IN (7000, 7001), '[IoT] AirPlay',\n        least(SrcPort,DstPort) = 5353, '[IoT] mDNS/Bonjour',\n        least(SrcPort,DstPort) = 1900, '[IoT] SSDP/UPnP',\n        concat(if(Proto = 6, 'tcp/', 'udp/'), toString(least(SrcPort,DstPort)))\n    ) AS application,\n            toStartOfHour(TimeReceived) AS heure,\n            sum(Bytes * SamplingRate) AS volume\n        FROM flows\n        WHERE TimeReceived >= debut_historique AND TimeReceived < fin_courant\n            AND ExporterName IN (${exporter:singlequote})\n            AND Proto IN (6, 17)\n        GROUP BY SrcAddr, DstAddr, port_service, application, heure\n    ),\n    stats AS (\n        SELECT\n            SrcAddr, DstAddr, port_service, application,\n            sumIf(volume, heure >= debut_courant) AS volume_courant,\n            avgIf(volume, heure < debut_courant) AS moyenne_hist,\n            stddevPopIf(volume, heure < debut_courant) AS ecart_type_hist,\n            countIf(heure < debut_courant) AS nb_buckets_hist\n        FROM par_heure\n        GROUP BY SrcAddr, DstAddr, port_service, application\n        HAVING volume_courant > 0\n    ),\n    rarete AS (\n        SELECT application, uniqExact(SrcAddr) AS sources_app\n        FROM par_heure\n        GROUP BY application\n    )\nSELECT\n    replaceOne(IPv6NumToString(s.SrcAddr), '::ffff:', '') AS source,\n    replaceOne(IPv6NumToString(s.DstAddr), '::ffff:', '') AS destination,\n    s.application AS application,\n    multiIf(\n        s.application LIKE '[P2P]%', 'P2P',\n        s.application LIKE '[Streaming]%', 'Streaming',\n        s.application LIKE '[Visio]%', 'Visio',\n        s.application LIKE '[Messagerie]%', 'Messagerie',\n        s.application LIKE '[Jeu]%', 'Jeu',\n        s.application LIKE '[VoWiFi%', 'VoWiFi/VoIP',\n        s.application LIKE '[VoIP%', 'VoWiFi/VoIP',\n        s.application LIKE '[Cloud]%', 'Cloud',\n        s.application LIKE '[VPN]%', 'VPN',\n        s.application LIKE '[IoT]%', 'IoT',\n        'Standard'\n    ) AS categorie,\n    s.volume_courant AS volume,\n    r.sources_app AS sources_app_historique,\n    if(s.nb_buckets_hist >= 4, round(least((s.volume_courant - s.moyenne_hist) / greatest(s.ecart_type_hist, s.volume_courant * 0.05), 15), 2), 0) AS ecart_normale,\n    if(s.nb_buckets_hist < 4, 3, 0) AS nouveaute,\n    if(r.sources_app <= 3 AND s.volume_courant > 500000, 2, 0) AS rarete,\n    if(match(s.application, '^\\\\[(P2P|VPN|VoWiFi|VoIP|Jeu)\\\\]'), 2, 0) AS categorie_a_risque,\n    round(greatest(if(s.nb_buckets_hist >= 4, round(least((s.volume_courant - s.moyenne_hist) / greatest(s.ecart_type_hist, s.volume_courant * 0.05), 15), 2), 0), 0) + if(s.nb_buckets_hist < 4, 3, 0) + if(r.sources_app <= 3 AND s.volume_courant > 500000, 2, 0) + if(match(s.application, '^\\\\[(P2P|VPN|VoWiFi|VoIP|Jeu)\\\\]'), 2, 0), 2) AS score\nFROM stats AS s\nLEFT JOIN rarete AS r ON r.application = s.application\nWHERE (multiIf(\n        s.application LIKE '[P2P]%', 'P2P',\n        s.application LIKE '[Streaming]%', 'Streaming',\n        s.application LIKE '[Visio]%', 'Visio',\n        s.application LIKE '[Messagerie]%', 'Messagerie',\n        s.application LIKE '[Jeu]%', 'Jeu',\n        s.application LIKE '[VoWiFi%', 'VoWiFi/VoIP',\n        s.application LIKE '[VoIP%', 'VoWiFi/VoIP',\n        s.application LIKE '[Cloud]%', 'Cloud',\n        s.application LIKE '[VPN]%', 'VPN',\n        s.application LIKE '[IoT]%', 'IoT',\n        'Standard'\n    )) IN (${categorie:singlequote})\nHAVING score >= $seuil_score\nORDER BY score DESC\nLIMIT 50"
+        }
+      ]
+    },
+    {
+      "id": 62,
+      "type": "row",
+      "title": "Le score dans le temps — voir une anomalie monter",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 15
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 63,
+      "type": "timeseries",
+      "title": "Flux au-dessus du seuil, par heure — et score p95 de l'heure",
+      "description": "COMMENT LIRE : pour chaque heure de la fenêtre sélectionnée, rejoue le MÊME calcul de composante 'écart à la normale' que le tableau (fenêtre glissante ROWS BETWEEN 24 PRECEDING AND 1 PRECEDING, stddevPop) mais heure par heure sur toute la période — 'flux au-dessus du seuil' compte les flux dont l'écart seul dépasse $seuil_score sur cette heure, 'score p95' est le 95e centile des scores d'écart de l'heure. Une anomalie qui MONTE se lit comme une remontée de la courbe 'flux au-dessus du seuil' plutôt qu'un pic isolé. Nécessite >=4 buckets horaires précédents pour calculer un écart-type fiable — sinon 0 (pas de faux z-score sur trop peu d'historique).",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 16
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 15,
+            "spanNulls": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "flux au-dessus du seuil"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "score p95"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 0,
+          "rawSql": "WITH\n    par_heure_longue AS (\n        SELECT\n            SrcAddr, DstAddr,\n            least(SrcPort,DstPort) AS port_service,\n            multiIf(\n        least(SrcPort,DstPort) = 443, 'HTTPS',\n        least(SrcPort,DstPort) = 80, 'HTTP',\n        least(SrcPort,DstPort) = 8080, 'HTTP-ALT',\n        least(SrcPort,DstPort) = 8443, 'HTTPS-ALT',\n        least(SrcPort,DstPort) = 22, 'SSH',\n        least(SrcPort,DstPort) = 3389, 'RDP',\n        least(SrcPort,DstPort) = 445, 'SMB (microsoft-ds)',\n        least(SrcPort,DstPort) = 139, 'NetBIOS-SSN',\n        least(SrcPort,DstPort) = 137, 'NetBIOS-NS',\n        least(SrcPort,DstPort) = 138, 'NetBIOS-DGM',\n        least(SrcPort,DstPort) = 53, 'DNS',\n        least(SrcPort,DstPort) = 67, 'DHCP',\n        least(SrcPort,DstPort) = 68, 'DHCP',\n        least(SrcPort,DstPort) = 25, 'SMTP',\n        least(SrcPort,DstPort) = 110, 'POP3',\n        least(SrcPort,DstPort) = 143, 'IMAP',\n        least(SrcPort,DstPort) = 993, 'IMAPS',\n        least(SrcPort,DstPort) = 995, 'POP3S',\n        least(SrcPort,DstPort) = 21, 'FTP',\n        least(SrcPort,DstPort) = 20, 'FTP-DATA',\n        least(SrcPort,DstPort) = 123, 'NTP',\n        least(SrcPort,DstPort) = 161, 'SNMP',\n        least(SrcPort,DstPort) = 162, 'SNMP-TRAP',\n        least(SrcPort,DstPort) = 389, 'LDAP',\n        least(SrcPort,DstPort) = 636, 'LDAPS',\n        least(SrcPort,DstPort) = 1433, 'MSSQL',\n        least(SrcPort,DstPort) = 3306, 'MySQL',\n        least(SrcPort,DstPort) = 5432, 'PostgreSQL',\n        least(SrcPort,DstPort) = 6379, 'Redis',\n        least(SrcPort,DstPort) = 27017, 'MongoDB',\n        least(SrcPort,DstPort) = 2049, 'NFS',\n        least(SrcPort,DstPort) = 179, 'BGP',\n        least(SrcPort,DstPort) >= 6881 AND least(SrcPort,DstPort) <= 6889, '[P2P] BitTorrent',\n        least(SrcPort,DstPort) = 6969, '[P2P] BitTorrent (tracker)',\n        least(SrcPort,DstPort) = 51413, '[P2P] BitTorrent (Transmission)',\n        least(SrcPort,DstPort) = 4070, '[Streaming] Spotify',\n        least(SrcPort,DstPort) = 57621, '[Streaming] Spotify (découverte locale)',\n        least(SrcPort,DstPort) = 3478, '[Visio] Teams/Skype (STUN/TURN)',\n        least(SrcPort,DstPort) >= 3479 AND least(SrcPort,DstPort) <= 3481, '[Visio] Teams/Skype',\n        least(SrcPort,DstPort) = 50000, '[Visio] Teams/Skype (média)',\n        least(SrcPort,DstPort) >= 8801 AND least(SrcPort,DstPort) <= 8810, '[Visio] Zoom',\n        least(SrcPort,DstPort) = 9000, '[Visio] Webex',\n        least(SrcPort,DstPort) IN (5004, 5005), '[Visio] RTP (flux audio/vidéo)',\n        least(SrcPort,DstPort) >= 19305 AND least(SrcPort,DstPort) <= 19314, '[Visio] Discord (voix)',\n        least(SrcPort,DstPort) = 50002, '[Messagerie] Signal',\n        least(SrcPort,DstPort) = 6667, '[Messagerie] IRC',\n        least(SrcPort,DstPort) >= 27015 AND least(SrcPort,DstPort) <= 27030, '[Jeu] Steam / Source engine',\n        least(SrcPort,DstPort) IN (27036, 27037), '[Jeu] Steam (client/découverte)',\n        least(SrcPort,DstPort) = 3074, '[Jeu] Xbox Live',\n        least(SrcPort,DstPort) = 3480, '[Jeu] PlayStation Network',\n        least(SrcPort,DstPort) = 1119, '[Jeu] Battle.net',\n        least(SrcPort,DstPort) IN (6112, 6113), '[Jeu] Battle.net (legacy)',\n        least(SrcPort,DstPort) IN (5222, 5223, 2099), '[Jeu] Riot Games',\n        least(SrcPort,DstPort) IN (500, 4500), '[VoWiFi] Appel WiFi (IPsec IKE/NAT-T) / VPN grand public',\n        least(SrcPort,DstPort) IN (5060, 5061), '[VoIP/VoWiFi] SIP',\n        least(SrcPort,DstPort) >= 16384 AND least(SrcPort,DstPort) <= 32767, '[VoIP/VoWiFi] RTP (flux voix)',\n        least(SrcPort,DstPort) = 17500, '[Cloud] Dropbox (découverte LAN)',\n        least(SrcPort,DstPort) = 51820, '[VPN] WireGuard',\n        least(SrcPort,DstPort) = 1194, '[VPN] OpenVPN',\n        least(SrcPort,DstPort) = 1701, '[VPN] L2TP',\n        least(SrcPort,DstPort) = 1723, '[VPN] PPTP',\n        least(SrcPort,DstPort) IN (1883, 8883), '[IoT] MQTT',\n        least(SrcPort,DstPort) IN (8008, 8009, 8443), '[IoT] Chromecast',\n        least(SrcPort,DstPort) IN (7000, 7001), '[IoT] AirPlay',\n        least(SrcPort,DstPort) = 5353, '[IoT] mDNS/Bonjour',\n        least(SrcPort,DstPort) = 1900, '[IoT] SSDP/UPnP',\n        concat(if(Proto = 6, 'tcp/', 'udp/'), toString(least(SrcPort,DstPort)))\n    ) AS application,\n            toStartOfHour(TimeReceived) AS heure,\n            sum(Bytes * SamplingRate) AS volume\n        FROM flows\n        WHERE $__timeFilter(TimeReceived)\n            AND ExporterName IN (${exporter:singlequote})\n            AND Proto IN (6, 17)\n        GROUP BY SrcAddr, DstAddr, port_service, application, heure\n    ),\n    stats_glissantes AS (\n        SELECT\n            SrcAddr, DstAddr, application, heure,\n            volume,\n            avg(volume) OVER (\n                PARTITION BY SrcAddr, DstAddr, application\n                ORDER BY heure\n                ROWS BETWEEN 24 PRECEDING AND 1 PRECEDING\n            ) AS moyenne_glissante,\n            stddevPop(volume) OVER (\n                PARTITION BY SrcAddr, DstAddr, application\n                ORDER BY heure\n                ROWS BETWEEN 24 PRECEDING AND 1 PRECEDING\n            ) AS ecart_type_glissant,\n            count(volume) OVER (\n                PARTITION BY SrcAddr, DstAddr, application\n                ORDER BY heure\n                ROWS BETWEEN 24 PRECEDING AND 1 PRECEDING\n            ) AS nb_buckets_precedents\n        FROM par_heure_longue\n    )\nSELECT\n    heure AS time,\n    countIf(\n        nb_buckets_precedents >= 4\n        AND (volume - moyenne_glissante) / greatest(ecart_type_glissant, volume * 0.05) >= $seuil_score\n    ) AS \"flux au-dessus du seuil\",\n    round(quantile(0.95)(\n        if(nb_buckets_precedents >= 4,\n            least((volume - moyenne_glissante) / greatest(ecart_type_glissant, volume * 0.05), 15),\n            0)\n    ), 2) AS \"score p95\"\nFROM stats_glissantes\nGROUP BY heure\nORDER BY heure ASC"
+        }
+      ]
+    },
+    {
+      "id": 64,
+      "type": "row",
+      "title": "Par catégorie applicative — ce que le catalogue grand public révèle enfin",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 25
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 65,
+      "type": "piechart",
+      "title": "Répartition du volume par catégorie (hors Standard)",
+      "description": "Donut EXCLUANT 'Standard' (HTTP/HTTPS/SSH/etc, qui écraserait tout le reste visuellement) — montre le poids relatif de P2P / VPN grand public / Jeu / Streaming / Visio / IoT / VoWiFi / Cloud / Messagerie. Répond directement au prompt : « combien de P2P, de VPN grand public, de streaming sur le réseau ». Top 12.",
+      "gridPos": {
+        "h": 9,
+        "w": 10,
+        "x": 0,
+        "y": 26
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "links": [
+            {
+              "title": "Filtrer sur cette catégorie",
+              "url": "/d/okvorado-anomalies/okvorado-anomalies?var-categorie=${__data.fields.categorie}",
+              "targetBlank": false
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "value",
+            "percent"
+          ]
+        },
+        "pieType": "donut"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "rawSql": "SELECT\n    categorie,\n    sum(volume) AS volume\nFROM (\n    SELECT\n        multiIf(\n        least(SrcPort,DstPort) = 443, 'HTTPS',\n        least(SrcPort,DstPort) = 80, 'HTTP',\n        least(SrcPort,DstPort) = 8080, 'HTTP-ALT',\n        least(SrcPort,DstPort) = 8443, 'HTTPS-ALT',\n        least(SrcPort,DstPort) = 22, 'SSH',\n        least(SrcPort,DstPort) = 3389, 'RDP',\n        least(SrcPort,DstPort) = 445, 'SMB (microsoft-ds)',\n        least(SrcPort,DstPort) = 139, 'NetBIOS-SSN',\n        least(SrcPort,DstPort) = 137, 'NetBIOS-NS',\n        least(SrcPort,DstPort) = 138, 'NetBIOS-DGM',\n        least(SrcPort,DstPort) = 53, 'DNS',\n        least(SrcPort,DstPort) = 67, 'DHCP',\n        least(SrcPort,DstPort) = 68, 'DHCP',\n        least(SrcPort,DstPort) = 25, 'SMTP',\n        least(SrcPort,DstPort) = 110, 'POP3',\n        least(SrcPort,DstPort) = 143, 'IMAP',\n        least(SrcPort,DstPort) = 993, 'IMAPS',\n        least(SrcPort,DstPort) = 995, 'POP3S',\n        least(SrcPort,DstPort) = 21, 'FTP',\n        least(SrcPort,DstPort) = 20, 'FTP-DATA',\n        least(SrcPort,DstPort) = 123, 'NTP',\n        least(SrcPort,DstPort) = 161, 'SNMP',\n        least(SrcPort,DstPort) = 162, 'SNMP-TRAP',\n        least(SrcPort,DstPort) = 389, 'LDAP',\n        least(SrcPort,DstPort) = 636, 'LDAPS',\n        least(SrcPort,DstPort) = 1433, 'MSSQL',\n        least(SrcPort,DstPort) = 3306, 'MySQL',\n        least(SrcPort,DstPort) = 5432, 'PostgreSQL',\n        least(SrcPort,DstPort) = 6379, 'Redis',\n        least(SrcPort,DstPort) = 27017, 'MongoDB',\n        least(SrcPort,DstPort) = 2049, 'NFS',\n        least(SrcPort,DstPort) = 179, 'BGP',\n        least(SrcPort,DstPort) >= 6881 AND least(SrcPort,DstPort) <= 6889, '[P2P] BitTorrent',\n        least(SrcPort,DstPort) = 6969, '[P2P] BitTorrent (tracker)',\n        least(SrcPort,DstPort) = 51413, '[P2P] BitTorrent (Transmission)',\n        least(SrcPort,DstPort) = 4070, '[Streaming] Spotify',\n        least(SrcPort,DstPort) = 57621, '[Streaming] Spotify (découverte locale)',\n        least(SrcPort,DstPort) = 3478, '[Visio] Teams/Skype (STUN/TURN)',\n        least(SrcPort,DstPort) >= 3479 AND least(SrcPort,DstPort) <= 3481, '[Visio] Teams/Skype',\n        least(SrcPort,DstPort) = 50000, '[Visio] Teams/Skype (média)',\n        least(SrcPort,DstPort) >= 8801 AND least(SrcPort,DstPort) <= 8810, '[Visio] Zoom',\n        least(SrcPort,DstPort) = 9000, '[Visio] Webex',\n        least(SrcPort,DstPort) IN (5004, 5005), '[Visio] RTP (flux audio/vidéo)',\n        least(SrcPort,DstPort) >= 19305 AND least(SrcPort,DstPort) <= 19314, '[Visio] Discord (voix)',\n        least(SrcPort,DstPort) = 50002, '[Messagerie] Signal',\n        least(SrcPort,DstPort) = 6667, '[Messagerie] IRC',\n        least(SrcPort,DstPort) >= 27015 AND least(SrcPort,DstPort) <= 27030, '[Jeu] Steam / Source engine',\n        least(SrcPort,DstPort) IN (27036, 27037), '[Jeu] Steam (client/découverte)',\n        least(SrcPort,DstPort) = 3074, '[Jeu] Xbox Live',\n        least(SrcPort,DstPort) = 3480, '[Jeu] PlayStation Network',\n        least(SrcPort,DstPort) = 1119, '[Jeu] Battle.net',\n        least(SrcPort,DstPort) IN (6112, 6113), '[Jeu] Battle.net (legacy)',\n        least(SrcPort,DstPort) IN (5222, 5223, 2099), '[Jeu] Riot Games',\n        least(SrcPort,DstPort) IN (500, 4500), '[VoWiFi] Appel WiFi (IPsec IKE/NAT-T) / VPN grand public',\n        least(SrcPort,DstPort) IN (5060, 5061), '[VoIP/VoWiFi] SIP',\n        least(SrcPort,DstPort) >= 16384 AND least(SrcPort,DstPort) <= 32767, '[VoIP/VoWiFi] RTP (flux voix)',\n        least(SrcPort,DstPort) = 17500, '[Cloud] Dropbox (découverte LAN)',\n        least(SrcPort,DstPort) = 51820, '[VPN] WireGuard',\n        least(SrcPort,DstPort) = 1194, '[VPN] OpenVPN',\n        least(SrcPort,DstPort) = 1701, '[VPN] L2TP',\n        least(SrcPort,DstPort) = 1723, '[VPN] PPTP',\n        least(SrcPort,DstPort) IN (1883, 8883), '[IoT] MQTT',\n        least(SrcPort,DstPort) IN (8008, 8009, 8443), '[IoT] Chromecast',\n        least(SrcPort,DstPort) IN (7000, 7001), '[IoT] AirPlay',\n        least(SrcPort,DstPort) = 5353, '[IoT] mDNS/Bonjour',\n        least(SrcPort,DstPort) = 1900, '[IoT] SSDP/UPnP',\n        concat(if(Proto = 6, 'tcp/', 'udp/'), toString(least(SrcPort,DstPort)))\n    ) AS application,\n        multiIf(\n        application LIKE '[P2P]%', 'P2P',\n        application LIKE '[Streaming]%', 'Streaming',\n        application LIKE '[Visio]%', 'Visio',\n        application LIKE '[Messagerie]%', 'Messagerie',\n        application LIKE '[Jeu]%', 'Jeu',\n        application LIKE '[VoWiFi%', 'VoWiFi/VoIP',\n        application LIKE '[VoIP%', 'VoWiFi/VoIP',\n        application LIKE '[Cloud]%', 'Cloud',\n        application LIKE '[VPN]%', 'VPN',\n        application LIKE '[IoT]%', 'IoT',\n        'Standard'\n    ) AS categorie,\n        Bytes * SamplingRate AS volume\n    FROM flows\n    WHERE $__timeFilter(TimeReceived)\n        AND ExporterName IN (${exporter:singlequote})\n        AND Proto IN (6, 17)\n)\nWHERE categorie != 'Standard'\nGROUP BY categorie\nORDER BY volume DESC\nLIMIT 12"
+        }
+      ]
+    },
+    {
+      "id": 66,
+      "type": "table",
+      "title": "Catégories applicatives — nombre d'applications, sources distinctes, volume",
+      "description": "COMMENT LIRE : une ligne par catégorie (P2P, VPN, Jeu, IoT, Visio, VoWiFi/VoIP, Streaming, Cloud, Messagerie, Standard). nb_applications = combien d'entrées distinctes du catalogue sont vues dans cette catégorie ; sources_distinctes = combien de machines internes en sont à l'origine — une catégorie à risque (P2P, VPN) avec PEU de sources distinctes est plus facile à investiguer qu'une catégorie répandue partout. Filtrable par $categorie. LIMIT 15.",
+      "gridPos": {
+        "h": 9,
+        "w": 14,
+        "x": 10,
+        "y": 26
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "left",
+            "filterable": true
+          },
+          "links": [
+            {
+              "title": "Filtrer sur cette catégorie",
+              "url": "/d/okvorado-anomalies/okvorado-anomalies?var-categorie=${__data.fields.categorie}",
+              "targetBlank": false
+            }
+          ]
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "volume"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "footer": {
+          "show": true,
+          "enablePagination": true
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "rawSql": "SELECT\n    categorie,\n    count(DISTINCT application) AS nb_applications,\n    uniqExact(source) AS sources_distinctes,\n    sum(volume) AS volume\nFROM (\n    SELECT\n        replaceOne(IPv6NumToString(SrcAddr), '::ffff:', '') AS source,\n        multiIf(\n        least(SrcPort,DstPort) = 443, 'HTTPS',\n        least(SrcPort,DstPort) = 80, 'HTTP',\n        least(SrcPort,DstPort) = 8080, 'HTTP-ALT',\n        least(SrcPort,DstPort) = 8443, 'HTTPS-ALT',\n        least(SrcPort,DstPort) = 22, 'SSH',\n        least(SrcPort,DstPort) = 3389, 'RDP',\n        least(SrcPort,DstPort) = 445, 'SMB (microsoft-ds)',\n        least(SrcPort,DstPort) = 139, 'NetBIOS-SSN',\n        least(SrcPort,DstPort) = 137, 'NetBIOS-NS',\n        least(SrcPort,DstPort) = 138, 'NetBIOS-DGM',\n        least(SrcPort,DstPort) = 53, 'DNS',\n        least(SrcPort,DstPort) = 67, 'DHCP',\n        least(SrcPort,DstPort) = 68, 'DHCP',\n        least(SrcPort,DstPort) = 25, 'SMTP',\n        least(SrcPort,DstPort) = 110, 'POP3',\n        least(SrcPort,DstPort) = 143, 'IMAP',\n        least(SrcPort,DstPort) = 993, 'IMAPS',\n        least(SrcPort,DstPort) = 995, 'POP3S',\n        least(SrcPort,DstPort) = 21, 'FTP',\n        least(SrcPort,DstPort) = 20, 'FTP-DATA',\n        least(SrcPort,DstPort) = 123, 'NTP',\n        least(SrcPort,DstPort) = 161, 'SNMP',\n        least(SrcPort,DstPort) = 162, 'SNMP-TRAP',\n        least(SrcPort,DstPort) = 389, 'LDAP',\n        least(SrcPort,DstPort) = 636, 'LDAPS',\n        least(SrcPort,DstPort) = 1433, 'MSSQL',\n        least(SrcPort,DstPort) = 3306, 'MySQL',\n        least(SrcPort,DstPort) = 5432, 'PostgreSQL',\n        least(SrcPort,DstPort) = 6379, 'Redis',\n        least(SrcPort,DstPort) = 27017, 'MongoDB',\n        least(SrcPort,DstPort) = 2049, 'NFS',\n        least(SrcPort,DstPort) = 179, 'BGP',\n        least(SrcPort,DstPort) >= 6881 AND least(SrcPort,DstPort) <= 6889, '[P2P] BitTorrent',\n        least(SrcPort,DstPort) = 6969, '[P2P] BitTorrent (tracker)',\n        least(SrcPort,DstPort) = 51413, '[P2P] BitTorrent (Transmission)',\n        least(SrcPort,DstPort) = 4070, '[Streaming] Spotify',\n        least(SrcPort,DstPort) = 57621, '[Streaming] Spotify (découverte locale)',\n        least(SrcPort,DstPort) = 3478, '[Visio] Teams/Skype (STUN/TURN)',\n        least(SrcPort,DstPort) >= 3479 AND least(SrcPort,DstPort) <= 3481, '[Visio] Teams/Skype',\n        least(SrcPort,DstPort) = 50000, '[Visio] Teams/Skype (média)',\n        least(SrcPort,DstPort) >= 8801 AND least(SrcPort,DstPort) <= 8810, '[Visio] Zoom',\n        least(SrcPort,DstPort) = 9000, '[Visio] Webex',\n        least(SrcPort,DstPort) IN (5004, 5005), '[Visio] RTP (flux audio/vidéo)',\n        least(SrcPort,DstPort) >= 19305 AND least(SrcPort,DstPort) <= 19314, '[Visio] Discord (voix)',\n        least(SrcPort,DstPort) = 50002, '[Messagerie] Signal',\n        least(SrcPort,DstPort) = 6667, '[Messagerie] IRC',\n        least(SrcPort,DstPort) >= 27015 AND least(SrcPort,DstPort) <= 27030, '[Jeu] Steam / Source engine',\n        least(SrcPort,DstPort) IN (27036, 27037), '[Jeu] Steam (client/découverte)',\n        least(SrcPort,DstPort) = 3074, '[Jeu] Xbox Live',\n        least(SrcPort,DstPort) = 3480, '[Jeu] PlayStation Network',\n        least(SrcPort,DstPort) = 1119, '[Jeu] Battle.net',\n        least(SrcPort,DstPort) IN (6112, 6113), '[Jeu] Battle.net (legacy)',\n        least(SrcPort,DstPort) IN (5222, 5223, 2099), '[Jeu] Riot Games',\n        least(SrcPort,DstPort) IN (500, 4500), '[VoWiFi] Appel WiFi (IPsec IKE/NAT-T) / VPN grand public',\n        least(SrcPort,DstPort) IN (5060, 5061), '[VoIP/VoWiFi] SIP',\n        least(SrcPort,DstPort) >= 16384 AND least(SrcPort,DstPort) <= 32767, '[VoIP/VoWiFi] RTP (flux voix)',\n        least(SrcPort,DstPort) = 17500, '[Cloud] Dropbox (découverte LAN)',\n        least(SrcPort,DstPort) = 51820, '[VPN] WireGuard',\n        least(SrcPort,DstPort) = 1194, '[VPN] OpenVPN',\n        least(SrcPort,DstPort) = 1701, '[VPN] L2TP',\n        least(SrcPort,DstPort) = 1723, '[VPN] PPTP',\n        least(SrcPort,DstPort) IN (1883, 8883), '[IoT] MQTT',\n        least(SrcPort,DstPort) IN (8008, 8009, 8443), '[IoT] Chromecast',\n        least(SrcPort,DstPort) IN (7000, 7001), '[IoT] AirPlay',\n        least(SrcPort,DstPort) = 5353, '[IoT] mDNS/Bonjour',\n        least(SrcPort,DstPort) = 1900, '[IoT] SSDP/UPnP',\n        concat(if(Proto = 6, 'tcp/', 'udp/'), toString(least(SrcPort,DstPort)))\n    ) AS application,\n        multiIf(\n        application LIKE '[P2P]%', 'P2P',\n        application LIKE '[Streaming]%', 'Streaming',\n        application LIKE '[Visio]%', 'Visio',\n        application LIKE '[Messagerie]%', 'Messagerie',\n        application LIKE '[Jeu]%', 'Jeu',\n        application LIKE '[VoWiFi%', 'VoWiFi/VoIP',\n        application LIKE '[VoIP%', 'VoWiFi/VoIP',\n        application LIKE '[Cloud]%', 'Cloud',\n        application LIKE '[VPN]%', 'VPN',\n        application LIKE '[IoT]%', 'IoT',\n        'Standard'\n    ) AS categorie,\n        Bytes * SamplingRate AS volume\n    FROM flows\n    WHERE $__timeFilter(TimeReceived)\n        AND ExporterName IN (${exporter:singlequote})\n        AND Proto IN (6, 17)\n)\nWHERE categorie IN (${categorie:singlequote})\nGROUP BY categorie\nORDER BY volume DESC\nLIMIT 15"
+        }
+      ]
+    },
+    {
+      "id": 67,
+      "type": "row",
+      "title": "Détail d'un flux — sélectionner une source ou une destination",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 35
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 68,
+      "type": "table",
+      "title": "Tout ce que fait l'adresse $adresse — applications, catégories, volumes",
+      "description": "COMMENT LIRE : répond directement au prompt « savoir quelle source ou destination unique et l'application impactée » — saisir une IP dans la variable $adresse (copier une adresse vue dans les panneaux ci-dessus) fait apparaître TOUTE l'activité de cette machine, qu'elle soit source ou destination, toutes applications confondues, avec la catégorie du catalogue. Vide par défaut (0.0.0.0, aucun flux ne matche) tant qu'aucune adresse n'est saisie — jamais un résultat trompeur par défaut. LIMIT 50.",
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 36
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "left",
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "volume"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "source"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Voir tout ce que fait cette adresse source",
+                    "url": "/d/okvorado-anomalies/okvorado-anomalies?var-adresse=${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "destination"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Voir tout ce que fait cette adresse destination",
+                    "url": "/d/okvorado-anomalies/okvorado-anomalies?var-adresse=${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "application"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Voir cette application dans Applications & QoS",
+                    "url": "/d/okvorado-applications-qos/okvorado-applications-qos?var-application=${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "categorie"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Filtrer sur cette catégorie",
+                    "url": "/d/okvorado-anomalies/okvorado-anomalies?var-categorie=${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "footer": {
+          "show": true,
+          "enablePagination": true
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "rawSql": "SELECT\n    replaceOne(IPv6NumToString(SrcAddr), '::ffff:', '') AS source,\n    replaceOne(IPv6NumToString(DstAddr), '::ffff:', '') AS destination,\n    multiIf(\n        least(SrcPort,DstPort) = 443, 'HTTPS',\n        least(SrcPort,DstPort) = 80, 'HTTP',\n        least(SrcPort,DstPort) = 8080, 'HTTP-ALT',\n        least(SrcPort,DstPort) = 8443, 'HTTPS-ALT',\n        least(SrcPort,DstPort) = 22, 'SSH',\n        least(SrcPort,DstPort) = 3389, 'RDP',\n        least(SrcPort,DstPort) = 445, 'SMB (microsoft-ds)',\n        least(SrcPort,DstPort) = 139, 'NetBIOS-SSN',\n        least(SrcPort,DstPort) = 137, 'NetBIOS-NS',\n        least(SrcPort,DstPort) = 138, 'NetBIOS-DGM',\n        least(SrcPort,DstPort) = 53, 'DNS',\n        least(SrcPort,DstPort) = 67, 'DHCP',\n        least(SrcPort,DstPort) = 68, 'DHCP',\n        least(SrcPort,DstPort) = 25, 'SMTP',\n        least(SrcPort,DstPort) = 110, 'POP3',\n        least(SrcPort,DstPort) = 143, 'IMAP',\n        least(SrcPort,DstPort) = 993, 'IMAPS',\n        least(SrcPort,DstPort) = 995, 'POP3S',\n        least(SrcPort,DstPort) = 21, 'FTP',\n        least(SrcPort,DstPort) = 20, 'FTP-DATA',\n        least(SrcPort,DstPort) = 123, 'NTP',\n        least(SrcPort,DstPort) = 161, 'SNMP',\n        least(SrcPort,DstPort) = 162, 'SNMP-TRAP',\n        least(SrcPort,DstPort) = 389, 'LDAP',\n        least(SrcPort,DstPort) = 636, 'LDAPS',\n        least(SrcPort,DstPort) = 1433, 'MSSQL',\n        least(SrcPort,DstPort) = 3306, 'MySQL',\n        least(SrcPort,DstPort) = 5432, 'PostgreSQL',\n        least(SrcPort,DstPort) = 6379, 'Redis',\n        least(SrcPort,DstPort) = 27017, 'MongoDB',\n        least(SrcPort,DstPort) = 2049, 'NFS',\n        least(SrcPort,DstPort) = 179, 'BGP',\n        least(SrcPort,DstPort) >= 6881 AND least(SrcPort,DstPort) <= 6889, '[P2P] BitTorrent',\n        least(SrcPort,DstPort) = 6969, '[P2P] BitTorrent (tracker)',\n        least(SrcPort,DstPort) = 51413, '[P2P] BitTorrent (Transmission)',\n        least(SrcPort,DstPort) = 4070, '[Streaming] Spotify',\n        least(SrcPort,DstPort) = 57621, '[Streaming] Spotify (découverte locale)',\n        least(SrcPort,DstPort) = 3478, '[Visio] Teams/Skype (STUN/TURN)',\n        least(SrcPort,DstPort) >= 3479 AND least(SrcPort,DstPort) <= 3481, '[Visio] Teams/Skype',\n        least(SrcPort,DstPort) = 50000, '[Visio] Teams/Skype (média)',\n        least(SrcPort,DstPort) >= 8801 AND least(SrcPort,DstPort) <= 8810, '[Visio] Zoom',\n        least(SrcPort,DstPort) = 9000, '[Visio] Webex',\n        least(SrcPort,DstPort) IN (5004, 5005), '[Visio] RTP (flux audio/vidéo)',\n        least(SrcPort,DstPort) >= 19305 AND least(SrcPort,DstPort) <= 19314, '[Visio] Discord (voix)',\n        least(SrcPort,DstPort) = 50002, '[Messagerie] Signal',\n        least(SrcPort,DstPort) = 6667, '[Messagerie] IRC',\n        least(SrcPort,DstPort) >= 27015 AND least(SrcPort,DstPort) <= 27030, '[Jeu] Steam / Source engine',\n        least(SrcPort,DstPort) IN (27036, 27037), '[Jeu] Steam (client/découverte)',\n        least(SrcPort,DstPort) = 3074, '[Jeu] Xbox Live',\n        least(SrcPort,DstPort) = 3480, '[Jeu] PlayStation Network',\n        least(SrcPort,DstPort) = 1119, '[Jeu] Battle.net',\n        least(SrcPort,DstPort) IN (6112, 6113), '[Jeu] Battle.net (legacy)',\n        least(SrcPort,DstPort) IN (5222, 5223, 2099), '[Jeu] Riot Games',\n        least(SrcPort,DstPort) IN (500, 4500), '[VoWiFi] Appel WiFi (IPsec IKE/NAT-T) / VPN grand public',\n        least(SrcPort,DstPort) IN (5060, 5061), '[VoIP/VoWiFi] SIP',\n        least(SrcPort,DstPort) >= 16384 AND least(SrcPort,DstPort) <= 32767, '[VoIP/VoWiFi] RTP (flux voix)',\n        least(SrcPort,DstPort) = 17500, '[Cloud] Dropbox (découverte LAN)',\n        least(SrcPort,DstPort) = 51820, '[VPN] WireGuard',\n        least(SrcPort,DstPort) = 1194, '[VPN] OpenVPN',\n        least(SrcPort,DstPort) = 1701, '[VPN] L2TP',\n        least(SrcPort,DstPort) = 1723, '[VPN] PPTP',\n        least(SrcPort,DstPort) IN (1883, 8883), '[IoT] MQTT',\n        least(SrcPort,DstPort) IN (8008, 8009, 8443), '[IoT] Chromecast',\n        least(SrcPort,DstPort) IN (7000, 7001), '[IoT] AirPlay',\n        least(SrcPort,DstPort) = 5353, '[IoT] mDNS/Bonjour',\n        least(SrcPort,DstPort) = 1900, '[IoT] SSDP/UPnP',\n        concat(if(Proto = 6, 'tcp/', 'udp/'), toString(least(SrcPort,DstPort)))\n    ) AS application,\n    multiIf(\n        application LIKE '[P2P]%', 'P2P',\n        application LIKE '[Streaming]%', 'Streaming',\n        application LIKE '[Visio]%', 'Visio',\n        application LIKE '[Messagerie]%', 'Messagerie',\n        application LIKE '[Jeu]%', 'Jeu',\n        application LIKE '[VoWiFi%', 'VoWiFi/VoIP',\n        application LIKE '[VoIP%', 'VoWiFi/VoIP',\n        application LIKE '[Cloud]%', 'Cloud',\n        application LIKE '[VPN]%', 'VPN',\n        application LIKE '[IoT]%', 'IoT',\n        'Standard'\n    ) AS categorie,\n    sum(Bytes * SamplingRate) AS volume,\n    count() AS flux\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\n    AND Proto IN (6, 17)\n    AND (\n        replaceOne(IPv6NumToString(SrcAddr), '::ffff:', '') = '$adresse'\n        OR replaceOne(IPv6NumToString(DstAddr), '::ffff:', '') = '$adresse'\n    )\nGROUP BY source, destination, application, categorie\nORDER BY volume DESC\nLIMIT 50"
+        }
+      ]
+    }
+  ]
+}

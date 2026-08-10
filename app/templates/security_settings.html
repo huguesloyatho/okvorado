@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+
+{% block title %}Sécurité{% endblock %}
+
+{% block content %}
+<section id="security-settings-page">
+  <h1>Sécurité du compte</h1>
+
+  {% if user and user.is_default_password %}
+    <p class="notice notice-warn">
+      <strong>Mot de passe par défaut toujours actif.</strong>
+      Ce compte utilise encore le mot de passe généré automatiquement au premier
+      démarrage (aucun <code>OKVORADO_AUTH_PASSWORD</code> n'était défini).
+      Changez-le ci-dessous dès que possible :
+      tant que ce bandeau est affiché, le compte reste protégé par un mot de passe
+      connu au moment du déploiement.
+    </p>
+  {% endif %}
+
+  <section class="section-card">
+    <h2>Changer le mot de passe</h2>
+    {% if password_error %}
+      <p class="notice notice-error">{{ password_error }}</p>
+    {% endif %}
+    {% if password_success %}
+      <p class="notice notice-ok">{{ password_success }}</p>
+    {% endif %}
+    <form method="post" action="{{ '/settings/security/password' | prefixed }}" class="stacked-form">
+      <label for="current_password">Mot de passe actuel</label>
+      <input type="password" id="current_password" name="current_password"
+             autocomplete="current-password" required>
+      <label for="new_password">Nouveau mot de passe</label>
+      <input type="password" id="new_password" name="new_password"
+             autocomplete="new-password" minlength="8" required>
+      <button type="submit" class="btn primary">Mettre à jour</button>
+    </form>
+  </section>
+
+  <section class="section-card">
+    <h2>Authentification à deux facteurs (TOTP)</h2>
+    <p class="lede">
+      Désactivée par défaut, activable à la demande. Une fois activée, chaque connexion
+      demande en plus un code à 6 chiffres généré par une application d'authentification
+      (Google Authenticator, FreeOTP, Bitwarden…) sur votre téléphone.
+    </p>
+
+    {% if totp_error %}
+      <p class="notice notice-error">{{ totp_error }}</p>
+    {% endif %}
+    {% if totp_success %}
+      <p class="notice notice-ok">{{ totp_success }}</p>
+    {% endif %}
+
+    {% if new_backup_codes %}
+      <p class="notice notice-warn">
+        <strong>Codes de secours — à noter maintenant, ils ne seront plus jamais affichés.</strong>
+        Chaque code n'est utilisable qu'une seule fois, à la place du code TOTP, si vous perdez
+        l'accès à votre téléphone. Sans eux, un téléphone perdu ou réinitialisé signifie
+        une perte d'accès définitive au compte.
+      </p>
+      <ul class="backup-codes">
+        {% for code in new_backup_codes %}
+          <li><code>{{ code }}</code></li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+
+    {% if totp_setup %}
+      <p class="notice notice-info">
+        Scannez ce QR code avec votre application d'authentification, puis saisissez le
+        code à 6 chiffres qu'elle affiche pour confirmer l'activation. Tant que ce code
+        n'est pas validé, le TOTP reste inactif — vous ne serez pas verrouillé dehors.
+      </p>
+      <div class="totp-qr">{{ totp_setup.qr_svg | safe }}</div>
+      <p class="totp-manual-secret">
+        Impossible de scanner ? Saisissez ce code manuellement dans votre application :
+        <code>{{ totp_setup.secret }}</code>
+      </p>
+      <form method="post" action="{{ '/settings/security/totp/confirm' | prefixed }}" class="stacked-form">
+        <label for="code">Code de vérification</label>
+        <input type="text" id="code" name="code" inputmode="numeric" required maxlength="6" autofocus>
+        <button type="submit" class="btn primary">Confirmer et activer</button>
+      </form>
+    {% elif user and user.totp_enabled %}
+      <p class="notice notice-ok">Authentification à deux facteurs activée.</p>
+      <p>Codes de secours restants : <strong>{{ backup_codes_left }}</strong> / 10.</p>
+      <form method="post" action="{{ '/settings/security/totp/disable' | prefixed }}"
+            data-confirm="Désactiver le TOTP ? Le compte redeviendra protégé par le seul mot de passe.">
+        <button type="submit" class="btn danger">Désactiver le TOTP</button>
+      </form>
+    {% else %}
+      <form method="post" action="{{ '/settings/security/totp/start' | prefixed }}">
+        <button type="submit" class="btn primary">Activer le TOTP</button>
+      </form>
+    {% endif %}
+  </section>
+</section>
+{% endblock %}

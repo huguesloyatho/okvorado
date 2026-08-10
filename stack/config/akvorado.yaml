@@ -1,0 +1,77 @@
+# Configuration de l'orchestrateur Akvorado — stack PORTABLE.
+#
+# Documentée dans docs/02-configuration.md du dépôt Akvorado. Les valeurs par
+# défaut complètes s'obtiennent avec :
+#   docker compose run --rm --no-deps akvorado-orchestrator \
+#     orchestrator /dev/null --dump --check
+# Ne PAS copier cette sortie telle quelle comme fichier de config : elle sert
+# uniquement à vérifier des valeurs.
+
+kafka:
+  topic: flows
+  brokers:
+    - kafka:9092
+  topic-configuration:
+    # 8 partitions : parallélise la consommation par l'outlet. À 350
+    # routeurs, augmenter ce nombre (multiple du nombre de workers outlet)
+    # est le premier levier si l'ingestion prend du retard.
+    #
+    # VALEUR LITTÉRALE (mesuré 2026-08-07) : Akvorado ne résout PAS les
+    # substitutions shell/compose (dollar-accolade-VAR) dans ses YAML — seul
+    # Docker Compose le fait, jamais le binaire Akvorado qui les lit ensuite.
+    # Une telle substitution laissée ici provoquait au démarrage réel :
+    #   'Kafka.TopicConfiguration.NumPartitions' cannot parse value as
+    #   'int32': strconv.ParseInt: invalid syntax
+    # Ce réglage se change désormais depuis l'écran Okvorado (section
+    # « Kafka »), jamais en éditant ce fichier à la main.
+    num-partitions: 8
+    replication-factor: 1
+    config-entries:
+      # La rétention Kafka n'est qu'un TAMPON avant ClickHouse, pas un
+      # entrepôt de flux : 1 jour suffit largement à absorber un redémarrage
+      # de l'outlet ou de ClickHouse sans perdre de données en amont.
+      segment.bytes: 1073741824
+      retention.ms: 86400000 # 1 jour
+      cleanup.policy: delete
+      compression.type: producer
+
+clickhousedb:
+  servers:
+    - clickhouse:9000
+
+clickhouse:
+  orchestrator-url: http://akvorado-orchestrator:8080
+  prometheus-endpoint: /metrics
+  asns:
+    # VALEUR LITTÉRALE (mesuré 2026-08-07) : Akvorado ne résout PAS les
+    # substitutions shell/compose (dollar-accolade-VAR) dans ses YAML (seul
+    # Docker Compose le fait, jamais le binaire Akvorado). Une telle
+    # substitution laissée ici (clé ET valeur) provoquait au démarrage réel :
+    #   'ClickHouse.ASNs[dollar-accolade-LOCAL_ASN...]' cannot parse value
+    #   as 'uint32': strconv.ParseUint: invalid syntax
+    # 64500 = premier AS de la plage RÉSERVÉE À LA DOCUMENTATION/PRIVÉE
+    # (RFC 5398, 64496-64511) — un défaut neutre qui ne collisionne avec
+    # aucun AS public réel. Ni l'AS ni son libellé ne sont un secret :
+    # ce réglage se change depuis l'écran Okvorado (section « Réseau
+    # local »), jamais en éditant ce fichier à la main.
+    64500: Reseau local
+
+inlet: !include "inlet.yaml"
+# outlet.yaml est GÉNÉRÉ au démarrage (voir service `config-generator` dans
+# docker-compose.yml) depuis le gabarit versionné `outlet.yaml.template` —
+# c'est là que vit la référence à SNMP_COMMUNITY, jamais un secret en clair.
+# `outlet.yaml` lui-même est gitignoré (voir .gitignore).
+outlet: !include "outlet.yaml"
+console: !include "console.yaml"
+
+# Colonnes de schéma activées : chacune ajoute un champ stocké pour CHAQUE
+# flux (coût disque non nul), donc n'active ici que ce qui débloque une
+# capacité utile en standard.
+#
+# `IPTos` = la QoS (DSCP). Sans elle, aucun widget QoS n'est possible dans
+# la console ni dans Grafana — c'est la colonne « richesse NetFlow » citée en
+# premier dans l'objectif du projet, et elle n'est PAS activée par défaut
+# par Akvorado (mesuré : absente du schéma de base).
+schema:
+  enabled:
+    - IPTos

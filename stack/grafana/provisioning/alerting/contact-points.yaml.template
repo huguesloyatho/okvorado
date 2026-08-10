@@ -1,0 +1,26 @@
+# Contact point — cible des notifications d'alerte.
+#
+# GABARIT résolu par `config-generator` — voir README.md de ce dossier.
+#
+# Type "webhook" retenu (natif, pas de plugin supplémentaire à installer,
+# fonctionne avec n'importe quel récepteur HTTP — Slack incoming webhook,
+# Teams, ntfy, un relais mail-vers-HTTP, ou un endpoint maison). Reste
+# éditable depuis l'écran Grafana (alerting > contact points) si un
+# exploitant veut ajouter un canal e-mail SMTP ensuite.
+#
+# VALEUR PAR DÉFAUT INOFFENSIVE (exigence du prompt) : URL locale non
+# routée en dehors du conteneur Grafana. Les notifications échoueront
+# silencieusement (log d'erreur Grafana, jamais un crash) tant que
+# ALERTE_NOTIFICATION_WEBHOOK_URL n'est pas réglée sur la vraie cible.
+
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: okvorado-notifications
+    receivers:
+      - uid: okvorado-webhook-notifications
+        type: webhook
+        settings:
+          url: "${ALERTE_NOTIFICATION_WEBHOOK_URL}"
+          httpMethod: POST

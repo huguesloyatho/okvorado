@@ -1,0 +1,17 @@
+# Politique de notification — route TOUTES les alertes de ce provider vers
+# le contact point okvorado-notifications (voir contact-points.yaml.template).
+#
+# GABARIT résolu par `config-generator` — voir README.md de ce dossier.
+# Aucune substitution ${VAR} dans ce fichier précis (routage fixe), mais il
+# reste un .template pour vivre à côté des autres et suivre la même
+# génération — cohérence du dossier, pas de piège à retenir en plus.
+
+apiVersion: 1
+
+policies:
+  - orgId: 1
+    receiver: okvorado-notifications
+    group_by: ["alertname", "famille"]
+    group_wait: 30s
+    group_interval: 5m
+    repeat_interval: 4h

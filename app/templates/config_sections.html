@@ -1,0 +1,1834 @@
+{% extends "base.html" %}
+
+{% block title %}{% if detail %}{{ detail.label }}{% else %}Sections de configuration{% endif %}{% endblock %}
+
+{# ===================== Sélection de masse =====================
+
+   POURQUOI un formulaire SÉPARÉ du tableau (et non englobant) : chaque ligne
+   porte déjà son propre `<form>` de suppression unitaire. Un formulaire de
+   masse qui envelopperait le tableau imbriquerait donc des formulaires — HTML
+   invalide, que le navigateur « répare » en supprimant SILENCIEUSEMENT le
+   formulaire intérieur : les boutons « Supprimer » unitaires cesseraient de
+   poster, sans la moindre erreur. Les cases sont donc rattachées au formulaire
+   de masse par l'attribut `form="…"` (HTML5), qui associe un champ à un
+   formulaire dont il n'est PAS un descendant.
+
+   POURQUOI le formulaire de masse est placé APRÈS le tableau et rendu
+   `sticky` : sur `saved_filters` (36 entrées en prod), cocher une case en bas
+   de liste puis devoir remonter chercher le bouton d'action est une invitation
+   à cliquer au hasard. La barre reste visible en bas de fenêtre.
+
+   POURQUOI aucune barre n'est rendue quand la section est vide : une case
+   « tout sélectionner » sans aucune ligne à sélectionner, ou une barre
+   d'actions qui ne peut agir sur rien, sont des commandes qui mentent.
+   `interface_classifiers` compte 0 entrée en prod : c'est le cas nominal. #}
+
+{# La cellule d'en-tête ENTIÈRE est conditionnelle, pas seulement la case
+   qu'elle contient : sur une section vide, un `<th>` de la colonne de sélection
+   laisserait une colonne sans aucune case en dessous — un en-tête qui annonce
+   une commande inexistante. #}
+{% macro bulk_master_cell(section_key, has_entries) %}
+  {%- if has_entries -%}
+    <th class="bulk-select__cell">
+      {# `aria-label` et non un `<span>` visible : la colonne de cases est
+         étroite et un libellé y serait tronqué. La case reste néanmoins nommée
+         pour un lecteur d'écran, qui sans cela annoncerait une case anonyme. #}
+      <input type="checkbox"
+             class="bulk-select__master"
+             data-bulk-scope="{{ section_key }}"
+             aria-label="Tout sélectionner">
+    </th>
+  {%- endif -%}
+{% endmacro %}
+
+{% macro bulk_row_cell(section_key, entry_value, entry_label) %}
+  <td class="bulk-select__cell">{{ bulk_row_checkbox(section_key, entry_value, entry_label) }}</td>
+{% endmacro %}
+
+{% macro bulk_row_checkbox(section_key, entry_value, entry_label) %}
+  {# `form="bulk-form-…"` : voir le commentaire d'en-tête — rattachement au
+     formulaire de masse SANS imbrication de formulaires. #}
+  <input type="checkbox"
+         class="bulk-select__row"
+         data-bulk-scope="{{ section_key }}"
+         form="bulk-form-{{ section_key }}"
+         name="selected"
+         value="{{ entry_value }}"
+         aria-label="Sélectionner {{ entry_label }}">
+{% endmacro %}
+
+{% macro bulk_action_bar(section_key, has_entries) %}
+  {%- if has_entries -%}
+    <form
+      id="bulk-form-{{ section_key }}"
+      class="bulk-actions"
+      data-bulk-scope="{{ section_key }}"
+      hidden
+      hx-post="{{ '/config/sections/' | prefixed }}{{ section_key }}"
+      hx-target="#section-pending-panel"
+      hx-trigger="submit"
+      hx-sync="this:replace"
+      hx-disabled-elt="find button"
+      {# `hx-confirm` est bien EMBARQUÉ dans htmx.min.js (vérifié par grep et
+         par un test) : ce n'est pas un attribut d'extension. Le piège vécu sur
+         `hx-target-error` — attribut d'une extension absente, ignoré en
+         SILENCE — imposait de le vérifier avant de faire reposer une
+         suppression de masse dessus.
+
+         Il est posé sur le FORMULAIRE et non sur le bouton : htmx résout la
+         confirmation depuis l'élément qui porte `hx-post`, en remontant ses
+         ANCÊTRES. Sur le bouton — un descendant — il ne serait jamais trouvé.
+
+         Ce libellé est le FILET : bulk-select.js le réécrit à chaque
+         changement de sélection pour y injecter le compte exact. S'il ne
+         s'exécutait pas, la confirmation resterait demandée, sans le chiffre —
+         jamais une suppression silencieuse. #}
+      hx-confirm="Supprimer définitivement les entrées sélectionnées de la configuration ? Cette action est irréversible."
+    >
+      <input type="hidden" name="action" value="remove_selected">
+      {# Le compte est écrit par bulk-select.js. Valeur initiale volontairement
+         vide plutôt que « 0 » : un « 0 élément sélectionné » affiché une
+         fraction de seconde avant le premier clic laisserait croire que la
+         barre est active alors qu'elle est masquée. #}
+      <span class="bulk-actions__count" data-bulk-count="{{ section_key }}"></span>
+      <button type="submit" class="danger bulk-actions__submit">
+        Supprimer la sélection
+      </button>
+    </form>
+  {%- endif -%}
+{% endmacro %}
+
+{# ===================== Import / export CSV =====================
+
+   UNE macro pour les 5 sections concernées, et non un bloc copié par section :
+   les cinq partagent exactement le même flux (coller ou téléverser ->
+   prévisualiser -> confirmer, tout ou rien). Cinq copies auraient divergé au
+   premier correctif appliqué à une seule — c'est déjà arrivé sur ce projet
+   avec les liens-actions, dont une classe posée sans règle CSS n'avait été
+   corrigée qu'à un seul endroit.
+
+   Ce qui VARIE d'une section à l'autre est passé en paramètres : le format
+   attendu, l'exemple, et le libellé de l'option de remplacement. Le reste —
+   garanties, avertissements, cibles htmx — est commun par construction.
+
+   Les 4 sections ABSENTES (`visualize_defaults`, `homepage_widgets`,
+   `flow_inputs`, `kafka_retention`) sont un ARBITRAGE, pas un oubli : ce sont
+   des réglages à clés fixes, pas des collections qui croissent. La liste fait
+   écho à `_CSV_FORMATS` côté routeur ; une section absente là-bas verrait de
+   toute façon son import refusé avec un message explicite. #}
+{# ===================== Aide par l'exemple : mini-langage de classification =====
+
+   POURQUOI ce bloc existe : le mini-langage de classification est la SEULE
+   partie de cet écran qui ne se saisit pas à la souris. Un collègue qui arrive
+   sur `interface_classifiers` — 0 expression en prod, écran vide — n'a
+   aujourd'hui AUCUN point de départ : ni exemple, ni liste de fonctions, ni
+   moyen de savoir ce que le langage refuse. L'aide montre donc les deux
+   versants demandés : ce qui marche, ET ce qui ne marche pas avec la raison.
+
+   POURQUOI DEUX macros et non une paramétrée : les deux tables n'ont NI les
+   mêmes fonctions NI les mêmes variables, et le vérificateur d'Akvorado les
+   compile dans deux environnements DISJOINTS (une fonction d'exportateur
+   utilisée dans une règle d'interface fait échouer le DÉMARRAGE d'Akvorado,
+   pas seulement la règle). Un bloc unique paramétré aurait forcément fini par
+   présenter les deux jeux comme interchangeables — exactement le contresens
+   que les contre-exemples doivent tuer.
+
+   SOURCE de tout ce qui est affirmé ici (vérifié le 2026-08-06, aucune
+   fonction inventée) :
+     - doc  : https://github.com/akvorado/akvorado — console/data/docs/50-configuration.md,
+              section « Classification ». ATTENTION : le chemin `docs/02-configuration.md`
+              souvent cité est un lien mort (404) ; `docs` est un symlink.
+     - code : outlet/core/classifier.go (liste exhaustive des fonctions et des
+              champs) et outlet/core/enricher.go (ordre d'application).
+   Ce qui n'est PAS documenté par Akvorado est signalé comme tel dans le rendu
+   plutôt que comblé par une supposition. #}
+
+{% macro classifier_help(section_key) %}
+  {# OUVERT par défaut sur `interface_classifiers` (0 expression en prod) :
+     quelqu'un qui arrive sur une section vide a besoin de l'exemple TOUT DE
+     SUITE, pas d'un triangle de plus à découvrir. Sur `exporter_classifiers`,
+     3 expressions réelles servent déjà d'exemple à l'écran : l'aide y est
+     repliée pour ne pas repousser l'éditeur hors de vue. #}
+  <details class="lang-help"{% if section_key == 'interface_classifiers' %} open{% endif %}>
+    <summary class="lang-help__summary">
+      Ce qui est faisable (et ce qui ne l'est pas) — exemples
+    </summary>
+
+    <p class="lang-help__intro">
+      Chaque ligne est une <strong>expression</strong> évaluée par Akvorado avec le
+      langage <a class="link-external" href="https://expr-lang.org/docs/language-definition"
+        target="_blank" rel="noopener">Expr</a>. Une expression peut tester une condition
+      puis appeler une fonction de classification : <code>condition &amp;&amp; Classify…(…)</code>.
+      Les valeurs classées sont <strong>normalisées</strong> par Akvorado (minuscules,
+      caractères spéciaux retirés — seuls <code>a-z 0-9 . + -</code> subsistent).
+      <strong>Le premier qui classe gagne</strong> : une fois un critère renseigné, aucune
+      règle suivante ne peut le changer.
+    </p>
+
+    {% if section_key == 'exporter_classifiers' %}
+      <p class="lang-help__intro">
+        Variables disponibles ici : <code>Exporter.IP</code> et <code>Exporter.Name</code>.
+        <strong>Ce sont les deux seules</strong> — <code>Exporter.Description</code> n'existe pas,
+        et les champs <code>Interface.…</code> sont absents du contexte de cette table.
+      </p>
+
+      <div class="lang-help__col lang-help__col--ok">
+        <h3 class="lang-help__title">Ce qui marche</h3>
+        <ul class="lang-help__list">
+          <li>
+            <code class="lang-help__code">ClassifyRegion("homelab")</code>
+            <span class="lang-help__note">Sans condition : classe <em>tous</em> les exportateurs
+              dans la région <code>homelab</code>. C'est l'une des 3 règles réellement en place.
+              Résultat visible ensuite dans la colonne <strong>Region</strong> de Visualize.</span>
+          </li>
+          <li>
+            <code class="lang-help__code">Exporter.Name endsWith ".fr" &amp;&amp; ClassifyRegion("france")</code>
+            <span class="lang-help__note">Conditionnel : seuls les exportateurs dont le nom finit
+              par <code>.fr</code> sont classés en région <code>france</code>. Les autres passent
+              à la règle suivante.</span>
+          </li>
+          <li>
+            <code class="lang-help__code">Exporter.Name matches "^(clm|takas).*" &amp;&amp; ClassifyRole("core")</code>
+            <span class="lang-help__note">Expression régulière (syntaxe Go). Attention aux classes
+              Perl : il faut doubler l'antislash — <code>\\d</code>, pas <code>\d</code>.</span>
+          </li>
+          <li>
+            <code class="lang-help__code">ClassifySiteRegex(Exporter.Name, "^([^-]+)-", "$1")</code>
+            <span class="lang-help__note">Extrait une valeur du nom au lieu de l'écrire en dur :
+              <code>paris-rtr01</code> donne le site <code>paris</code>. Si la regex ne
+              correspond pas, la règle n'écrit rien et rend <code>false</code>.</span>
+          </li>
+        </ul>
+      </div>
+
+      <div class="lang-help__col lang-help__col--ko">
+        <h3 class="lang-help__title">Ce qui ne marche pas</h3>
+        <ul class="lang-help__list">
+          <li>
+            <code class="lang-help__code">ClassifyConnectivity("transit")</code>
+            <span class="lang-help__note"><strong>Fonction de l'autre table.</strong>
+              <code>ClassifyConnectivity</code>, <code>ClassifyProvider</code>,
+              <code>ClassifyExternal</code>, <code>ClassifyInternal</code>, <code>SetName</code>
+              et <code>SetDescription</code> n'existent QUE pour les interfaces. Ici, Akvorado
+              refuse de compiler la règle et <strong>ne démarre pas</strong>.</span>
+          </li>
+          <li>
+            <code class="lang-help__code">Interface.Description matches "transit" &amp;&amp; ClassifyRole("edge")</code>
+            <span class="lang-help__note"><strong>Variable hors contexte.</strong>
+              Un exportateur n'a pas d'interface au moment où cette règle est évaluée : seuls
+              <code>Exporter.IP</code> et <code>Exporter.Name</code> existent ici, et la règle
+              est rejetée à la compilation.</span>
+          </li>
+          <li>
+            <code class="lang-help__code">Exporter.Name == "clm"</code>
+            <span class="lang-help__note"><strong>Condition sans classification.</strong>
+              L'expression est valide et s'évalue, mais n'appelle aucune fonction
+              <code>Classify…</code> : elle ne produit donc strictement aucun effet. Une
+              condition doit toujours être suivie de <code>&amp;&amp; Classify…(…)</code>.</span>
+          </li>
+          <li>
+            <code class="lang-help__code">ClassifyRegion("homelab") ; ClassifyRole("vm")</code>
+            <span class="lang-help__note"><strong>Deux règles sur une ligne.</strong> Il n'y a pas
+              de séparateur d'instructions : une ligne = une expression. Il faut deux lignes,
+              ou les chaîner avec <code>&amp;&amp;</code>.</span>
+          </li>
+        </ul>
+      </div>
+
+      <p class="lang-help__caveat">
+        Fonctions de cette table : <code>ClassifyGroup</code>, <code>ClassifyRole</code>,
+        <code>ClassifySite</code>, <code>ClassifyRegion</code>, <code>ClassifyTenant</code>,
+        plus <code>Reject()</code> (écarte le flux) et <code>Format()</code>. Chacune des cinq
+        a une variante <code>…Regex(valeur, regex, modèle)</code>.
+        <strong>Nuance non documentée par Akvorado</strong> (établie en lisant son code source) :
+        une fonction <em>sans</em> <code>Regex</code> rend toujours <code>true</code>, même
+        lorsqu'elle n'écrit rien parce que le critère était déjà classé — chaîner
+        <code>ClassifyRegion("a") &amp;&amp; ClassifyRole("b")</code> exécute donc toujours la
+        partie droite.
+      </p>
+
+    {% else %}
+      <p class="lang-help__intro">
+        Variables disponibles ici : <code>Interface.Name</code>,
+        <code>Interface.Description</code>, <code>Interface.Index</code>,
+        <code>Interface.Speed</code>, <code>Interface.VLAN</code> (tout en majuscules),
+        <strong>et aussi</strong> <code>Exporter.IP</code> / <code>Exporter.Name</code> —
+        une règle d'interface peut donc dépendre de l'exportateur.
+      </p>
+
+      <div class="lang-help__col lang-help__col--ok">
+        <h3 class="lang-help__title">Ce qui marche</h3>
+        <ul class="lang-help__list">
+          <li>
+            <code class="lang-help__code">ClassifyInternal()</code>
+            <span class="lang-help__note">Sans argument ni condition : marque <em>toutes</em> les
+              interfaces restantes comme internes. Placée en <strong>dernière</strong> ligne,
+              c'est la règle « tout le reste » — utile sur un homelab où rien n'est du transit.
+              Visible ensuite dans la colonne <strong>Boundary</strong>.</span>
+          </li>
+          <li>
+            <code class="lang-help__code">Interface.Name == "eth0" &amp;&amp; ClassifyExternal()</code>
+            <span class="lang-help__note">Marque une interface précise comme externe : le trafic
+              qui la traverse est alors compté comme entrant/sortant du réseau.</span>
+          </li>
+          <li>
+            <code class="lang-help__code">Interface.Description matches "(?i)transit" &amp;&amp; ClassifyConnectivity("transit") &amp;&amp; ClassifyExternal()</code>
+            <span class="lang-help__note">Chaînage de plusieurs classifications sur une même
+              condition. <code>(?i)</code> rend la recherche insensible à la casse.</span>
+          </li>
+          <li>
+            <code class="lang-help__code">ClassifyProviderRegex(Interface.Description, "^\\S+?\\s(\\S+)", "$1")</code>
+            <span class="lang-help__note">Extrait le nom du fournisseur depuis la description au
+              lieu de l'écrire en dur. Noter les antislashs <strong>doublés</strong>, exigés par
+              Akvorado pour les classes Perl.</span>
+          </li>
+          <li>
+            <code class="lang-help__code">SetDescription(Format("%s sur %s", Interface.Name, Exporter.Name))</code>
+            <span class="lang-help__note">Réécrit la description quand l'équipement n'en fournit
+              aucune d'exploitable. Contrairement aux <code>Classify…</code>,
+              <code>SetName</code> et <code>SetDescription</code> ne normalisent pas la
+              valeur (majuscules et espaces conservés).</span>
+          </li>
+        </ul>
+      </div>
+
+      <div class="lang-help__col lang-help__col--ko">
+        <h3 class="lang-help__title">Ce qui ne marche pas</h3>
+        <ul class="lang-help__list">
+          <li>
+            <code class="lang-help__code">ClassifyRegion("homelab")</code>
+            <span class="lang-help__note"><strong>Fonction de l'autre table.</strong>
+              <code>ClassifyRegion</code>, <code>ClassifyRole</code>, <code>ClassifyTenant</code>,
+              <code>ClassifySite</code> et <code>ClassifyGroup</code> n'existent QUE pour les
+              exportateurs. Utilisée ici, Akvorado refuse la règle et
+              <strong>ne démarre pas</strong> — le copier-coller depuis l'autre écran est
+              le piège le plus fréquent.</span>
+          </li>
+          <li>
+            <code class="lang-help__code">ClassifyExternalRegex(Interface.Name, "^eth", "$1")</code>
+            <span class="lang-help__note"><strong>Variante inexistante.</strong>
+              <code>ClassifyExternal()</code> et <code>ClassifyInternal()</code> sont les
+              <em>seules</em> à ne pas avoir de variante <code>Regex</code> : elles ne prennent
+              aucun argument. Pour conditionner, utiliser
+              <code>Interface.Name matches "^eth" &amp;&amp; ClassifyExternal()</code>.</span>
+          </li>
+          <li>
+            <code class="lang-help__code">ClassifyInternal()</code> placée en <strong>première</strong> ligne
+            <span class="lang-help__note"><strong>Ordre destructeur.</strong> L'expression est
+              valide, mais comme le premier qui classe gagne, elle marque tout en interne et
+              <em>aucune</em> règle suivante ne pourra plus marquer quoi que ce soit en externe.
+              Les règles spécifiques d'abord, le fourre-tout en dernier.</span>
+          </li>
+          <li>
+            <code class="lang-help__code">Interface.vlan == 10 &amp;&amp; ClassifyConnectivity("iot")</code>
+            <span class="lang-help__note"><strong>Casse du champ.</strong> Le champ s'écrit
+              <code>Interface.VLAN</code>, tout en majuscules. Écrit autrement, il est inconnu
+              et la règle ne compile pas. (Il exige par ailleurs que <code>SrcVlan</code> /
+              <code>DstVlan</code> soient activés dans le schéma.)</span>
+          </li>
+        </ul>
+      </div>
+
+      <p class="lang-help__caveat">
+        Fonctions de cette table : <code>ClassifyConnectivity</code>,
+        <code>ClassifyProvider</code>, <code>ClassifyExternal</code>,
+        <code>ClassifyInternal</code>, <code>SetName</code>, <code>SetDescription</code>,
+        plus <code>Reject()</code> et <code>Format()</code>.
+        <code>ClassifyConnectivity</code> et <code>ClassifyProvider</code> ont une variante
+        <code>…Regex(valeur, regex, modèle)</code> ; les quatre autres non.
+      </p>
+    {% endif %}
+  </details>
+{% endmacro %}
+
+{% macro csv_panel(section_key, format_hint, example, replace_label, noun) %}
+  <section class="panel" id="{{ section_key }}-csv-panel">
+    <div class="panel-head">
+      <h2>Import / export en masse (CSV)</h2>
+    </div>
+    <p class="config-form__hint">
+      Utile dès qu'il y a plus de quelques {{ noun }} à saisir : au lieu
+      d'ajouter les entrées une par une, collez ou téléversez un CSV au
+      format <code>{{ format_hint }}</code>, une entrée par ligne
+      (exemple : <code>{{ example }}</code>).
+      {%- if format_hint != 'expression' %}
+        Séparateur <code>;</code> (ou <code>,</code> si la ligne ne contient
+        pas de <code>;</code>) ;
+      {%- else %}
+        Aucun séparateur : la ligne entière est l'expression, afin qu'une
+        expression contenant <code>;</code> ou <code>,</code> ne soit jamais
+        amputée ;
+      {%- endif %}
+      les lignes vides, les commentaires (<code>#…</code>) et une éventuelle
+      ligne d'en-tête sont ignorés.
+    </p>
+
+    {# `link-action` et non `secondary` : cette dernière n'existe pas dans
+       style.css et rendait le bouton en bleu souligné par défaut du
+       navigateur — le défaut EXACT que ce lot devait éliminer, réintroduit
+       sur un lien qu'il ajoutait. Le garde-fou de test_design_system ne le
+       voyait pas : il ne vérifiait l'existence en CSS que des classes
+       d'une liste connue, et écartait les autres avant l'assertion. #}
+    <a href="{{ '/config/sections/' | prefixed }}{{ section_key }}/export" class="link-action" download>
+      Exporter en CSV
+    </a>
+
+    <form
+      id="{{ section_key }}-csv-import-form"
+      class="config-form config-form--stacked"
+      hx-post="{{ '/config/sections/' | prefixed }}{{ section_key }}/import"
+      hx-target="#{{ section_key }}-csv-import-result"
+      hx-trigger="submit"
+      hx-sync="this:replace"
+      hx-disabled-elt="find button"
+    >
+      <label for="{{ section_key }}-csv-import-text">Coller le contenu CSV</label>
+      <textarea
+        id="{{ section_key }}-csv-import-text"
+        name="csv_text"
+        rows="6"
+        class="mono"
+        placeholder="{{ example }}"
+      ></textarea>
+
+      <label for="{{ section_key }}-csv-import-file">…ou téléverser un fichier</label>
+      <input type="file" id="{{ section_key }}-csv-import-file" name="csv_file"
+             accept=".csv,text/csv" class="file-input">
+      <p class="config-form__hint">
+        Si un fichier est fourni, il prime sur le texte collé ci-dessus.
+      </p>
+
+      {# `checkbox-field` et non `widget-checklist__item` : dans un
+         `config-form--stacked`, les labels sont alignés à DROITE, ce qui
+         détachait la case de son texte et le poussait au bord de l'écran.
+         Sur une option destructive, une case orpheline de son libellé est
+         une invitation à la cocher sans lire. Constaté par capture d'écran
+         le 2026-08-06 — invisible dans le DOM, qui montrait bien un label
+         correctement associé à son input. #}
+      <label class="checkbox-field" for="{{ section_key }}-csv-import-replace">
+        <input type="checkbox" id="{{ section_key }}-csv-import-replace"
+               name="replace" value="true">
+        <span>{{ replace_label }}</span>
+      </label>
+      <p class="notice notice-warn">
+        <strong>Attention</strong> — remplacement complet : {{ noun }} absent(e)s
+        du CSV seront supprimé(e)s. Par défaut (case décochée), l'import se
+        contente d'ajouter les nouvelles entrées et de mettre à jour celles
+        déjà présentes ; le reste est conservé.
+      </p>
+
+      <button type="submit" class="primary">Prévisualiser l'import</button>
+    </form>
+
+    <div id="{{ section_key }}-csv-import-result"></div>
+  </section>
+{% endmacro %}
+
+{% block content %}
+<section id="config-sections-page">
+
+  {% if not detail %}
+  <!-- ======================= Vue d'ensemble ======================= -->
+  <h1>Toute la configuration Akvorado</h1>
+  <p class="subtitle">
+    Aujourd'hui, Akvorado se configure dans plusieurs fichiers YAML édités en SSH.
+    Chaque carte ci-dessous ouvre un écran où modifier la section à la souris —
+    plus besoin de toucher un fichier.
+  </p>
+
+  <div class="sections-grid">
+    {% for section in sections %}
+      <a class="section-card" href="{{ '/config/sections/' | prefixed }}{{ section.key }}">
+        <div class="section-card__head">
+          <h2>{{ section.label }}</h2>
+          <span class="badge badge-undeclared">{{ section.file }}</span>
+        </div>
+        <p class="section-card__desc">{{ section.description }}</p>
+        <p class="section-card__meta">
+          {% if section.restart_services %}
+            Redémarre : {{ section.restart_services | join(', ') }}
+          {% else %}
+            Pas de redémarrage requis
+          {% endif %}
+        </p>
+      </a>
+    {% endfor %}
+  </div>
+
+  {% else %}
+  <!-- ======================= Détail d'une section ======================= -->
+  <p><a class="link-back" href="{{ '/config/sections' | prefixed }}"><span class="link-back__chevron" aria-hidden="true">&larr;</span> Toutes les sections</a></p>
+  <h1>{{ detail.label }}</h1>
+  <p class="subtitle">{{ detail.description }}</p>
+
+  {% if detail.restart_services %}
+    <p class="notice notice-warn">
+      <strong>À savoir avant de modifier cette section</strong>
+      Une fois appliqué, ce changement redémarre
+      {{ detail.restart_services | join(' et ') }},
+      ce qui interrompt brièvement la collecte de flux (le protocole NetFlow est
+      en UDP : les datagrammes perdus pendant le redémarrage ne sont jamais
+      retransmis). Le changement n'est pas appliqué immédiatement : il est mis
+      en file d'attente, à regrouper avec d'autres avant de cliquer sur
+      « Appliquer » depuis l'écran Configuration.
+    </p>
+  {% else %}
+    <p class="notice notice-info">
+      <strong>À savoir avant de modifier cette section</strong>
+      Ce changement est repris automatiquement, sans redémarrage de service.
+      Il reste néanmoins mis en file d'attente, comme les autres.
+    </p>
+  {% endif %}
+
+  {% if error %}
+    <p class="notice notice-crit">{{ error }}</p>
+  {% endif %}
+
+  {# Sonde de fraîcheur — l'écran est MONITORABLE sans qu'on ait à recharger.
+     Elle interroge l'empreinte de la section toutes les 15 s et n'affiche
+     RIEN tant que rien n'a bougé.
+
+     POURQUOI une sonde et non un rafraîchissement du contenu : le panneau
+     d'édition ci-dessous porte 24 champs de saisie et une zone de collage
+     CSV. Un `every 10s` dessus effacerait un CSV à moitié collé ou une
+     sélection de cases en cours — le remède serait pire que le mal.
+     Recharger reste donc une décision de l'utilisateur, qui seul sait s'il a
+     une saisie en cours.
+
+     C'est le cas d'usage vise par Okvorado : plusieurs collègues sur la même
+     configuration. Un changement applique ailleurs doit se SAVOIR, pas
+     s'imposer au milieu d'une saisie. #}
+  {# L'empreinte connue est transportée par un champ caché, mis à jour par
+     `freshness.js` — et NON par `hx-vals="js:..."`, qui ferait évaluer du
+     JavaScript par htmx via `Function()`. La CSP de l'application est
+     `script-src 'self'` SANS `unsafe-eval` : le navigateur bloquerait cette
+     évaluation et la valeur serait envoyée vide, donc la sonde ne
+     signalerait JAMAIS rien — en silence. Même famille de piège que
+     `hx-target-error`, attribut d'une extension absente ignoré sans
+     avertissement. #}
+  {# Le champ est HORS de la zone rafraîchie : placé dedans, il serait détruit
+     par le premier `innerHTML` et l'empreinte connue repartirait à vide à
+     chaque cycle — la sonde ne signalerait alors jamais rien. #}
+  <input type="hidden" id="section-freshness-seen" name="seen" value="">
+  <div id="section-freshness"
+       hx-get="{{ '/config/sections/' | prefixed }}{{ detail.key }}/freshness"
+       hx-trigger="load, every 15s"
+       hx-include="#section-freshness-seen"
+       hx-swap="innerHTML"></div>
+
+  <div id="section-pending-panel"
+       hx-get="{{ '/config/sections/pending/list' | prefixed }}"
+       hx-trigger="load, every 30s"
+       hx-swap="innerHTML">
+    <p class="view-card__loading">Chargement…</p>
+  </div>
+
+  <section class="panel" id="section-editor-panel">
+    <div class="panel-head">
+      <h2>Contenu actuel</h2>
+    </div>
+
+    {% if detail.key in ('exporter_classifiers', 'interface_classifiers') %}
+      {# L'aide est placée AVANT le tableau et l'éditeur, et non en bas de page :
+         sur `interface_classifiers` (0 expression en prod), le tableau se réduit
+         à une ligne « Aucune expression » et l'éditeur à une zone vide. Une aide
+         reléguée sous cet ensemble serait lue APRÈS que l'utilisateur a dû
+         deviner quoi taper — c'est-à-dire trop tard. #}
+      {{ classifier_help(detail.key) }}
+
+      {# Le tableau des expressions existantes précède la zone de texte : sans
+         lui, la seule façon de retirer quelques expressions parmi beaucoup
+         était de les retrouver à la main dans le textarea et de les effacer —
+         soit exactement l'édition de fichier que cet écran doit remplacer.
+         La zone de texte reste l'éditeur de référence (le mini-langage se
+         saisit en toutes lettres) ; le tableau n'ajoute que la suppression
+         sélective. #}
+      <table>
+        <thead><tr>{{ bulk_master_cell(detail.key, value) }}<th>Expression</th></tr></thead>
+        <tbody>
+          {% if value %}
+            {% for expr in value %}
+              <tr>
+                {{ bulk_row_cell(detail.key, loop.index0, expr) }}
+                <td class="mono">{{ expr }}</td>
+              </tr>
+            {% endfor %}
+          {% else %}
+            <tr><td colspan="1" class="empty">Aucune expression de classification pour le moment.</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+      {{ bulk_action_bar(detail.key, value) }}
+
+      <!-- Mini-langage d'expressions : zone de texte multi-lignes, une expression par ligne. -->
+      <form
+        class="config-form config-form--stacked"
+        hx-post="{{ '/config/sections/' | prefixed }}{{ detail.key }}"
+        hx-target="#section-pending-panel"
+        hx-trigger="submit"
+        hx-sync="this:replace"
+        hx-disabled-elt="find button"
+      >
+        <label for="classifiers-expressions">Expressions (une par ligne)</label>
+        <textarea
+          id="classifiers-expressions"
+          name="expressions"
+          rows="12"
+          class="mono"
+          placeholder='ClassifyRegion(&quot;homelab&quot;)'
+        >{% for expr in value %}{{ expr }}
+{% endfor %}</textarea>
+        <p class="config-form__hint">
+          Chaque ligne est une expression du langage de classification d'Akvorado
+          (fonctions <code>Classify...()</code>). C'est un mini-langage, pas un
+          éditeur visuel : une erreur de syntaxe sera refusée avant mise en file.
+        </p>
+        <button type="submit" class="primary">Mettre en attente</button>
+      </form>
+
+      {{ csv_panel(detail.key, 'expression',
+                    'ClassifyRegion(\"homelab\")',
+                    'Remplacer entièrement la liste de règles',
+                    'règles') }}
+
+    {% elif detail.key == 'homepage_widgets' %}
+      {# Allowlist de widgets, jamais un champ libre.
+
+         POURQUOI un libellé français ET une phrase de description par widget,
+         plutôt que le seul code technique : la demande utilisateur était
+         « afficher la liste exhaustive à jour ». Mesuré contre l'API Akvorado
+         le 2026-08-06 : les 9 widgets de `widget_choices` répondent HTTP 200
+         sur `/api/v0/console/widget/top/<w>`, et 8 autres candidats testés
+         (src-net-name, in-if-boundary, src-geo-city, src-net-role,
+         dst-net-name, out-if-boundary, dst-geo-city, dst-net-role) répondent
+         400. La liste EST donc complète — ce qui manquait n'était pas du
+         contenu mais de la LISIBILITÉ : neuf codes bruts alignés ne disent pas
+         à un collègue ce que chaque case va afficher sur la page d'accueil, ni
+         que la liste est close. Le libellé et la description répondent à la
+         demande à l'œil, sans toucher au contrat serveur (`name="widgets"`).
+
+         Le libellé vit ici et NON dans le routeur : `_HOMEPAGE_WIDGET_CHOICES`
+         est l'allowlist de validation (le contrat), la traduction est de
+         l'affichage. Un widget ajouté au routeur sans entrée ici retombe sur
+         son code technique — dégradé lisible, jamais une case muette. #}
+      {% set widget_labels = {
+        'exporter':    ('Exportateur',        'Les équipements qui émettent le plus de flux'),
+        'src-as':      ('AS source',          "Les systèmes autonomes d'où part le trafic"),
+        'dst-as':      ('AS destination',     'Les systèmes autonomes vers lesquels va le trafic'),
+        'src-country': ('Pays source',        "Les pays d'origine du trafic"),
+        'dst-country': ('Pays destination',   'Les pays de destination du trafic'),
+        'protocol':    ('Protocole',          'La répartition TCP / UDP / ICMP…'),
+        'etype':       ('Type Ethernet',      'La répartition IPv4 / IPv6'),
+        'src-port':    ('Port source',        'Les ports depuis lesquels le trafic est émis'),
+        'dst-port':    ('Port destination',   'Les ports visés — souvent le service consommé'),
+      } %}
+      <form
+        class="config-form"
+        hx-post="{{ '/config/sections/' | prefixed }}{{ detail.key }}"
+        hx-target="#section-pending-panel"
+        hx-trigger="submit"
+        hx-sync="this:replace"
+        hx-disabled-elt="find button"
+      >
+        <fieldset class="widget-checklist">
+          <legend>Dimensions affichées en widgets sur la page d'accueil</legend>
+          <p class="widget-checklist__intro">
+            Liste exhaustive des {{ widget_choices | length }} widgets acceptés par la
+            console Akvorado : tout autre code est refusé par l'API.
+            <strong class="widget-checklist__tally">{{ value | length }} coché{{ 's' if (value | length) > 1 else '' }}</strong>
+            sur {{ widget_choices | length }}.
+          </p>
+          {% for widget in widget_choices %}
+            {# `class` conditionnelle sur le LABEL entier, pas seulement sur la
+               case : le distinguo coché / non coché doit se lire d'un coup
+               d'œil sur la ligne complète. Défaut vécu le 2026-08-06 sur ce
+               projet — une case visuellement détachée de son libellé n'a été
+               vue qu'à la capture d'écran, le DOM était pourtant correct. #}
+            <label class="widget-checklist__item{{ ' is-checked' if widget in value else '' }}">
+              <input type="checkbox" name="widgets" value="{{ widget }}"
+                     {% if widget in value %}checked{% endif %}>
+              <span class="widget-checklist__text">
+                <span class="widget-checklist__label">{{ widget_labels[widget][0] if widget in widget_labels else widget }}</span>
+                <code class="widget-checklist__code">{{ widget }}</code>
+                <span class="widget-checklist__desc">{{ widget_labels[widget][1] if widget in widget_labels else 'Widget accepté par la console.' }}</span>
+              </span>
+            </label>
+          {% endfor %}
+        </fieldset>
+        <button type="submit" class="primary">Mettre en attente</button>
+      </form>
+
+    {% elif detail.key == 'schema_columns' %}
+      {# ============ Colonnes optionnelles du schéma ClickHouse ============
+
+         POURQUOI cet écran existe : activer la colonne DSCP (donc le widget
+         Top N QoS) demandait jusqu'ici d'éditer `akvorado.yaml` en SSH. C'est
+         exactement le geste que ce projet supprime — la configuration doit se
+         régler DEPUIS L'ÉCRAN, y compris par quelqu'un qui n'a pas d'accès
+         shell sur l'hôte.
+
+         POURQUOI un regroupement par famille et non 30 cases à la suite :
+         trente cases en vrac ne se lisent pas. Personne ne cherche « IPTos »
+         par son nom ; on cherche « la QoS ». Les familles sont l'index mental
+         réel, le code technique reste affiché en second pour qui le connaît.
+
+         L'allowlist ET l'ordre viennent du catalogue (`schema_column_choices`,
+         mesuré par `akvorado version -d` sur le binaire déployé) — le gabarit
+         ne réinvente aucune liste. Une colonne ajoutée au catalogue sans
+         entrée dans `column_labels` ci-dessous retombe sur son code technique
+         et sur la famille « Autres » : dégradé lisible, jamais une case muette. #}
+      {% set column_labels = {
+        'IPTos':              ('QoS / DSCP', 'Marquage de priorité du trafic — débloque le widget Top N QoS'),
+        'IPTTL':              ('Durée de vie IP (TTL)', "Nombre de sauts restants — aide à repérer les boucles de routage"),
+        'IPFragmentID':       ('Identifiant de fragment IP', 'Identifie les morceaux d\'un même paquet fragmenté'),
+        'IPFragmentOffset':   ('Position du fragment IP', 'Position du morceau dans le paquet d\'origine'),
+        'IPv6FlowLabel':      ('Étiquette de flux IPv6', 'Étiquette de flux portée par l\'en-tête IPv6'),
+        'TCPFlags':           ('Drapeaux TCP', 'SYN / ACK / RST / FIN — distingue une connexion établie d\'un scan'),
+        'SrcVlan':            ('VLAN source', 'Le VLAN d\'où part le trafic'),
+        'DstVlan':            ('VLAN destination', 'Le VLAN vers lequel va le trafic'),
+        'SrcMAC':             ('Adresse MAC source', 'Adresse matérielle de l\'émetteur — utile en réseau local'),
+        'DstMAC':             ('Adresse MAC destination', 'Adresse matérielle du destinataire'),
+        'ICMPv4':             ('ICMPv4', 'Type et code ICMPv4 réunis en une seule dimension'),
+        'ICMPv4Type':         ('Type ICMPv4', 'Nature du message ICMPv4 (echo, destination inatteignable…)'),
+        'ICMPv4Code':         ('Code ICMPv4', 'Précision du motif au sein du type ICMPv4'),
+        'ICMPv6':             ('ICMPv6', 'Type et code ICMPv6 réunis en une seule dimension'),
+        'ICMPv6Type':         ('Type ICMPv6', 'Nature du message ICMPv6'),
+        'ICMPv6Code':         ('Code ICMPv6', 'Précision du motif au sein du type ICMPv6'),
+        'MPLSLabels':         ('Étiquettes MPLS', 'La pile complète d\'étiquettes MPLS du paquet'),
+        'MPLS1stLabel':       ('1re étiquette MPLS', 'Étiquette de tête de la pile MPLS'),
+        'MPLS2ndLabel':       ('2e étiquette MPLS', 'Deuxième étiquette de la pile MPLS'),
+        'MPLS3rdLabel':       ('3e étiquette MPLS', 'Troisième étiquette de la pile MPLS'),
+        'MPLS4thLabel':       ('4e étiquette MPLS', 'Quatrième étiquette de la pile MPLS'),
+        'SrcAddrNAT':         ('IP source après NAT', 'Adresse source telle que vue après traduction'),
+        'DstAddrNAT':         ('IP destination après NAT', 'Adresse destination telle que vue après traduction'),
+        'SrcPortNAT':         ('Port source après NAT', 'Port source après traduction d\'adresse'),
+        'DstPortNAT':         ('Port destination après NAT', 'Port destination après traduction d\'adresse'),
+        'SrcCommunities':     ('Communautés BGP source', 'Communautés BGP portées par la route source'),
+        'SrcLargeCommunities':('Grandes communautés BGP source', 'Communautés BGP étendues (RFC 8092) de la route source'),
+        'NextHop':            ('Prochain saut', 'Routeur suivant choisi pour acheminer le flux'),
+        'IngressVRFID':       ('VRF d\'entrée', 'Instance de routage virtuelle par laquelle le flux entre'),
+        'EgressVRFID':        ('VRF de sortie', 'Instance de routage virtuelle par laquelle le flux sort'),
+      } %}
+      {# Familles : l'ordre ci-dessous est l'ordre d'affichage. La famille QoS
+         vient en premier parce que c'est le besoin qui a motivé cet écran. #}
+      {% set column_families = [
+        ('QoS / ToS',  ['IPTos']),
+        ('VLAN',       ['SrcVlan', 'DstVlan']),
+        ('MAC',        ['SrcMAC', 'DstMAC']),
+        ('IP',         ['IPTTL', 'IPFragmentID', 'IPFragmentOffset', 'IPv6FlowLabel', 'TCPFlags']),
+        ('ICMP',       ['ICMPv4', 'ICMPv4Type', 'ICMPv4Code', 'ICMPv6', 'ICMPv6Type', 'ICMPv6Code']),
+        ('MPLS',       ['MPLSLabels', 'MPLS1stLabel', 'MPLS2ndLabel', 'MPLS3rdLabel', 'MPLS4thLabel']),
+        ('NAT',        ['SrcAddrNAT', 'DstAddrNAT', 'SrcPortNAT', 'DstPortNAT']),
+        ('BGP / routage', ['SrcCommunities', 'SrcLargeCommunities', 'NextHop', 'IngressVRFID', 'EgressVRFID']),
+      ] %}
+      {# Filet de sécurité : toute colonne du catalogue absente des familles
+         ci-dessus est rendue quand même, dans « Autres ». Sans ça, une colonne
+         ajoutée au catalogue disparaîtrait de l'écran SANS erreur — le zéro
+         silencieux appliqué à une case à cocher. #}
+      {% set grouped = [] %}
+      {% for _, family_columns in column_families %}{% for c in family_columns %}{% set _ = grouped.append(c) %}{% endfor %}{% endfor %}
+      {% set leftovers = schema_column_choices | reject('in', grouped) | list %}
+
+      <p class="notice notice-warn schema-cost">
+        <strong>Chaque colonne activée a un coût.</strong>
+        Une colonne de plus, c'est un champ stocké pour <em>chaque</em> flux :
+        la table ClickHouse grossit et la consommation de disque augmente
+        d'autant. N'activez que ce que vous comptez réellement afficher.
+        À l'inverse, désactiver une colonne <strong>ne supprime pas</strong> les
+        données déjà collectées, et ajouter une colonne à une base existante est
+        possible sans repartir de zéro.
+      </p>
+
+      <form
+        class="config-form config-form--stacked"
+        hx-post="{{ '/config/sections/' | prefixed }}{{ detail.key }}"
+        hx-target="#section-pending-panel"
+        hx-trigger="submit"
+        hx-sync="this:replace"
+        hx-disabled-elt="find button"
+      >
+        <p class="widget-checklist__intro">
+          Liste exhaustive des {{ schema_column_choices | length }} colonnes optionnelles
+          acceptées par Akvorado : tout autre nom est refusé avant mise en file.
+          <strong class="widget-checklist__tally">{{ value | length }} activée{{ 's' if (value | length) > 1 else '' }}</strong>
+          sur {{ schema_column_choices | length }}.
+        </p>
+
+        {% for family_name, family_columns in column_families + ([('Autres', leftovers)] if leftovers else []) %}
+          <fieldset class="widget-checklist schema-family">
+            <legend>{{ family_name }}</legend>
+            {% for column in family_columns %}
+              <label class="widget-checklist__item{{ ' is-checked' if column in value else '' }}">
+                <input type="checkbox" name="columns" value="{{ column }}"
+                       {% if column in value %}checked{% endif %}>
+                <span class="widget-checklist__text">
+                  <span class="widget-checklist__label">{{ column_labels[column][0] if column in column_labels else column }}</span>
+                  <code class="widget-checklist__code">{{ column }}</code>
+                  {% if column in main_table_only_columns %}
+                    {# Dit à l'écran plutôt que tu, parce que le symptôme sinon
+                       est muet : la dimension paraît simplement vide sur une
+                       plage longue, sans message d'erreur nulle part. #}
+                    <span class="schema-badge" title="Absente des tables d'agrégation : cette dimension reste vide sur les vues qui remontent loin dans le temps.">table principale seulement</span>
+                  {% endif %}
+                  <span class="widget-checklist__desc">{{ column_labels[column][1] if column in column_labels else 'Colonne optionnelle acceptée par Akvorado.' }}</span>
+                </span>
+              </label>
+            {% endfor %}
+          </fieldset>
+        {% endfor %}
+
+        <p class="config-form__hint">
+          Les colonnes marquées <span class="schema-badge">table principale seulement</span>
+          n'existent que dans la table détaillée des flux : elles sont absentes des
+          tables d'agrégation, donc une vue qui remonte loin dans le temps les
+          affichera vides — sans message d'erreur.
+        </p>
+        <button type="submit" class="primary">Mettre en attente</button>
+      </form>
+
+    {% elif detail.key == 'visualize_defaults' %}
+      {# ============ Composeur de dimensions (étiquettes réordonnables) ============
+
+         DÉFAUT CORRIGÉ (mesuré en prod le 2026-08-06) : les 6 dimensions
+         (`ExporterName, SrcAddr, DstAddr, DstPort, Proto, InIfBoundary`)
+         étaient rendues dans UN SEUL `<input type="text">` étroit, séparées
+         par des virgules. Verbatim utilisateur : « c'est dégueu ». Deux
+         défauts distincts dans le même champ :
+           1. on ne VOIT pas tout le contenu — la chaîne déborde d'un champ de
+              largeur de grille, il faut faire défiler au curseur pour lire la
+              6e dimension ;
+           2. on ne peut pas RÉORDONNER — l'ordre porte pourtant du sens (la
+              1re dimension est l'axe principal du graphe Akvorado), et le seul
+              moyen de le changer était de retaper la chaîne entière, à la
+              virgule près, sans jamais voir le résultat.
+
+         Chaque dimension devient donc une ÉTIQUETTE distincte, déplaçable à la
+         souris (glisser-déposer HTML5 natif) ET au clavier (boutons ↑/↓ —
+         voir plus bas pourquoi ce n'est pas optionnel).
+
+         POURQUOI le catalogue des champs vit dans le TEMPLATE et non dans le
+         routeur : ce lot ne touche ni `app/routers/` ni `app/services/`, et le
+         contrat serveur reste strictement inchangé (voir le champ caché plus
+         bas). Le catalogue est un libellé d'affichage, pas une allowlist de
+         validation — la validation reste `_validate_visualize_defaults`. #}
+      {% set dimension_labels = {
+        'ExporterName':   "Nom de l'exportateur",
+        'ExporterAddress':"Adresse de l'exportateur",
+        'SrcAddr':        'Adresse IP source',
+        'DstAddr':        'Adresse IP destination',
+        'SrcPort':        'Port source',
+        'DstPort':        'Port destination',
+        'SrcAS':          'AS source',
+        'DstAS':          'AS destination',
+        'SrcCountry':     'Pays source',
+        'DstCountry':     'Pays destination',
+        'SrcNetName':     'Nom du réseau source',
+        'DstNetName':     'Nom du réseau destination',
+        'SrcNetRole':     'Rôle du réseau source',
+        'DstNetRole':     'Rôle du réseau destination',
+        'Proto':          'Protocole (TCP / UDP / ICMP…)',
+        'EType':          'Type Ethernet (IPv4 / IPv6)',
+        'InIfName':       "Interface d'entrée",
+        'OutIfName':      'Interface de sortie',
+        'InIfBoundary':   "Frontière d'entrée (interne / externe)",
+        'OutIfBoundary':  'Frontière de sortie (interne / externe)',
+        'InIfProvider':   "Opérateur de l'interface d'entrée",
+        'OutIfProvider':  "Opérateur de l'interface de sortie",
+      } %}
+      {# Dimensions ACTUELLES en premier, dans leur ordre de configuration.
+         `value.dimensions` est la source, jamais le catalogue : une dimension
+         présente en prod mais absente du catalogue ci-dessus resterait sinon
+         invisible, et l'utilisateur la PERDRAIT en enregistrant — une perte de
+         configuration silencieuse, le pire défaut possible sur cet écran. #}
+      {% set selected_dimensions = (value.dimensions if value and value.dimensions else []) %}
+      {# Champs disponibles = catalogue MOINS ce qui est déjà placé. Une
+         dimension déjà en place ne doit pas être proposée à l'ajout : la
+         reposer une seconde fois casse le graphe Akvorado (dimension en
+         double). Le filtrage à la source complète le garde-fou JS. #}
+      {% set available_dimensions = dimension_labels.keys() | reject('in', selected_dimensions) | list | sort %}
+      <form
+        class="config-form config-form--stacked field-composer-form"
+        hx-post="{{ '/config/sections/' | prefixed }}{{ detail.key }}"
+        hx-target="#section-pending-panel"
+        hx-trigger="submit"
+        hx-sync="this:replace"
+        hx-disabled-elt="find button"
+      >
+        <div class="field-composer" data-field-composer="dimensions">
+
+          {# --------- Le champ qui part réellement au serveur ---------
+
+             CONTRAT SERVEUR INCHANGÉ : le routeur lit `form_dict["dimensions"]`
+             et le découpe sur les virgules
+             (`d.strip() for d in ....split(",") if d.strip()`). Ce champ caché
+             poste donc exactement le même format qu'avant — les étiquettes ne
+             sont qu'une façon de le COMPOSER. Aucune ligne de `app/routers/`
+             n'a besoin de changer.
+
+             Il est rendu DÉJÀ REMPLI par Jinja, et non laissé vide en
+             attendant que le JS le peuple : si `field-composer.js` ne
+             s'exécute pas (erreur JS, CSP durcie, fichier non servi), un champ
+             vide POSTERAIT UNE LISTE VIDE et effacerait les 6 dimensions de
+             production — sans le moindre message. Prérempli, le pire cas est
+             un enregistrement à l'identique. Même famille de piège que le
+             « zéro silencieux » : un chemin d'échec ne doit jamais produire
+             une valeur neutre indistinguable d'une vraie saisie. #}
+          <input type="hidden"
+                 id="visualize-dimensions"
+                 name="dimensions"
+                 data-field-composer-value
+                 value="{{ selected_dimensions | join(', ') }}">
+
+          {# --------- Zone 1 : les dimensions retenues, ordonnées --------- #}
+          <div class="field-composer__zone">
+            <div class="field-composer__zone-head">
+              <h3 class="field-composer__zone-title">Dimensions retenues</h3>
+              <p class="field-composer__zone-hint">
+                L'ordre compte : la <strong>1<sup>re</sup></strong> dimension est l'axe
+                principal du graphe Akvorado. Glissez une étiquette pour la déplacer,
+                ou utilisez les flèches ↑ / ↓ de chaque étiquette.
+              </p>
+            </div>
+
+            {# `aria-live="polite"` : quand une étiquette change de rang au
+               clavier, le déplacement est invisible pour un lecteur d'écran —
+               le focus reste sur le même bouton, seul l'entourage a bougé. La
+               région annonce le nouvel état au lieu de laisser l'utilisateur
+               dans le noir. #}
+            <ul class="field-composer__list"
+                data-field-composer-list
+                aria-label="Dimensions retenues, dans l'ordre d'affichage"
+                aria-live="polite">
+              {% for dim in selected_dimensions %}
+                {# `draggable="true"` sur le `<li>` : le glisser-déposer HTML5
+                   natif, sans aucune bibliothèque — la CSP `script-src 'self'`
+                   bloquerait de toute façon un CDN. #}
+                <li class="field-composer__tag"
+                    draggable="true"
+                    data-field-composer-tag
+                    data-field-value="{{ dim }}">
+                  <span class="field-composer__rank" data-field-composer-rank>{{ loop.index }}</span>
+                  <span class="field-composer__tag-text">
+                    <span class="field-composer__tag-label">{{ dimension_labels[dim] if dim in dimension_labels else dim }}</span>
+                    <code class="field-composer__tag-code">{{ dim }}</code>
+                  </span>
+                  {# Boutons ↑ / ↓ : le glisser-déposer était la demande
+                     explicite, mais une liste ordonnable UNIQUEMENT à la
+                     souris est inutilisable pour qui ne peut pas glisser
+                     (clavier seul, tremblement, écran tactile sans HTML5 DnD).
+                     `type="button"` et non le type par défaut : un `<button>`
+                     nu dans un formulaire vaut `type="submit"` — monter une
+                     étiquette d'un rang aurait ENVOYÉ le formulaire. #}
+                  <button type="button"
+                          class="field-composer__move"
+                          data-field-composer-move="up"
+                          aria-label="Monter {{ dim }} d'un rang">↑</button>
+                  <button type="button"
+                          class="field-composer__move"
+                          data-field-composer-move="down"
+                          aria-label="Descendre {{ dim }} d'un rang">↓</button>
+                  <button type="button"
+                          class="field-composer__remove"
+                          data-field-composer-remove
+                          aria-label="Retirer {{ dim }}">✕</button>
+                </li>
+              {% endfor %}
+            </ul>
+
+            {# État vide EXPLICITE, et rendu côté serveur quand la liste part
+               déjà vide : une zone muette laisse croire à un écran qui n'a pas
+               fini de charger. Ici on nomme la CONSÉQUENCE (le graphe
+               n'affichera rien), pas seulement le fait. `hidden` est piloté
+               par le JS quand la dernière étiquette est retirée. #}
+            <p class="field-composer__empty"
+               data-field-composer-empty
+               {% if selected_dimensions %}hidden{% endif %}>
+              Aucune dimension retenue : le graphe Akvorado n'affichera rien.
+              Ajoutez au moins une dimension ci-dessous.
+            </p>
+          </div>
+
+          {# --------- Zone 2 : les champs disponibles, filtrables --------- #}
+          <div class="field-composer__zone field-composer__zone--available">
+            <div class="field-composer__zone-head">
+              <h3 class="field-composer__zone-title">Champs disponibles</h3>
+              <label class="field-composer__search-label" for="field-composer-search">
+                Filtrer les champs
+              </label>
+              {# `type="search"` et non `text` : la croix d'effacement native
+                 évite d'avoir à sélectionner puis supprimer la saisie pour
+                 retrouver la liste complète.
+                 PAS d'attribut `name` : ce champ est une commande d'interface,
+                 il ne doit RIEN poster. Nommé, il partirait au serveur et
+                 `form_dict` recevrait une clé parasite. #}
+              <input type="search"
+                     id="field-composer-search"
+                     class="field-composer__search"
+                     data-field-composer-search
+                     placeholder="port, réseau, AS…"
+                     autocomplete="off">
+            </div>
+
+            <ul class="field-composer__available"
+                data-field-composer-available
+                aria-label="Champs disponibles à ajouter">
+              {% for dim in available_dimensions %}
+                <li class="field-composer__available-item"
+                    data-field-composer-option
+                    data-field-value="{{ dim }}"
+                    data-field-search="{{ (dim ~ ' ' ~ (dimension_labels[dim] if dim in dimension_labels else '')) | lower }}">
+                  <button type="button"
+                          class="field-composer__add"
+                          data-field-composer-add
+                          aria-label="Ajouter {{ dim }} aux dimensions retenues">
+                    <span class="field-composer__add-sign" aria-hidden="true">+</span>
+                    <span class="field-composer__tag-label">{{ dimension_labels[dim] if dim in dimension_labels else dim }}</span>
+                    <code class="field-composer__tag-code">{{ dim }}</code>
+                  </button>
+                </li>
+              {% endfor %}
+            </ul>
+
+            {# Recherche sans résultat : message explicite. Une liste qui se
+               vide sans rien dire est indistinguable d'un écran cassé — c'est
+               le même défaut que la zone muette ci-dessus. #}
+            <p class="field-composer__no-match" data-field-composer-no-match hidden>
+              Aucun champ ne correspond à cette recherche.
+            </p>
+
+            {# Catalogue épuisé : tous les champs connus sont déjà retenus. #}
+            {% if not available_dimensions %}
+              <p class="field-composer__no-match">
+                Tous les champs connus sont déjà retenus.
+              </p>
+            {% endif %}
+          </div>
+
+          {# --------- Repli si le JavaScript ne s'exécute pas ---------
+
+             Le composeur est un CONFORT de saisie posé sur un formulaire qui
+             fonctionne déjà sans lui. Sans JS :
+               - les étiquettes restent LISIBLES et ordonnées (elles sont
+                 rendues par Jinja, pas construites par le JS) — le premier
+                 défaut signalé (« on ne voit pas tout le contenu ») est donc
+                 corrigé même JS éteint ;
+               - le champ caché `dimensions` porte déjà la valeur courante :
+                 enregistrer reste possible et NE DÉTRUIT RIEN (le pire cas est
+                 un enregistrement à l'identique) ;
+               - `limit` reste éditable normalement ;
+               - seuls le réordonnancement, l'ajout et le retrait sont
+                 indisponibles — et ils le DISENT, au lieu de laisser cliquer
+                 dans le vide sur des boutons inertes.
+
+             `field-composer.js` pose `data-field-composer-ready` sur le
+             conteneur dès qu'il a pris la main ; une règle CSS masque alors ce
+             bandeau. Il est visible par DÉFAUT et masqué par le JS, jamais
+             l'inverse : un bandeau caché par défaut que le JS devrait révéler
+             ne s'afficherait justement PAS le jour où le JS ne tourne pas. #}
+          <p class="field-composer__degraded" data-field-composer-degraded>
+            Le réordonnancement à la souris n'est pas actif sur cette page
+            (JavaScript indisponible). Les dimensions ci-dessus restent
+            enregistrées telles quelles ; la limite reste modifiable.
+          </p>
+        </div>
+
+        <label for="visualize-limit">Limite (nombre de séries)</label>
+        <input type="number" id="visualize-limit" name="limit" min="1"
+               value="{{ value.limit if value and value.limit else '' }}">
+
+        <button type="submit" class="primary">Mettre en attente</button>
+      </form>
+
+    {% elif detail.key == 'networks' %}
+      <table>
+        <thead><tr>{{ bulk_master_cell('networks', value) }}<th>CIDR</th><th>Nom</th><th></th></tr></thead>
+        <tbody>
+          {% if value %}
+            {% for cidr, entry in value.items() %}
+              <tr>
+                {{ bulk_row_cell('networks', cidr, cidr) }}
+                <td class="mono">{{ cidr }}</td>
+                <td>{{ entry.name if entry is mapping else entry }}</td>
+                <td class="exporters-table__action">
+                  <form
+                    hx-post="{{ '/config/sections/networks' | prefixed }}"
+                    hx-target="#section-pending-panel"
+                    hx-trigger="submit"
+                    hx-sync="this:replace"
+                    hx-disabled-elt="find button"
+                  >
+                    <input type="hidden" name="action" value="remove">
+                    <input type="hidden" name="cidr" value="{{ cidr }}">
+                    <button type="submit" class="danger">Supprimer</button>
+                  </form>
+                </td>
+              </tr>
+            {% endfor %}
+          {% else %}
+            <tr><td colspan="3" class="empty">Aucun réseau nommé pour le moment.</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+      {{ bulk_action_bar('networks', value) }}
+      <form
+        class="config-form"
+        hx-post="{{ '/config/sections/networks' | prefixed }}"
+        hx-target="#section-pending-panel"
+        hx-trigger="submit"
+        hx-sync="this:replace"
+        hx-disabled-elt="find button"
+        hx-on::after-request="if(event.detail.successful) this.reset()"
+      >
+        <input type="hidden" name="action" value="add">
+        <label for="networks-cidr">CIDR</label>
+        <input type="text" id="networks-cidr" name="cidr" placeholder="10.42.0.0/16" required>
+        <label for="networks-name">Nom</label>
+        <input type="text" id="networks-name" name="name" placeholder="labo" required>
+        <button type="submit" class="primary">Ajouter</button>
+      </form>
+
+      {{ csv_panel('networks', 'ip/cidr;designation',
+                    '192.168.10.0/24;vlan-bureau',
+                    "Remplacer entièrement le plan d'adressage",
+                    'réseaux') }}
+
+    {% elif detail.key == 'asns' %}
+      <table>
+        <thead><tr>{{ bulk_master_cell('asns', value) }}<th>Numéro d'AS</th><th>Nom</th><th></th></tr></thead>
+        <tbody>
+          {% if value %}
+            {% for asn, name in value.items() %}
+              <tr>
+                {{ bulk_row_cell('asns', asn, 'AS ' ~ asn) }}
+                <td class="num">{{ asn }}</td>
+                <td>{{ name }}</td>
+                <td class="exporters-table__action">
+                  <form
+                    hx-post="{{ '/config/sections/asns' | prefixed }}"
+                    hx-target="#section-pending-panel"
+                    hx-trigger="submit"
+                    hx-sync="this:replace"
+                    hx-disabled-elt="find button"
+                  >
+                    <input type="hidden" name="action" value="remove">
+                    <input type="hidden" name="asn" value="{{ asn }}">
+                    <button type="submit" class="danger">Supprimer</button>
+                  </form>
+                </td>
+              </tr>
+            {% endfor %}
+          {% else %}
+            <tr><td colspan="3" class="empty">Aucun AS nommé pour le moment.</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+      {{ bulk_action_bar('asns', value) }}
+      <form
+        class="config-form"
+        hx-post="{{ '/config/sections/asns' | prefixed }}"
+        hx-target="#section-pending-panel"
+        hx-trigger="submit"
+        hx-sync="this:replace"
+        hx-disabled-elt="find button"
+        hx-on::after-request="if(event.detail.successful) this.reset()"
+      >
+        <input type="hidden" name="action" value="add">
+        <label for="asns-asn">Numéro d'AS</label>
+        {# `max` aligné sur la borne appliquée par l'import CSV (dernier numéro
+           d'AS représentable sur 32 bits, RFC 6793). Sans lui, la saisie
+           unitaire acceptait une valeur qu'un import du MÊME numéro aurait
+           refusée : deux chemins vers la même donnée, deux règles différentes. #}
+        <input type="number" id="asns-asn" name="asn" min="1" max="4294967295"
+               placeholder="65001" required>
+        <label for="asns-name">Nom</label>
+        <input type="text" id="asns-name" name="name" placeholder="op-transit" required>
+        <button type="submit" class="primary">Ajouter</button>
+      </form>
+
+      {{ csv_panel('asns', 'numero;nom',
+                    '64501;ACME Corporation',
+                    "Remplacer entièrement la table de noms d'AS",
+                    "noms d'AS") }}
+
+    {% elif detail.key == 'saved_filters' %}
+      <table>
+        <thead><tr>{{ bulk_master_cell('saved_filters', value) }}<th>Description</th><th>Expression</th><th></th></tr></thead>
+        <tbody>
+          {% if value %}
+            {% for entry in value %}
+              <tr>
+                {{ bulk_row_cell('saved_filters', loop.index0, entry.description) }}
+                <td>{{ entry.description }}</td>
+                <td class="mono">{{ entry.content }}</td>
+                <td class="exporters-table__action">
+                  <form
+                    hx-post="{{ '/config/sections/saved_filters' | prefixed }}"
+                    hx-target="#section-pending-panel"
+                    hx-trigger="submit"
+                    hx-sync="this:replace"
+                    hx-disabled-elt="find button"
+                  >
+                    <input type="hidden" name="action" value="remove">
+                    <input type="hidden" name="index" value="{{ loop.index0 }}">
+                    <button type="submit" class="danger">Supprimer</button>
+                  </form>
+                </td>
+              </tr>
+            {% endfor %}
+          {% else %}
+            <tr><td colspan="3" class="empty">Aucun filtre enregistré pour le moment.</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+      {{ bulk_action_bar('saved_filters', value) }}
+      <p class="notice notice-info">
+        Ces filtres sont resynchronisés <strong>de façon destructive</strong> au
+        démarrage de la console : ce YAML est la seule source de vérité, c'est
+        donc bien ici — et uniquement ici — qu'il faut les éditer.
+      </p>
+
+      {# ================= COMPOSITEUR D'EXPRESSION « À LA PALO ALTO » =================
+
+         DÉFAUT CORRIGÉ : cette section rendait DEUX CHAMPS TEXTE NUS. Pour
+         enregistrer un filtre il fallait connaître par cœur la syntaxe
+         d'Akvorado ET le nom exact de ses 61 colonnes. Aucune aide, aucune
+         vérification : une faute de frappe ne se découvrait qu'en ouvrant la
+         console, une fois le filtre déjà enregistré.
+
+         LE GESTE EST RENVERSÉ : on part de ce qui EXISTE dans les derniers
+         flux. On cherche (« proxy-frontal », « 443 », « transit »), on clique un
+         champ, on clique une valeur RÉELLEMENT observée, et l'expression se
+         construit. Akvorado valide au fil de la frappe.
+
+         C'est htmx qui fait les requêtes, PAS le JS du compositeur : la
+         recherche est un `hx-get`, la validation un `hx-post`. Le fichier
+         `filter-composer.js` ne s'occupe QUE de l'insertion au curseur — une
+         responsabilité, un fichier.
+
+         LE COMPOSITEUR N'EST JAMAIS UN PASSAGE OBLIGÉ : le champ d'expression
+         est un `<textarea>` ordinaire dans le formulaire d'ajout ci-dessous.
+         ClickHouse en panne, console muette ou script non exécuté, la saisie
+         manuelle reste entière. #}
+      <div class="filter-composer" data-filter-composer>
+
+        <h3 class="filter-composer__title">Composer une expression</h3>
+        <p class="filter-composer__intro">
+          Cherchez un champ ou une valeur observée dans les derniers flux, puis
+          cliquez pour construire l'expression. Vous pouvez aussi la taper
+          directement.
+        </p>
+
+        {# ---- 1. Barre de recherche ----
+           `hx-trigger="input changed delay:300ms"` : la requête part au fil de
+           la frappe, mais seulement quand la valeur a CHANGÉ (`changed`) et
+           après 300 ms de calme (`delay`). Sans `changed`, chaque flèche du
+           clavier relancerait une requête identique ; sans `delay`, taper
+           « proxy-frontal » en produirait neuf.
+
+           `hx-get` et non `hx-post` : une recherche est une LECTURE. Elle doit
+           pouvoir être rejouée, mise en cache et partagée sans effet de bord.
+
+           Le `<label>` est enveloppé avec son champ dans un `.field` : dans la
+           grille `auto-fit` de `.config-form`, label et champ sont des cases
+           INDÉPENDANTES, et le retour à la ligne tombait au milieu d'une paire
+           (défaut signalé par capture le 2026-08-06). Ici la règle est la même
+           par cohérence, même hors `.config-form`. #}
+        <div class="filter-composer__search-row">
+          <div class="field">
+            <label for="composer-search">Rechercher un champ ou une valeur</label>
+            <input
+              type="search"
+              id="composer-search"
+              name="q"
+              class="filter-composer__search"
+              placeholder="proxy-frontal, 443, transit, FR…"
+              autocomplete="off"
+              hx-get="{{ '/config/filters/fields' | prefixed }}"
+              hx-trigger="input changed delay:300ms, load"
+              hx-target="#composer-fields"
+              hx-sync="this:replace"
+              hx-indicator="#composer-search-indicator"
+            >
+          </div>
+          {# `hx-indicator` cible cet élément : htmx lui pose la classe
+             `htmx-request` pendant la requête. Sans repère visible, une
+             recherche lente sur un gros échantillon donne l'impression que
+             la frappe n'a rien déclenché. #}
+          <span id="composer-search-indicator" class="filter-composer__indicator">
+            recherche…
+          </span>
+        </div>
+
+        {# ---- 2. Cartes de champs (rendues par le serveur) ----
+           `hx-trigger="… , load"` sur la barre ci-dessus remplit ce conteneur
+           au chargement de la page : sans le déclencheur `load`, l'écran
+           s'ouvrirait sur une zone vide et il faudrait deviner qu'il faut taper
+           quelque chose pour voir apparaître les champs.
+
+           Le contenu de repli ci-dessous n'est visible QUE si la requête n'a
+           jamais abouti (script absent, réseau coupé) : htmx le remplace dès
+           la première réponse. Il ne dit donc PAS « aucun champ » — ce qui
+           serait indistinguable d'un échantillon vide — mais bien « pas encore
+           chargé ». Ces deux états ne doivent jamais produire le même écran. #}
+        <div id="composer-fields" class="filter-composer__fields">
+          <p class="empty">Chargement des champs observés dans les derniers flux…</p>
+        </div>
+
+        {# ---- 3. Opérateurs ----
+           POURQUOI au-delà de l'égalité : un compositeur qui n'offre que `=` ne
+           compose rien. `!=` exclut, `AND`/`OR` combinent, `IN` évite d'écrire
+           dix `OR`, `NOT` inverse, et les parenthèses lèvent l'ambiguïté de
+           priorité entre `AND` et `OR` — la source d'erreur la plus courante
+           dans un filtre écrit à la main.
+
+           Ces boutons n'ont de sens QUE si le script tourne (ils insèrent dans
+           le champ). Ils sont donc rendus par le serveur puis MASQUÉS par le
+           CSS quand la marque `data-filter-composer-ready` est absente —
+           jamais posés masqués et révélés par le script, qui les rendrait
+           invisibles le seul jour où le script échoue. #}
+        <div class="filter-composer__operators">
+          <span class="filter-composer__operators-label">Opérateurs</span>
+          <button type="button" class="composer-operator" data-composer-operator="=">=</button>
+          <button type="button" class="composer-operator" data-composer-operator="!=">!=</button>
+          <button type="button" class="composer-operator" data-composer-operator="AND">AND</button>
+          <button type="button" class="composer-operator" data-composer-operator="OR">OR</button>
+          <button type="button" class="composer-operator" data-composer-operator="IN">IN</button>
+          <button type="button" class="composer-operator" data-composer-operator="NOT">NOT</button>
+          <button type="button" class="composer-operator" data-composer-operator="(">(</button>
+          <button type="button" class="composer-operator" data-composer-operator=")">)</button>
+          <button type="button" class="composer-clear" data-composer-clear>Vider</button>
+        </div>
+
+        {# ---- 4. Repli quand le script ne s'exécute pas ----
+           Masqué par le CSS dès que la marque est posée. Il ne s'affiche donc
+           que dans le cas réel où la composition au clic est inerte, et il dit
+           quoi faire à la place plutôt que de laisser cliquer sur des boutons
+           sans effet. #}
+        <p class="notice notice-warn filter-composer__no-js">
+          <strong>Composition au clic indisponible.</strong>
+          Le script n'a pas pu s'exécuter : les boutons ci-dessus resteront sans
+          effet. L'expression reste saisissable à la main dans le champ
+          ci-dessous, et l'enregistrement fonctionne normalement.
+        </p>
+      </div>
+
+      {# ================= SECTION D'AJOUT =================
+
+         CONTRAT SERVEUR INCHANGÉ : ce formulaire poste toujours `action=add`,
+         `description` et `content` vers `/config/sections/saved_filters`. Le
+         compositeur ci-dessus n'ajoute AUCUN champ à l'envoi — il ne fait
+         qu'écrire dans le `<textarea name="content">`. Le routeur n'a pas à
+         connaître l'existence du compositeur.
+
+         `config-form--stacked` et non la grille `auto-fit` : une expression de
+         filtre atteint facilement 120 caractères, et un champ d'une colonne de
+         grille la tronquerait à l'œil. Chaque paire label+champ est malgré tout
+         enveloppée dans un `.field`, par cohérence avec le reste des
+         formulaires du projet. #}
+      <form
+        class="config-form config-form--stacked filter-add-form"
+        hx-post="{{ '/config/sections/saved_filters' | prefixed }}"
+        hx-target="#section-pending-panel"
+        hx-trigger="submit"
+        hx-sync="this:replace"
+        hx-disabled-elt="find button"
+        hx-on::after-request="if(event.detail.successful) this.reset()"
+      >
+        <input type="hidden" name="action" value="add">
+
+        <div class="field">
+          <label for="filters-description">Description</label>
+          <input type="text" id="filters-description" name="description"
+                 placeholder="trafic web sortant" required>
+          <span class="config-form__hint">
+            Ce libellé est ce que vous verrez dans la console Akvorado — il doit
+            se comprendre seul, sans relire l'expression.
+          </span>
+        </div>
+
+        <div class="field">
+          <label for="filters-content">Expression</label>
+          {# Un `<textarea>` et non un `<input type="text">` : les filtres
+             composés dépassent souvent la largeur d'une ligne, et un champ
+             simple oblige à faire défiler horizontalement pour relire ce qu'on
+             s'apprête à enregistrer.
+
+             `data-composer-expression` est le seul point d'accroche du script.
+             Le champ reste un champ de formulaire ORDINAIRE : sans JS, on tape
+             dedans et on soumet, sans aucune perte de capacité. #}
+          <textarea
+            id="filters-content"
+            name="content"
+            class="filter-add-form__expression"
+            rows="3"
+            spellcheck="false"
+            placeholder="InIfBoundary = external AND DstPort = 443"
+            data-composer-expression
+            hx-post="{{ '/config/filters/validate' | prefixed }}"
+            hx-trigger="input changed delay:500ms from:#filters-content"
+            hx-target="#composer-verdict"
+            hx-sync="this:replace"
+          ></textarea>
+          <span class="config-form__hint">
+            Champ facultatif à la composition : vous pouvez tout taper à la
+            main. Une expression <strong>vide</strong> est un état légitime —
+            elle ne filtre rien et laisse passer tout le trafic.
+          </span>
+        </div>
+
+        {# ---- 5. Verdict de validation, affiché en permanence ----
+           Le verdict vient d'Akvorado lui-même, jamais d'une regex maison qui
+           divergerait de la version déployée. Le message d'erreur de la console
+           porte la POSITION exacte du caractère fautif (« at line 1, position
+           15 ») : il est rendu tel quel, jamais tronqué — c'est précisément ce
+           qui distingue un message utile d'un « filtre invalide » qui laisse
+           chercher.
+
+           Zone rendue AVANT toute frappe, avec son état de départ : une zone
+           qui n'apparaîtrait qu'après la première validation laisserait croire,
+           tant qu'elle est absente, que rien ne vérifie l'expression. #}
+        <div id="composer-verdict" class="filter-composer__verdict" aria-live="polite">
+          <p class="notice notice-info composer-verdict">
+            L'expression sera vérifiée par Akvorado au fil de la frappe.
+          </p>
+        </div>
+
+        <button type="submit" class="primary">Ajouter le filtre</button>
+      </form>
+
+      {{ csv_panel('saved_filters', 'description;expression',
+                    "WAN sortant;InIfBoundary = external",
+                    'Remplacer entièrement la liste de filtres',
+                    'filtres') }}
+
+    {% elif detail.key == 'metadata_providers' %}
+      {# ================= Découverte des interfaces (SNMP) =================
+
+         CE QUE CET ÉCRAN RÉSOUT : un flux NetFlow ne transporte que des INDEX
+         d'interface (ifIndex). Sans source de métadonnées, l'index 219 reste
+         « 219 » — et si l'équipement renumérote ses interfaces, l'index pointe
+         soudain vers autre chose. Défaut vécu le 2026-08-05 : les ifIndex
+         `tailscale0` de deux machines ont dérivé (219→409, 3→235) et 76 000
+         flux se sont classés `unknown`. Aucune erreur, aucune alerte — juste
+         des flux qui cessent d'être attribués.
+
+         POURQUOI L'ORDRE EST AFFICHÉ ET RÉORDONNABLE : Akvorado interroge les
+         fournisseurs dans l'ordre de la liste et s'arrête au PREMIER qui
+         accepte la requête. Seul `static` sait ignorer une requête et passer
+         la main. Donc `snmp` placé avant `static` neutralise le repli statique
+         — silencieusement. L'ordre n'est pas une préférence d'affichage, c'est
+         le comportement lui-même : il doit se voir et se corriger à la souris.
+
+         POURQUOI AUCUNE COMMUNAUTÉ N'EST RENDUE ICI : une communauté SNMPv2c
+         est un secret d'authentification. Le template n'affiche JAMAIS
+         `provider.credentials[...].communities` — il passe par
+         `mask_community`, qui rend `••••••` pour une valeur en clair et laisse
+         lisible une référence d'environnement (`${SNMP_COMMUNITY}`), laquelle
+         ne révèle rien. #}
+
+      <h3 class="providers-cascade__title">Ordre d'interrogation</h3>
+      <p class="config-form__hint">
+        Les fournisseurs sont interrogés <strong>de haut en bas</strong>.
+        Akvorado s'arrête au premier qui répond. Seul <code>static</code> sait
+        laisser passer une requête qu'il ne connaît pas : il doit donc rester
+        <strong>au-dessus</strong> de <code>snmp</code>, sinon la table écrite à
+        la main ne serait plus jamais consultée.
+      </p>
+
+      {% if cascade_warning %}
+        <p class="notice notice-warn">
+          <strong>Cascade dans le mauvais ordre</strong>
+          {{ cascade_warning }}
+        </p>
+      {% endif %}
+
+      <table>
+        <thead>
+          <tr>
+            <th>Rang</th>
+            <th>Fournisseur</th>
+            <th>Ce qu'il fait</th>
+            <th>Ordre</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% if value %}
+            {% for provider in value %}
+              <tr>
+                <td class="mono">{{ loop.index }}</td>
+                <td class="mono">{{ provider.type | default('?', true) }}</td>
+                <td>
+                  {% if provider.type == 'snmp' %}
+                    Interroge l'équipement en SNMP : c'est lui qui fait foi.
+                    Répond à <strong>toutes</strong> les requêtes — rien ne peut
+                    être interrogé après lui.
+                  {% elif provider.type == 'static' %}
+                    Table écrite à la main
+                    ({{ provider.exporters | default({}, true) | length }} exportateur(s)
+                    déclaré(s)). Laisse passer ce qu'il ne connaît pas.
+                  {% elif provider.type == 'gnmi' %}
+                    Interroge l'équipement en gNMI (abonnement, pas de scrutation).
+                  {% elif provider.type == 'bioris' %}
+                    Interroge une instance BIO-RIS.
+                  {% else %}
+                    Fournisseur non reconnu par cet écran.
+                  {% endif %}
+                </td>
+                <td class="providers-cascade__moves">
+                  {# Deux formulaires distincts plutôt qu'un formulaire à deux
+                     boutons : la valeur soumise doit dire QUELLE direction, et
+                     un `<button name=... value=...>` ne serait pas envoyé par
+                     tous les chemins de soumission htmx. Un champ caché par
+                     direction est le contrat le plus explicite. #}
+                  <form
+                    hx-post="{{ '/config/sections/metadata_providers' | prefixed }}"
+                    hx-target="#section-pending-panel"
+                    hx-trigger="submit"
+                    hx-sync="this:replace"
+                    hx-disabled-elt="find button"
+                  >
+                    <input type="hidden" name="action" value="move_up">
+                    <input type="hidden" name="index" value="{{ loop.index0 }}">
+                    <button type="submit" {% if loop.first %}disabled{% endif %}>Monter</button>
+                  </form>
+                  <form
+                    hx-post="{{ '/config/sections/metadata_providers' | prefixed }}"
+                    hx-target="#section-pending-panel"
+                    hx-trigger="submit"
+                    hx-sync="this:replace"
+                    hx-disabled-elt="find button"
+                  >
+                    <input type="hidden" name="action" value="move_down">
+                    <input type="hidden" name="index" value="{{ loop.index0 }}">
+                    <button type="submit" {% if loop.last %}disabled{% endif %}>Descendre</button>
+                  </form>
+                </td>
+              </tr>
+            {% endfor %}
+          {% else %}
+            <tr>
+              <td colspan="4" class="empty">
+                Aucun fournisseur déclaré : toutes les interfaces seraient inconnues
+                et les flux classés « unknown ».
+              </td>
+            </tr>
+          {% endif %}
+        </tbody>
+      </table>
+
+      <h3 class="providers-cascade__title">Découverte SNMP</h3>
+
+      {% if snmp_provider %}
+        <p class="notice notice-ok">
+          <strong>La découverte SNMP est active.</strong>
+          L'équipement fait foi : les noms d'interface suivent automatiquement
+          les renumérotations d'ifIndex, sans intervention.
+        </p>
+
+        {# Table des communautés. Le sous-réseau est affiché en clair (ce n'est
+           pas un secret) ; la communauté ne l'est JAMAIS — `mask_community`
+           rend `••••••` pour une valeur en clair, et laisse lisible une
+           référence `${VARIABLE}`, qui ne révèle rien et dit à l'opérateur
+           quelle variable d'environnement il doit fournir. #}
+        <table>
+          <thead>
+            <tr>
+              <th>Sous-réseau</th>
+              <th>Communauté</th>
+              <th>Mode</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% if snmp_credentials %}
+              {% for subnet, entry in snmp_credentials.items() %}
+                <tr>
+                  <td class="mono">{{ subnet }}</td>
+                  <td class="mono secret-cell">{{ entry.masked }}</td>
+                  <td>
+                    {% if entry.is_env_ref %}
+                      <span class="badge badge-healthy">Référence d'environnement</span>
+                    {% else %}
+                      <span class="badge badge-rejected">En clair dans le YAML</span>
+                    {% endif %}
+                  </td>
+                  <td class="exporters-table__action">
+                    {# `hx-confirm` est porté par le FORMULAIRE et non par le
+                       bouton : htmx remonte les ANCÊTRES depuis l'élément qui
+                       porte `hx-post`. Sur le bouton, il serait ignoré en
+                       silence et la suppression se ferait sans confirmation. #}
+                    <form
+                      hx-post="{{ '/config/sections/metadata_providers' | prefixed }}"
+                      hx-target="#section-pending-panel"
+                      hx-trigger="submit"
+                      hx-sync="this:replace"
+                      hx-disabled-elt="find button"
+                      hx-confirm="Retirer la communauté SNMP de {{ subnet }} ? Les exportateurs de ce sous-réseau ne seront plus interrogés."
+                    >
+                      <input type="hidden" name="action" value="remove_subnet">
+                      <input type="hidden" name="subnet" value="{{ subnet }}">
+                      <button type="submit" class="danger">Retirer</button>
+                    </form>
+                  </td>
+                </tr>
+              {% endfor %}
+            {% else %}
+              <tr>
+                <td colspan="4" class="empty">
+                  Aucun sous-réseau déclaré : SNMP est actif mais n'interrogera rien.
+                </td>
+              </tr>
+            {% endif %}
+          </tbody>
+        </table>
+
+        {% if snmp_cleartext_count %}
+          <p class="notice notice-warn">
+            <strong>{{ snmp_cleartext_count }} communauté(s) écrite(s) en clair dans
+            <code>outlet.yaml</code>.</strong>
+            Le fichier est versionné : la communauté part avec lui dans Git, les
+            sauvegardes et toute copie du dépôt. Le mode
+            <code>${NOM_DE_VARIABLE}</code> ci-dessous laisse la valeur hors du
+            fichier. C'est un avertissement, pas un refus — l'arbitrage vous
+            revient.
+          </p>
+        {% endif %}
+
+        <form
+          hx-post="{{ '/config/sections/metadata_providers' | prefixed }}"
+          hx-target="#section-pending-panel"
+          hx-trigger="submit"
+          hx-sync="this:replace"
+          hx-disabled-elt="find button"
+          hx-confirm="Désactiver la découverte SNMP ? Les interfaces ne seront plus résolues que par la table écrite à la main."
+        >
+          <input type="hidden" name="action" value="disable_snmp">
+          <button type="submit" class="danger">Désactiver la découverte SNMP</button>
+        </form>
+      {% else %}
+        <p class="notice notice-info">
+          <strong>La découverte SNMP n'est pas active.</strong>
+          Les interfaces ne sont résolues que par la table écrite à la main :
+          chaque ifIndex y est saisi manuellement, et une renumérotation côté
+          équipement fait basculer les flux concernés en « unknown » sans
+          aucune alerte.
+        </p>
+      {% endif %}
+
+      {# Formulaire unique pour activer ET régler : la même soumission
+         `enable_snmp` crée le fournisseur s'il n'existe pas, ou met à jour ses
+         réglages s'il existe. Deux formulaires distincts auraient laissé croire
+         qu'activer et régler sont deux gestes — alors qu'on active TOUJOURS
+         avec au moins une communauté, sans quoi SNMP n'interroge rien. #}
+      <form
+        class="config-form"
+        hx-post="{{ '/config/sections/metadata_providers' | prefixed }}"
+        hx-target="#section-pending-panel"
+        hx-trigger="submit"
+        hx-sync="this:replace"
+        hx-disabled-elt="find button"
+        hx-on::after-request="if(event.detail.successful) this.reset()"
+      >
+        <input type="hidden" name="action" value="enable_snmp">
+
+        {# Chaque label est emballé avec SON champ dans un `.field` — la grille
+           `.config-form` est en `auto-fit`, et des label/champ posés comme
+           cases indépendantes se font couper au milieu d'une paire selon la
+           largeur de la fenêtre (défaut vécu le 2026-08-06 sur `flow_inputs`). #}
+        <fieldset class="field field--group">
+          <legend>Communauté SNMPv2c</legend>
+
+          <div class="field">
+            <label for="snmp-subnet">Sous-réseau concerné</label>
+            <input type="text" id="snmp-subnet" name="subnet"
+                   placeholder="::/0" value="::/0">
+            <span class="config-form__hint">
+              <code>::/0</code> couvre tous les exportateurs. Un parc à plusieurs
+              sites déclare plutôt un sous-réseau par site, chacun avec sa
+              communauté — ajoutez-les l'un après l'autre.
+            </span>
+          </div>
+
+          <div class="field">
+            <label for="snmp-community">Communauté</label>
+            <input type="password" id="snmp-community" name="community"
+                   autocomplete="off" spellcheck="false"
+                   placeholder="${SNMP_COMMUNITY}">
+            <span class="config-form__hint">
+              <strong>Mode recommandé : <code>${SNMP_COMMUNITY}</code></strong> —
+              saisissez le nom d'une variable d'environnement entre
+              <code>${…}</code> plutôt que la communauté elle-même. La valeur
+              reste alors hors du fichier <code>outlet.yaml</code>, qui est
+              versionné. Une valeur en clair est acceptée, mais signalée.
+            </span>
+          </div>
+        </fieldset>
+
+        <fieldset class="field field--group">
+          <legend>Réglages (à ajuster si SNMP est lent)</legend>
+          <div class="field__pair">
+            <div class="field field--narrow">
+              <label for="snmp-workers">Workers</label>
+              <input type="number" id="snmp-workers" name="workers"
+                     min="1" max="1000" placeholder="10">
+            </div>
+            <div class="field field--narrow">
+              <label for="snmp-retries">Tentatives</label>
+              <input type="number" id="snmp-retries" name="poller_retries"
+                     min="1" max="10" placeholder="1">
+            </div>
+            <div class="field field--narrow">
+              <label for="snmp-timeout">Délai d'attente</label>
+              <input type="text" id="snmp-timeout" name="poller_timeout"
+                     placeholder="1s">
+            </div>
+          </div>
+          <span class="config-form__hint">
+            Le délai s'écrit avec son unité (<code>1s</code>, <code>500ms</code>,
+            <code>2m</code>). Un nombre nu serait lu comme des
+            <strong>nanosecondes</strong> : le délai expirerait avant toute
+            réponse, et SNMP ne remonterait plus rien. Champs laissés vides =
+            valeurs par défaut d'Akvorado.
+          </span>
+        </fieldset>
+
+        <button type="submit" class="primary">
+          {% if snmp_provider %}Mettre à jour la découverte SNMP{% else %}Activer la découverte SNMP{% endif %}
+        </button>
+      </form>
+
+    {% elif detail.key == 'flow_inputs' %}
+      <table>
+        <thead><tr><th>Type</th><th>Décodeur</th><th>Écoute</th><th></th></tr></thead>
+        <tbody>
+          {% if value %}
+            {% for entry in value %}
+              <tr>
+                <td>{{ entry.type }}</td>
+                <td>{{ entry.decoder }}</td>
+                <td class="mono">{{ entry.listen }}</td>
+                <td class="exporters-table__action">
+                  <form
+                    hx-post="{{ '/config/sections/flow_inputs' | prefixed }}"
+                    hx-target="#section-pending-panel"
+                    hx-trigger="submit"
+                    hx-sync="this:replace"
+                    hx-disabled-elt="find button"
+                  >
+                    <input type="hidden" name="action" value="remove">
+                    <input type="hidden" name="index" value="{{ loop.index0 }}">
+                    <button type="submit" class="danger">Supprimer</button>
+                  </form>
+                </td>
+              </tr>
+            {% endfor %}
+          {% else %}
+            <tr><td colspan="4" class="empty">Aucun port d'écoute déclaré pour le moment.</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+      <form
+        class="config-form"
+        hx-post="{{ '/config/sections/flow_inputs' | prefixed }}"
+        hx-target="#section-pending-panel"
+        hx-trigger="submit"
+        hx-sync="this:replace"
+        hx-disabled-elt="find button"
+        hx-on::after-request="if(event.detail.successful) this.reset()"
+      >
+        {# DÉFAUT VÉCU (2026-08-06, capture à l'appui) : chaque label et chaque
+           champ étaient des enfants DIRECTS de la grille `.config-form`, donc
+           des cases INDÉPENDANTES posées les unes après les autres. La grille
+           étant en `auto-fit`, le nombre de colonnes dépend de la largeur de la
+           fenêtre : avec 8 cases pour 3 colonnes, le retour à la ligne tombait
+           AU MILIEU d'une paire. Résultat visible : « Port » seul en fin de
+           ligne, son champ `2055` reporté à la ligne suivante, et chaque label
+           collé optiquement au champ SUIVANT plutôt qu'au sien.
+
+           Le correctif est structurel, pas cosmétique : chaque label est
+           désormais emballé avec SON champ dans un `.field`, qui devient
+           l'unique case de grille. Une paire ne peut plus être coupée, quelle
+           que soit la largeur. #}
+        <input type="hidden" name="action" value="add">
+
+        <div class="field">
+          <label for="inputs-type">Type</label>
+          <input type="text" id="inputs-type" name="type" placeholder="netflow" required>
+        </div>
+
+        <div class="field">
+          <label for="inputs-decoder">Décodeur</label>
+          <select id="inputs-decoder" name="decoder" required>
+            <option value="netflow">netflow</option>
+            <option value="sflow">sflow</option>
+          </select>
+        </div>
+
+        {# `host` et `port` sont réunis dans un même groupe parce qu'ils ne font
+           qu'UNE valeur dans le YAML d'Akvorado : `listen: 0.0.0.0:2055`. Les
+           laisser côte à côte sans lien visuel laissait croire à deux réglages
+           indépendants — alors que le tableau au-dessus les affiche déjà
+           fusionnés dans la colonne « Écoute ». #}
+        <fieldset class="field field--group">
+          <legend>Adresse d'écoute</legend>
+          <div class="field__pair">
+            <div class="field">
+              <label for="inputs-host">Adresse</label>
+              <input type="text" id="inputs-host" name="host" placeholder="0.0.0.0" value="0.0.0.0">
+            </div>
+            <div class="field field--narrow">
+              <label for="inputs-port">Port</label>
+              <input type="number" id="inputs-port" name="port" min="1" max="65535" placeholder="2055" required>
+            </div>
+          </div>
+        </fieldset>
+
+        <button type="submit" class="primary">Ajouter</button>
+      </form>
+
+    {% else %}
+      <p class="empty">
+        Aucun éditeur visuel disponible pour cette section pour le moment.
+        Valeur brute actuelle :
+      </p>
+      <pre class="mono">{{ value }}</pre>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  {# Chargé depuis un FICHIER STATIQUE, jamais en `<script>` inline : la CSP du
+     service est `script-src 'self'` et bloquerait un bloc inline sans que
+     l'application s'en aperçoive (page affichée, cases présentes, aucune
+     réaction au clic). `?v={{ static_version }}` reprend le motif de
+     base.html : sans cette empreinte, le navigateur reconduit sa copie en
+     cache après déploiement et sert un JS antérieur.
+
+     `defer` et non un placement en fin de body seul : le script s'exécute
+     après l'analyse du document, donc après les tableaux qu'il inspecte au
+     chargement, sans dépendre de l'ordre des blocs Jinja.
+
+     Chargé ici plutôt que dans base.html : la sélection de masse n'existe que
+     sur cet écran, et base.html est hors du périmètre de ce lot. #}
+  <script src="{{ '/static/bulk-select.js?v=' | prefixed }}{{ static_version }}" defer></script>
+  {# Report de l'empreinte de fraîcheur dans le champ caché. Fichier séparé de
+     bulk-select.js : deux responsabilités distinctes, et la sonde vit sur
+     toutes les sections alors que la sélection de masse n'en concerne que
+     cinq. #}
+  <script src="{{ '/static/freshness.js?v=' | prefixed }}{{ static_version }}" defer></script>
+  {# Composeur d'étiquettes de `visualize_defaults`. Fichier séparé pour la même
+     raison que les deux précédents : une responsabilité par fichier, et celle-ci
+     ne concerne qu'UNE section. Même contrainte CSP (`script-src 'self'`) :
+     aucun `<script>` inline, aucun `onclick=` — tout passe par délégation
+     d'événements sur `document`, comme bulk-select.js. #}
+  <script src="{{ '/static/field-composer.js?v=' | prefixed }}{{ static_version }}" defer></script>
+  {# Compositeur d'expressions de filtre (section `saved_filters`). Fichier
+     distinct de `field-composer.js`, qui compose les ÉTIQUETTES de
+     `visualize_defaults` : deux sections différentes, deux responsabilités,
+     deux fichiers. Mêmes contraintes que les précédents — chargé par une vraie
+     balise `<script src>` (une mention en commentaire ne charge rien, piège
+     vécu), `?v=` contre le cache après déploiement, `defer` pour s'exécuter
+     après l'analyse du document, et aucun `onclick=` nulle part : la CSP
+     `script-src 'self'` les bloquerait en silence. #}
+  <script src="{{ '/static/filter-composer.js?v=' | prefixed }}{{ static_version }}" defer></script>
+</section>
+{% endblock %}

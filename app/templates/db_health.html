@@ -1,0 +1,463 @@
+{% extends "base.html" %}
+
+{% block title %}Santé DB{% endblock %}
+
+{% block content %}
+<div id="db-health-page"
+     hx-get="{{ '/db-health' | prefixed }}"
+     hx-select="#db-health-page"
+     hx-target="#db-health-page"
+     hx-swap="outerHTML"
+     hx-trigger="every 60s">
+<h1>Santé de la base ClickHouse</h1>
+<p class="lede">
+  Surveille les indicateurs qui annoncent un ralentissement ou un refus d'écriture
+  <strong>avant</strong> qu'il n'arrive — jamais un redémarrage automatique. Si l'état est
+  critique, cet écran alerte ; c'est à l'exploitant de décider d'une action.
+</p>
+
+<section class="overall-state panel">
+  <h2>État global</h2>
+  {% if snapshot.overall_state.value == 'unavailable' %}
+    <p class="notice notice-warn">
+      <strong>Indisponible</strong> — la lecture de l'état de santé a échoué :
+      {{ snapshot.error_message or "aucun détail disponible" }}.
+      Ceci n'est PAS un état sain, c'est une absence de mesure.
+    </p>
+  {% else %}
+    <span class="badge badge-{{ snapshot.overall_state.value }}">{{ snapshot.overall_state.label }}</span>
+    <p class="hint">Dernière vérification : {{ snapshot.checked_at }}</p>
+  {% endif %}
+</section>
+
+<section class="db-health-indicators panel">
+  <h2>Indicateurs</h2>
+  <p class="hint">
+    Chaque indicateur porte l'état ET le seuil qui l'a décidé — jamais un nombre nu.
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>Indicateur</th>
+        <th>État</th>
+        <th>Valeur</th>
+        <th>Seuil</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for indicator in snapshot.indicators %}
+      <tr>
+        <td>{{ indicator.label }}</td>
+        <td><span class="badge badge-{{ indicator.state.value }}">{{ indicator.state.label }}</span></td>
+        <td class="mono">{{ indicator.value_label }}</td>
+        <td class="hint">{{ indicator.threshold_label or "—" }}{% if indicator.detail %} ({{ indicator.detail }}){% endif %}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4">Aucun indicateur disponible.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="db-health-parts panel">
+  <h2>Parts actives par table</h2>
+  <p class="hint">
+    Seuils <code>parts_to_delay_insert</code> (ralentissement forcé) et
+    <code>parts_to_throw_insert</code> (refus d'écriture) lus en direct depuis
+    <code>system.merge_tree_settings</code> — jamais codés en dur, ils sont réglables.
+    ⚠️ Ces deux seuils s'appliquent au nombre de parts actives d'<strong>UNE SEULE
+    PARTITION</strong>, jamais au total de la table — c'est pourquoi la colonne
+    « Parts actives (décisionnel) » ci-dessous montre le <strong>maximum observé dans
+    une partition</strong>, la seule valeur comparée au seuil. Le total toutes
+    partitions confondues est affiché séparément, à titre d'information seulement.
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>Table</th>
+        <th>Parts actives (décisionnel — max/partition)</th>
+        <th>Partitions actives</th>
+        <th>Total toutes partitions (info)</th>
+        <th>Seuil ralentissement (par partition)</th>
+        <th>Seuil refus (par partition)</th>
+        <th>État</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in snapshot.parts_by_table %}
+      <tr>
+        <td><code>{{ p.table }}</code></td>
+        <td class="num">{{ p.max_active_parts_in_partition }}</td>
+        <td class="num">{{ p.partition_count }}</td>
+        <td class="num hint">{{ p.total_active_parts }}</td>
+        <td class="num">{{ p.parts_to_delay_insert }}</td>
+        <td class="num">{{ p.parts_to_throw_insert }}</td>
+        <td><span class="badge badge-{{ p.state.value }}">{{ p.state.label }}</span></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7">Aucune donnée sur les parts actives.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+{% if snapshot.merge_backlog %}
+<section class="db-health-merge panel">
+  <h2>Fusions en retard — signal d'alerte n°1</h2>
+  <p class="hint">
+    Si l'écart entre parts créées et parts fusionnées se creuse, ClickHouse accumule des
+    parts plus vite qu'il ne les absorbe : c'est le prodrome d'un refus d'écriture, pas
+    sa conséquence.
+  </p>
+  <div class="stat-row">
+    <div class="stat">
+      <div class="stat-label">Parts créées ({{ snapshot.merge_backlog.window_label }})</div>
+      <div class="stat-value mono">{{ snapshot.merge_backlog.parts_created }}</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Parts fusionnées ({{ snapshot.merge_backlog.window_label }})</div>
+      <div class="stat-value mono">{{ snapshot.merge_backlog.parts_merged }}</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Écart</div>
+      <div class="stat-value mono {{ 'crit' if snapshot.merge_backlog.state.value == 'critical' else ('warn' if snapshot.merge_backlog.state.value == 'warning' else 'ok') }}">
+        {{ '%+d'|format(snapshot.merge_backlog.backlog) }}
+      </div>
+    </div>
+  </div>
+</section>
+{% endif %}
+
+{% if snapshot.detached_parts %}
+<section class="db-health-detached-detail panel">
+  <h2>Parts détachées — détail par table et raison</h2>
+  <p class="hint">
+    Le compte annoncé ci-dessus (« Parts détachées », {{ snapshot.detached_parts.count }} au
+    total) couvre les tables de flux <strong>ET</strong> les tables système ClickHouse —
+    toutes purgeables depuis cet écran (section « Actions de maintien » plus bas). La RAISON
+    et la TAILLE décident : une part <code>broken-on-start</code> à 0 octet se purge sans
+    réfléchir, une part volumineuse mérite examen avant suppression.
+  </p>
+  {% if snapshot.detached_parts.by_group %}
+  <table>
+    <thead>
+      <tr><th>Base</th><th>Table</th><th>Raison</th><th>Parts</th><th>Taille</th></tr>
+    </thead>
+    <tbody>
+      {% for g in snapshot.detached_parts.by_group %}
+      <tr>
+        <td><code>{{ g.database }}</code></td>
+        <td><code>{{ g.table }}</code></td>
+        <td>{{ g.reason }}</td>
+        <td class="num">{{ g.count }}</td>
+        <td class="num mono">{{ g.bytes_on_disk | humanize_bytes }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="notice notice-ok">Aucune part détachée — rien à détailler.</p>
+  {% endif %}
+</section>
+{% endif %}
+
+<section class="db-health-errors panel">
+  <h2>Erreurs cumulées</h2>
+  <p class="hint">
+    Compteurs <code>system.errors</code> pour les codes qui correspondent au mécanisme de
+    crash décrit (accumulation de parts, mémoire, requêtes bloquées) — cumul depuis le
+    démarrage du serveur, pas une fenêtre glissante.
+  </p>
+  {% if snapshot.errors %}
+  <table>
+    <thead><tr><th>Code</th><th>Compteur</th><th>Dernière occurrence</th></tr></thead>
+    <tbody>
+      {% for e in snapshot.errors %}
+      <tr>
+        <td><code>{{ e.name }}</code></td>
+        <td class="num">{{ e.value }}</td>
+        <td>{{ e.last_error_time or "—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="notice notice-ok">Aucune erreur TOO_MANY_PARTS / mémoire / timeout recensée.</p>
+  {% endif %}
+</section>
+
+<section class="db-health-mutations panel">
+  <h2>Mutations bloquées</h2>
+  {% if snapshot.stuck_mutations %}
+  <table>
+    <thead><tr><th>Table</th><th>Commande</th><th>Créée le</th><th>Motif d'échec</th></tr></thead>
+    <tbody>
+      {% for m in snapshot.stuck_mutations %}
+      <tr>
+        <td><code>{{ m.table }}</code></td>
+        <td class="mono">{{ m.command }}</td>
+        <td>{{ m.create_time }}</td>
+        <td>{{ m.latest_fail_reason }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="notice notice-ok">Aucune mutation bloquée.</p>
+  {% endif %}
+</section>
+
+<section class="db-health-memory panel">
+  <h2>Mémoire</h2>
+  {% if snapshot.memory %}
+  <div class="stat-row">
+    <div class="stat">
+      <div class="stat-label">Utilisation</div>
+      <div class="stat-value mono {{ 'crit' if snapshot.memory.state.value == 'critical' else ('warn' if snapshot.memory.state.value == 'warning' else 'ok') }}">
+        {{ '%.0f'|format(snapshot.memory.pct_used) }}%
+      </div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Résidente / Plafond retenu</div>
+      <div class="stat-value mono">{{ snapshot.memory.resident_bytes | humanize_bytes }} / {{ snapshot.memory.limit_bytes | humanize_bytes }}</div>
+    </div>
+  </div>
+
+  <p class="hint">
+    Seuils {{ '%.0f'|format(75.0) }}% (avertissement) / {{ '%.0f'|format(90.0) }}% (critique) —
+    appliqués au plafond qui <strong>MORD EN PREMIER</strong>, pas systématiquement la même
+    source d'une installation à l'autre : ClickHouse REFUSE les requêtes
+    (<code>MEMORY_LIMIT_EXCEEDED</code>) dès que sa propre limite interne est atteinte, ce qui
+    peut survenir <strong>avant</strong> que le conteneur ne soit tué par OOM si sa limite
+    Docker est plus haute.
+  </p>
+
+  <table>
+    <thead>
+      <tr><th>Plafond</th><th>Valeur</th><th>Origine</th><th>Conséquence si atteint</th></tr>
+    </thead>
+    <tbody>
+      <tr class="{{ 'db-health-memory-limit-active' if snapshot.memory.limit_source in ('clickhouse', 'clickhouse_computed') else '' }}">
+        <td>Limite ClickHouse (<code>max_server_memory_usage</code>)</td>
+        <td class="num mono">
+          {% if snapshot.memory.clickhouse_limit_bytes is not none %}
+            {{ snapshot.memory.clickhouse_limit_bytes | humanize_bytes }}
+            {% if snapshot.memory.clickhouse_limit_is_computed %}<span class="hint">(calculée via le ratio RAM, réglage explicite = 0)</span>{% endif %}
+          {% else %}
+            <span class="notice notice-warn">indéterminée</span>
+          {% endif %}
+        </td>
+        <td class="hint">
+          {% if snapshot.memory.clickhouse_limit_bytes is not none %}
+            lue en direct depuis <code>system.server_settings</code>{% if snapshot.memory.clickhouse_limit_is_computed %} + <code>system.asynchronous_metrics</code> (<code>OSMemoryTotal</code>){% endif %}
+          {% else %}
+            {{ snapshot.memory.clickhouse_limit_unavailable_reason or "lecture impossible" }}
+          {% endif %}
+        </td>
+        <td class="hint">refus d'écriture (<code>MEMORY_LIMIT_EXCEEDED</code>), ClickHouse reste vivant</td>
+      </tr>
+      <tr class="{{ 'db-health-memory-limit-active' if snapshot.memory.limit_source == 'config' else '' }}">
+        <td>Limite de configuration (conteneur)</td>
+        <td class="num mono">{{ snapshot.memory.configured_limit_bytes | humanize_bytes }}</td>
+        <td class="hint"><code>OKVORADO_DB_HEALTH_MEMORY_LIMIT_BYTES</code> — repli déclaratif, PAS mesuré depuis ClickHouse ni depuis Docker</td>
+        <td class="hint">si c'est la limite Docker réelle du conteneur : OOM kill, ClickHouse redémarre</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p class="notice {{ 'notice-warn' if snapshot.memory.limit_source == 'config' and snapshot.memory.clickhouse_limit_unavailable_reason else 'notice-ok' }}">
+    {% if snapshot.memory.limit_source == 'clickhouse' %}
+      Le plafond retenu pour le pourcentage ci-dessus est la <strong>limite ClickHouse</strong>
+      ({{ snapshot.memory.clickhouse_limit_bytes | humanize_bytes }}) — c'est elle qui mord en
+      premier ici.
+    {% elif snapshot.memory.limit_source == 'clickhouse_computed' %}
+      Le plafond retenu est la limite ClickHouse <strong>calculée</strong>
+      ({{ snapshot.memory.clickhouse_limit_bytes | humanize_bytes }}, réglage explicite absent) —
+      c'est elle qui mord en premier ici.
+    {% elif snapshot.memory.clickhouse_limit_unavailable_reason %}
+      ⚠️ La limite ClickHouse est <strong>indéterminée</strong> ({{ snapshot.memory.clickhouse_limit_unavailable_reason }}) —
+      le pourcentage ci-dessus retombe sur la limite de configuration
+      ({{ snapshot.memory.configured_limit_bytes | humanize_bytes }}), un repli déclaratif,
+      <strong>pas une mesure</strong>.
+    {% else %}
+      Le plafond retenu est la <strong>limite de configuration</strong>
+      ({{ snapshot.memory.configured_limit_bytes | humanize_bytes }}), inférieure à la limite
+      ClickHouse ({{ snapshot.memory.clickhouse_limit_bytes | humanize_bytes if snapshot.memory.clickhouse_limit_bytes is not none else "—" }}) —
+      c'est elle qui mord en premier sur ce déploiement.
+    {% endif %}
+  </p>
+  {% else %}
+  <p class="notice notice-warn">Mémoire indisponible.</p>
+  {% endif %}
+</section>
+
+<section class="db-health-replication panel">
+  <h2>Réplication</h2>
+  <p class="hint">
+    {% if snapshot.replication_active %}
+      Réplication active — <code>system.replicas</code> contient des entrées.
+    {% else %}
+      Aucune réplication configurée (nœud ClickHouse unique) — <code>system.replicas</code>
+      existe mais est vide, ce n'est pas une erreur.
+    {% endif %}
+  </p>
+</section>
+
+<section class="db-health-actions panel" hx-select="unset">
+  {# DÉFAUT MESURÉ (2026-08-09) : AUCUN bouton HTMX de cette section ne
+     fonctionnait — requête 200, fragment HTML/JSON correct, zéro erreur
+     console, mais rien ne s'inséra jamais dans la page. Cause exacte,
+     confirmée en tracant DOMParser.parseFromString et Node.insertBefore
+     pendant un clic reel (aucun n'était appelé) : le conteneur racine de la
+     page (`#db-health-page`, tout en haut de ce template) porte
+     `hx-select="#db-health-page"` pour son AUTO-RAFRAICHISSEMENT périodique
+     (`hx-trigger="every 60s"`) — car `/db-health` répond avec la page
+     ENTIÈRE et il faut en extraire seulement `#db-health-page`.
+     `hx-select` est un attribut HÉRITÉ par htmx (comme hx-target/hx-swap) :
+     chaque bouton/formulaire de cette section, N'AYANT PAS SON PROPRE
+     hx-select, héritait donc silencieusement de `#db-health-page`. Or leurs
+     réponses sont de PETITS FRAGMENTS (un `<p>`, un extrait JSON) qui ne
+     contiennent jamais cet id — `n.querySelectorAll(o.select)` (htmx.min.js,
+     fonction $e) trouvait 0 élément, remplaçait le fragment à insérer par un
+     DocumentFragment VIDE, et la boucle d'insertion DOM (fonction `a`) ne
+     s'exécutait jamais. Tout le reste du cycle d'événements htmx
+     (beforeRequest/beforeSwap/afterSwap/afterSettle) se déroulait
+     normalement car `shouldSwap` restait `true` — d'où l'apparence d'un
+     succès silencieux.
+     `hx-select="unset"` (syntaxe officielle htmx : re() dans htmx.min.js
+     retourne undefined si la valeur portée vaut exactement "unset") coupe
+     cet héritage pour tous les descendants de cette section — les formulaires
+     gardent leurs propres hx-target/hx-swap explicites, qui n'étaient jamais
+     en cause. #}
+  <h2>Actions de maintien</h2>
+  <p class="notice notice-warn">
+    ⚠️ <strong>Aucun redémarrage de ClickHouse n'est possible depuis cet écran.</strong>
+    Les deux gestes ci-dessous sont sûrs et réversibles au sens où ils ne suppriment aucune
+    donnée de flux — mais <code>OPTIMIZE ... FINAL</code> reste coûteux en I/O.
+    Chaque action annonce ce qu'elle va faire avant de l'exécuter.
+  </p>
+
+  <div class="db-health-action-block">
+    <h3>Forcer la fusion des parts (OPTIMIZE)</h3>
+    <form
+      id="optimize-preview-form"
+      hx-post="{{ '/api/db-health/optimize/preview' | prefixed }}"
+      hx-target="#optimize-preview-result"
+      hx-swap="innerHTML"
+      hx-ext="json-enc"
+    >
+      <label for="optimize_table">Table</label>
+      <select id="optimize_table" name="table">
+        {% for t in monitored_tables %}
+        <option value="{{ t }}">{{ t }}</option>
+        {% endfor %}
+      </select>
+      <label for="optimize_final">
+        <input type="checkbox" id="optimize_final" name="final" value="true">
+        FINAL (fusion complète — plus coûteuse)
+      </label>
+      <button type="submit">Prévisualiser</button>
+    </form>
+    <div id="optimize-preview-result" aria-live="polite"></div>
+
+    <form
+      hx-post="{{ '/api/db-health/optimize/execute' | prefixed }}"
+      hx-target="#optimize-execute-result"
+      hx-swap="innerHTML"
+      hx-ext="json-enc"
+      hx-confirm="Exécuter OPTIMIZE TABLE ? Ce geste est coûteux en I/O disque et peut saturer temporairement l'espace disque. Relisez la prévisualisation ci-dessus avant de confirmer."
+      class="db-health-optimize-execute-form"
+    >
+      <label for="optimize_exec_table">Table</label>
+      <select id="optimize_exec_table" name="table">
+        {% for t in monitored_tables %}
+        <option value="{{ t }}">{{ t }}</option>
+        {% endfor %}
+      </select>
+      <label for="optimize_exec_final">
+        <input type="checkbox" id="optimize_exec_final" name="final" value="true">
+        FINAL (fusion complète — plus coûteuse)
+      </label>
+      <button type="submit" class="danger">Exécuter OPTIMIZE</button>
+    </form>
+    <div id="optimize-execute-result" aria-live="polite"></div>
+  </div>
+
+  <div class="db-health-action-block">
+    <h3>Purger les parts détachées</h3>
+    <p class="hint">
+      Les parts détachées occupent du disque sans servir aux requêtes (ni aux flux, ni
+      aux agrégats). Le compte affiché plus haut (« Parts détachées ») couvre les tables
+      de flux <strong>ET</strong> les tables système ClickHouse (<code>query_log</code>,
+      <code>part_log</code>, <code>trace_log</code>, ...) qui peuvent elles aussi accumuler
+      des fragments <code>broken-on-start</code> après un redémarrage brutal. Prévisualisez
+      d'abord pour voir la RAISON et la TAILLE de chaque groupe — une part
+      <code>broken-on-start</code> à 0 octet se purge sans réfléchir, une part volumineuse
+      mérite examen avant suppression.
+    </p>
+    <button
+      type="button"
+      hx-get="{{ '/api/db-health/detached-parts/preview-all' | prefixed }}"
+      hx-target="#detached-preview-all-result"
+      hx-swap="innerHTML"
+    >Prévisualiser tout (flux + tables système)</button>
+    <div id="detached-preview-all-result" aria-live="polite"></div>
+
+    <details class="db-health-advanced">
+      <summary>Purger une seule table de flux (avancé)</summary>
+      <p class="hint">
+        Réservé aux tables de flux (<code>{{ monitored_tables | join(', ') }}</code>) — pour
+        les tables système, utilisez « Prévisualiser tout » ci-dessus.
+      </p>
+      <button
+        type="button"
+        hx-get="{{ '/api/db-health/detached-parts/preview' | prefixed }}"
+        hx-target="#detached-preview-result"
+        hx-swap="innerHTML"
+      >Prévisualiser (flux uniquement)</button>
+      <div id="detached-preview-result" aria-live="polite"></div>
+
+      <form
+        hx-post="{{ '/api/db-health/detached-parts/execute' | prefixed }}"
+        hx-target="#detached-execute-result"
+        hx-swap="innerHTML"
+        hx-ext="json-enc"
+        hx-confirm="Purger les parts détachées de cette table ? Supprime définitivement les parts détachées (elles n'occupaient que du disque, aucune donnée de flux active n'est affectée)."
+      >
+        <label for="detached_table">Table</label>
+        <select id="detached_table" name="table">
+          {% for t in monitored_tables %}
+          <option value="{{ t }}">{{ t }}</option>
+          {% endfor %}
+        </select>
+        <button type="submit" class="danger">Purger les parts détachées</button>
+      </form>
+      <div id="detached-execute-result" aria-live="polite"></div>
+    </details>
+  </div>
+</section>
+
+<section class="db-health-history panel">
+  <h2>Historique récent</h2>
+  <p class="hint">
+    Alimenté par la routine périodique (toutes les {{ (300) }} secondes par défaut) —
+    permet de voir une dérive s'installer plutôt qu'un seul point de mesure.
+  </p>
+  {% if history %}
+  <table>
+    <thead><tr><th>Vérifié le</th><th>État global</th></tr></thead>
+    <tbody>
+      {% for point in history[:20] %}
+      <tr>
+        <td>{{ point.checked_at }}</td>
+        <td><span class="badge badge-{{ point.overall_state }}">{{ point.overall_state }}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="hint">Aucun historique pour le moment — la routine périodique n'a pas encore tourné.</p>
+  {% endif %}
+</section>
+</div>
+{% endblock %}
