@@ -473,18 +473,23 @@ class TestDashboardsEnAvanceDePhase:
     ) -> None:
         """Contrôle sur les fichiers RÉELS du dépôt, pas sur des doubles.
 
-        Sentinelle de l'argument commercial : sur le VRAI schéma de production,
-        la majorité du potentiel doit rester visiblement inexploitée. Un
-        dashboard qui viserait des champs sans les alimenter ne doit jamais
-        faire baisser ce ratio.
+        Sentinelle de l'argument commercial, RÉAJUSTÉE le 2026-08-08 (lot
+        « segmentation réseau ») : le constat qui a déclenché ce lot était
+        l'INVERSE de celui qui a fixé le seuil précédent — « des champs
+        remplis mais exploités par aucun dashboard affaiblissent l'argument
+        commercial » (CLAUDE.md racine, section restitution). Exploiter
+        SrcNetName/DstNetName/SrcNetRole/DstNetRole/SrcNetTenant/DstNetTenant/
+        SrcNetPrefix/DstNetPrefix (8 champs, ~18 avec le lot parc/exportateur
+        en parallèle) fait donc BAISSER unused_percent par construction — ce
+        n'est pas une régression de ce garde-fou, c'est son but. Le
+        MÉCANISME générique (avance de phase ne gonfle jamais le compte,
+        cf. reste de la classe) continue de mordre : seul le SEUIL numérique,
+        qui reflétait l'état d'AVANT ce lot, est réajusté à la baisse.
 
-        ÉTAT VERROUILLÉ ICI (mesuré le 2026-08-11, après le retrait des trois
-        dashboards « [Équipement réseau] ») : plus aucun fichier du dépôt ne
-        porte le préfixe d'avance de phase, donc `prepared_count` vaut 0 — ce
-        qui est une MESURE, pas une indisponibilité (celle-ci rendrait `None`).
-        C'est cette distinction que l'assertion ci-dessous vérifie, sans figer
-        un compte de champs « prêts » qui redeviendra non nul au prochain
-        dashboard livré en avance de phase."""
+        ÉTAT VERROUILLÉ ICI (mesuré le 2026-08-08, après le lot segmentation
+        réseau) : 39 % de potentiel encore inexploité sur le VRAI schéma
+        (38/62 champs exploités). `prepared_count` reste à 0 (mesuré, jamais
+        None) tant qu'aucun dashboard en avance de phase n'est livré."""
         reels = Path(__file__).resolve().parent.parent / "stack" / "grafana" / "dashboards"
         if not reels.is_dir():  # pragma: no cover - dépôt sans le stack
             pytest.skip("dossier des dashboards absent")
@@ -503,8 +508,10 @@ class TestDashboardsEnAvanceDePhase:
         catalog = build_catalog(client, reels)
 
         assert catalog.unused_percent is not None
-        # Sans la distinction exploité / prêt, ce ratio tombait à 32 %.
-        assert catalog.unused_percent >= 60
+        # Réajusté par le lot segmentation réseau (2026-08-08) : 60 -> 30.
+        # Sous 30 % dirait que la quasi-totalité du catalogue est exploitée,
+        # ce qui n'est mesuré ni vrai — 39 % est la mesure réelle post-lot.
+        assert catalog.unused_percent >= 30
         # Le compte des « prêts » est MESURÉ (un entier), jamais None : les
         # dashboards ont bien été lus. Il vaut 0 depuis le retrait des écrans
         # en avance de phase — un zéro qui a été mesuré, et que l'écran ne

@@ -64,6 +64,66 @@
         "multi": true,
         "includeAll": true,
         "sort": 1
+      },
+      {
+        "name": "sens_flux",
+        "type": "query",
+        "label": "Sens du flux (FlowDirection)",
+        "description": "Peuplée dynamiquement depuis les flux de l'exportateur $exporter (100% de remplissage). Sert au drill-down du donut 'Répartition par sens du flux' sur ce même écran.",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "ClickHouse"
+        },
+        "query": "SELECT DISTINCT FlowDirection FROM flows WHERE $__timeFilter(TimeReceived) AND ExporterName = '$exporter' AND FlowDirection != '' ORDER BY FlowDirection",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "sort": 1
+      },
+      {
+        "name": "src_addr",
+        "type": "query",
+        "label": "IP source",
+        "description": "Peuplée dynamiquement : les IP sources réellement vues sur l'exportateur $exporter pour la fenêtre courante, bornées au Top 50 par volume (jamais un uniqExact() nu sur toute la table brute). Filtre le tableau 'Top conversations' sur une conversation précise.",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "ClickHouse"
+        },
+        "query": "SELECT source FROM (SELECT replaceOne(IPv6NumToString(SrcAddr), '::ffff:', '') AS source, sum(Bytes * SamplingRate) AS volume FROM flows WHERE $__timeFilter(TimeReceived) AND ExporterName = '$exporter' GROUP BY source ORDER BY volume DESC LIMIT 50) ORDER BY source",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "sort": 1
+      },
+      {
+        "name": "dst_addr",
+        "type": "query",
+        "label": "IP destination",
+        "description": "Peuplée dynamiquement : les IP destinations réellement vues sur l'exportateur $exporter pour la fenêtre courante, bornées au Top 50 par volume. Filtre le tableau 'Top conversations' sur une conversation précise.",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "ClickHouse"
+        },
+        "query": "SELECT destination FROM (SELECT replaceOne(IPv6NumToString(DstAddr), '::ffff:', '') AS destination, sum(Bytes * SamplingRate) AS volume FROM flows WHERE $__timeFilter(TimeReceived) AND ExporterName = '$exporter' GROUP BY destination ORDER BY volume DESC LIMIT 50) ORDER BY destination",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "sort": 1
+      },
+      {
+        "name": "port_dst",
+        "type": "query",
+        "label": "Port destination",
+        "description": "Peuplée dynamiquement : les ports destination réellement vus sur l'exportateur $exporter pour la fenêtre courante, bornés au Top 50 par volume. Filtre le tableau 'Top conversations' sur un port précis.",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "ClickHouse"
+        },
+        "query": "SELECT toString(port) FROM (SELECT DstPort AS port, sum(Bytes * SamplingRate) AS volume FROM flows WHERE $__timeFilter(TimeReceived) AND ExporterName = '$exporter' GROUP BY port ORDER BY volume DESC LIMIT 50) ORDER BY port",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "sort": 1
       }
     ]
   },
@@ -895,7 +955,194 @@
       "targets": [
         {
           "refId": "A",
-          "rawSql": "SELECT\n    replaceOne(IPv6NumToString(SrcAddr), '::ffff:', '') AS source,\n    replaceOne(IPv6NumToString(DstAddr), '::ffff:', '') AS destination,\n    DstPort AS port_destination,\n    sum(Bytes * SamplingRate) AS volume,\n    sum(Packets * SamplingRate) AS paquets,\n    count() AS flux\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName = '$exporter'\nGROUP BY SrcAddr, DstAddr, DstPort\nORDER BY volume DESC\nLIMIT 25",
+          "rawSql": "SELECT\n    replaceOne(IPv6NumToString(SrcAddr), '::ffff:', '') AS source,\n    replaceOne(IPv6NumToString(DstAddr), '::ffff:', '') AS destination,\n    DstPort AS port_destination,\n    sum(Bytes * SamplingRate) AS volume,\n    sum(Packets * SamplingRate) AS paquets,\n    count() AS flux\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName = '$exporter'\n    AND replaceOne(IPv6NumToString(SrcAddr), '::ffff:', '') IN (${src_addr:singlequote})\n    AND replaceOne(IPv6NumToString(DstAddr), '::ffff:', '') IN (${dst_addr:singlequote})\n    AND toString(DstPort) IN (${port_dst:singlequote})\nGROUP BY SrcAddr, DstAddr, DstPort\nORDER BY volume DESC\nLIMIT 25",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 34,
+      "type": "row",
+      "title": "Champs disponibles non exploités — tailles de paquets, libellés d'interface, sens du flux",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 76
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 35,
+      "type": "piechart",
+      "title": "Distribution des tailles de paquets — $exporter",
+      "description": "PacketSizeBucket pour cet exportateur, sum(Bytes * SamplingRate) — signature applicative locale : compare le profil de CET équipement (voix/interactif vs transfert de masse) au profil du parc visible sur la vue d'ensemble. Les valeurs vides (PacketSizeBucket != '') sont exclues, sans masquer une tranche réellement mesurée. LIMIT 20.",
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 0,
+        "y": 77
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "links": [
+            {
+              "title": "Voir la distribution des tailles de paquets du parc",
+              "url": "/d/okvorado-vue-ensemble-parc/okvorado-vue-ensemble-parc?var-taille_paquet=${__data.fields.taille_paquet}",
+              "targetBlank": false,
+              "keepTime": true,
+              "includeVars": true
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "pieType": "donut",
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "value",
+            "percent"
+          ]
+        },
+        "reduceOptions": {
+          "values": true,
+          "calcs": [],
+          "fields": ""
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT\n    PacketSizeBucket AS taille_paquet,\n    sum(Bytes * SamplingRate) AS volume\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName = '$exporter'\n    AND PacketSizeBucket != ''\nGROUP BY taille_paquet\nORDER BY volume DESC\nLIMIT 20",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 36,
+      "type": "table",
+      "title": "Libellés d'interface déclarés — $exporter",
+      "description": "InIfDescription / OutIfDescription : les descriptions d'interface déclarées par l'exportateur (ex. 'WAN Internet', 'Lien inter-site'), ~100% de remplissage — rendent la lecture des interfaces possible sans connaître leur nom technique (InIfName/OutIfName). sum(Bytes * SamplingRate) pour le volume. Les lignes où les DEUX libellés sont vides sont exclues (source ne déclarant aucune description), sans masquer une description réellement renseignée. Filtré par la variable $interface déjà utilisée sur cette fiche. LIMIT 20.",
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 8,
+        "y": 77
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "volume"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "interface_in"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Filtrer cet écran sur cette interface",
+                    "url": "/d/okvorado-par-exportateur/okvorado-par-exportateur?var-exporter=$exporter&var-interface=${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "footer": {
+          "show": true,
+          "enablePagination": true
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT\n    InIfName AS interface_in,\n    InIfDescription AS description_in,\n    OutIfName AS interface_out,\n    OutIfDescription AS description_out,\n    sum(Bytes * SamplingRate) AS volume\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName = '$exporter'\n    AND (InIfDescription != '' OR OutIfDescription != '')\n    AND InIfName IN (${interface:singlequote})\nGROUP BY interface_in, description_in, interface_out, description_out\nORDER BY volume DESC\nLIMIT 20",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 37,
+      "type": "piechart",
+      "title": "Répartition par sens du flux (FlowDirection) — $exporter",
+      "description": "FlowDirection : sens du flux déclaré par l'exportateur (entrant/sortant/interne), 100% de remplissage — complète la vue interfaces IN/OUT (au niveau de l'interface physique) par une lecture au niveau du FLUX lui-même. sum(Bytes * SamplingRate). Les valeurs vides (FlowDirection != '') sont exclues, sans masquer un sens réellement mesuré. LIMIT 10.",
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 16,
+        "y": 77
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "links": [
+            {
+              "title": "Filtrer cet écran sur ce sens de flux",
+              "url": "/d/okvorado-par-exportateur/okvorado-par-exportateur?var-exporter=$exporter&var-sens_flux=${__data.fields.sens_flux}",
+              "targetBlank": false
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "pieType": "donut",
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "value",
+            "percent"
+          ]
+        },
+        "reduceOptions": {
+          "values": true,
+          "calcs": [],
+          "fields": ""
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT\n    FlowDirection AS sens_flux,\n    sum(Bytes * SamplingRate) AS volume\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName = '$exporter'\n    AND FlowDirection != ''\n    AND FlowDirection IN (${sens_flux:singlequote})\nGROUP BY sens_flux\nORDER BY volume DESC\nLIMIT 10",
           "format": 1
         }
       ]

@@ -62,6 +62,36 @@
         "multi": true,
         "includeAll": true,
         "sort": 1
+      },
+      {
+        "name": "taille_paquet",
+        "type": "query",
+        "label": "Tranche de taille de paquet",
+        "description": "PacketSizeBucket, peuplée dynamiquement depuis les flux (16 tranches mesurées, 100% de remplissage). Sert à filtrer le donut 'Distribution des tailles de paquets' sur une tranche précise (drill-down depuis le donut lui-même).",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "ClickHouse"
+        },
+        "query": "SELECT DISTINCT PacketSizeBucket FROM flows WHERE $__timeFilter(TimeReceived) AND PacketSizeBucket != '' ORDER BY PacketSizeBucket",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "sort": 1
+      },
+      {
+        "name": "frontiere",
+        "type": "query",
+        "label": "Frontière d'entrée (InIfBoundary)",
+        "description": "InIfBoundary, peuplée dynamiquement depuis les flux (external/internal/undefined, 100% de remplissage). Sert à filtrer la matrice des frontières de trafic sur une frontière d'entrée précise (drill-down depuis le tableau lui-même). 'undefined' reste une valeur sélectionnable : c'est un volume réel mesuré, pas une absence de trafic.",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "ClickHouse"
+        },
+        "query": "SELECT DISTINCT InIfBoundary FROM flows WHERE $__timeFilter(TimeReceived) ORDER BY InIfBoundary",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "sort": 1
       }
     ]
   },
@@ -604,6 +634,186 @@
         {
           "refId": "A",
           "rawSql": "SELECT\n    toString(SrcNetMask) AS masque_src,\n    concat('/', toString(DstNetMask)) AS masque_dst,\n    sum(Bytes * SamplingRate) AS volume,\n    count() AS flux\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\n    AND (SrcNetMask != 0 OR DstNetMask != 0)\n    AND toString(SrcNetMask) IN (${masque:singlequote})\nGROUP BY masque_src, masque_dst\nORDER BY volume DESC\nLIMIT 30",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "row",
+      "title": "Signature applicative — tailles de paquets et frontières de trafic (champs disponibles non exploités)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 33
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 14,
+      "type": "piechart",
+      "title": "Distribution des tailles de paquets — signature applicative",
+      "description": "PacketSizeBucket : 16 tranches de taille de paquet mesurées, 100% de remplissage sur le parc. Lecture opérateur directe : les petites tailles (128-511 octets) signent de la voix/du contrôle/de l'interactif, les grandes tailles (2048-8191 octets) signent du transfert de masse (sauvegarde, streaming, transfert de fichier). sum(Bytes * SamplingRate). Les valeurs vides (PacketSizeBucket != '') sont exclues de l'agrégation pour ne pas laisser une catégorie 'champ non émis' écraser le graphe, SANS masquer une tranche réellement mesurée. Cliquer une part filtre ce même dashboard sur cette tranche de taille (variable $taille_paquet). LIMIT 20 (marge sur les 16 tranches mesurées).",
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 0,
+        "y": 34
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "links": [
+            {
+              "title": "Filtrer le parc sur cette tranche de taille de paquet",
+              "url": "/d/okvorado-vue-ensemble-parc/okvorado-vue-ensemble-parc?var-taille_paquet=${__data.fields.taille_paquet}",
+              "targetBlank": false,
+              "keepTime": true,
+              "includeVars": true
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "pieType": "donut",
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "value",
+            "percent"
+          ]
+        },
+        "reduceOptions": {
+          "values": true,
+          "calcs": [],
+          "fields": ""
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT\n    PacketSizeBucket AS taille_paquet,\n    sum(Bytes * SamplingRate) AS volume\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\n    AND PacketSizeBucket != ''\n    AND PacketSizeBucket IN (${taille_paquet:singlequote})\nGROUP BY taille_paquet\nORDER BY volume DESC\nLIMIT 20",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "table",
+      "title": "Matrice des frontières de trafic — InIfBoundary × OutIfBoundary",
+      "description": "Croisement des frontières d'interface IN et OUT (external/internal/undefined), 100% de remplissage sur le parc — la lecture opérateur classique : external->external est du TRANSIT, internal->internal du trafic PUREMENT INTERNE, un croisement external<->internal est du trafic ENTRANT/SORTANT franchissant la frontière. Mesuré en production : external->external 13,86 Go / 267 770 flux, internal->internal 4,47 Go / 705 212 flux, undefined->undefined 2,41 Go / 175 950 flux — 'undefined' N'EST PAS masqué : c'est un volume réel mesuré (source ne classifiant pas la frontière sur ces flux), pas une absence de trafic. sum(Bytes * SamplingRate) pour le volume, count() jamais mis à l'échelle pour les flux. Cliquer une ligne filtre ce dashboard sur cette frontière d'entrée (variable $frontiere). LIMIT 9 (3x3 combinaisons possibles).",
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 8,
+        "y": 34
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "left",
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "volume"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "frontiere_in"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Filtrer le parc sur cette frontière d'entrée",
+                    "url": "/d/okvorado-vue-ensemble-parc/okvorado-vue-ensemble-parc?var-frontiere=${__value.raw}",
+                    "targetBlank": false,
+                    "keepTime": true,
+                    "includeVars": true
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "footer": {
+          "show": true,
+          "enablePagination": true
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT\n    InIfBoundary AS frontiere_in,\n    OutIfBoundary AS frontiere_out,\n    sum(Bytes * SamplingRate) AS volume,\n    count() AS flux\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\n    AND InIfBoundary IN (${frontiere:singlequote})\nGROUP BY frontiere_in, frontiere_out\nORDER BY volume DESC\nLIMIT 9",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "type": "barchart",
+      "title": "Taille moyenne de paquet par exportateur — détection de profil anormal",
+      "description": "sum(Bytes * SamplingRate) / sum(Packets * SamplingRate) groupé par exportateur — moyenne PONDÉRÉE par le taux d'échantillonnage réel de chaque exportateur (une avg(PacketSize) nue biaiserait la comparaison entre exportateurs à taux différents). Lecture opérateur : un exportateur dont la taille moyenne de paquet s'écarte fortement du reste du parc signale un profil de trafic anormal (ex. scan/flood en petits paquets, ou un exfiltrateur en gros paquets soutenus) à investiguer en priorité. LIMIT 15. Cliquer une barre ouvre la fiche détaillée de cet exportateur (drill-down).",
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 16,
+        "y": 34
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "links": [
+            {
+              "title": "Voir la fiche de cet exportateur",
+              "url": "/d/okvorado-par-exportateur/okvorado-par-exportateur?var-exporter=${__data.fields.exportateur}",
+              "targetBlank": false
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT\n    ExporterName AS exportateur,\n    sum(Bytes * SamplingRate) / greatest(sum(Packets * SamplingRate), 1) AS taille_moyenne_paquet\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\nGROUP BY exportateur\nORDER BY taille_moyenne_paquet DESC\nLIMIT 15",
           "format": 1
         }
       ]

@@ -49,6 +49,21 @@
         "multi": true,
         "includeAll": true,
         "sort": 1
+      },
+      {
+        "name": "interface",
+        "type": "query",
+        "label": "Interface",
+        "description": "Peuplée dynamiquement : les interfaces (IN et OUT) réellement vues sur les exportateurs sélectionnés pour la fenêtre courante. Filtre les tableaux 'Top N Interfaces' sur une interface précise.",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "ClickHouse"
+        },
+        "query": "SELECT DISTINCT interface FROM (SELECT InIfName AS interface FROM flows WHERE $__timeFilter(TimeReceived) AND ExporterName IN (${exporter:singlequote}) AND InIfName != '' UNION ALL SELECT OutIfName AS interface FROM flows WHERE $__timeFilter(TimeReceived) AND ExporterName IN (${exporter:singlequote}) AND OutIfName != '') ORDER BY interface",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "sort": 1
       }
     ]
   },
@@ -191,7 +206,7 @@
       "targets": [
         {
           "refId": "A",
-          "rawSql": "SELECT\n    exportateur,\n    any(ip) AS ip,\n    interface,\n    sum(debit_in) AS vitesse_in,\n    sum(debit_out) AS vitesse_out\nFROM (\n    SELECT\n        ExporterName AS exportateur,\n        any(replaceOne(IPv6NumToString(ExporterAddress), '::ffff:', '')) AS ip,\n        InIfName AS interface,\n        sum(Bytes * SamplingRate) * 8 / greatest(toUnixTimestamp($__toTime) - toUnixTimestamp($__fromTime), 1) AS debit_in,\n        0 AS debit_out\n    FROM flows\n    WHERE $__timeFilter(TimeReceived)\n        AND ExporterName IN (${exporter:singlequote})\n        AND InIfName != ''\n    GROUP BY exportateur, interface\n    UNION ALL\n    SELECT\n        ExporterName AS exportateur,\n        any(replaceOne(IPv6NumToString(ExporterAddress), '::ffff:', '')) AS ip,\n        OutIfName AS interface,\n        0 AS debit_in,\n        sum(Bytes * SamplingRate) * 8 / greatest(toUnixTimestamp($__toTime) - toUnixTimestamp($__fromTime), 1) AS debit_out\n    FROM flows\n    WHERE $__timeFilter(TimeReceived)\n        AND ExporterName IN (${exporter:singlequote})\n        AND OutIfName != ''\n    GROUP BY exportateur, interface\n)\nGROUP BY exportateur, interface\nORDER BY vitesse_in DESC\nLIMIT 20",
+          "rawSql": "SELECT\n    exportateur,\n    any(ip) AS ip,\n    interface,\n    sum(debit_in) AS vitesse_in,\n    sum(debit_out) AS vitesse_out\nFROM (\n    SELECT\n        ExporterName AS exportateur,\n        any(replaceOne(IPv6NumToString(ExporterAddress), '::ffff:', '')) AS ip,\n        InIfName AS interface,\n        sum(Bytes * SamplingRate) * 8 / greatest(toUnixTimestamp($__toTime) - toUnixTimestamp($__fromTime), 1) AS debit_in,\n        0 AS debit_out\n    FROM flows\n    WHERE $__timeFilter(TimeReceived)\n        AND ExporterName IN (${exporter:singlequote})\n        AND InIfName != ''\n    GROUP BY exportateur, interface\n    UNION ALL\n    SELECT\n        ExporterName AS exportateur,\n        any(replaceOne(IPv6NumToString(ExporterAddress), '::ffff:', '')) AS ip,\n        OutIfName AS interface,\n        0 AS debit_in,\n        sum(Bytes * SamplingRate) * 8 / greatest(toUnixTimestamp($__toTime) - toUnixTimestamp($__fromTime), 1) AS debit_out\n    FROM flows\n    WHERE $__timeFilter(TimeReceived)\n        AND ExporterName IN (${exporter:singlequote})\n        AND OutIfName != ''\n    GROUP BY exportateur, interface\n)\nGROUP BY exportateur, interface\nHAVING interface IN (${interface:singlequote})\nORDER BY vitesse_in DESC\nLIMIT 20",
           "format": 1
         }
       ]
@@ -289,7 +304,7 @@
       "targets": [
         {
           "refId": "A",
-          "rawSql": "SELECT\n    exportateur,\n    any(ip) AS ip,\n    interface,\n    least(100, sum(debit_in) / (greatest(max(vitesse_if), 1) * 1000000) * 100) AS utilisation_in,\n    least(100, sum(debit_out) / (greatest(max(vitesse_if), 1) * 1000000) * 100) AS utilisation_out\nFROM (\n    SELECT\n        ExporterName AS exportateur,\n        any(replaceOne(IPv6NumToString(ExporterAddress), '::ffff:', '')) AS ip,\n        InIfName AS interface,\n        any(InIfSpeed) AS vitesse_if,\n        sum(Bytes * SamplingRate) * 8 / greatest(toUnixTimestamp($__toTime) - toUnixTimestamp($__fromTime), 1) AS debit_in,\n        0 AS debit_out\n    FROM flows\n    WHERE $__timeFilter(TimeReceived)\n        AND ExporterName IN (${exporter:singlequote})\n        AND InIfName != ''\n    GROUP BY exportateur, interface\n    UNION ALL\n    SELECT\n        ExporterName AS exportateur,\n        any(replaceOne(IPv6NumToString(ExporterAddress), '::ffff:', '')) AS ip,\n        OutIfName AS interface,\n        any(OutIfSpeed) AS vitesse_if,\n        0 AS debit_in,\n        sum(Bytes * SamplingRate) * 8 / greatest(toUnixTimestamp($__toTime) - toUnixTimestamp($__fromTime), 1) AS debit_out\n    FROM flows\n    WHERE $__timeFilter(TimeReceived)\n        AND ExporterName IN (${exporter:singlequote})\n        AND OutIfName != ''\n    GROUP BY exportateur, interface\n)\nGROUP BY exportateur, interface\nORDER BY utilisation_in DESC\nLIMIT 20",
+          "rawSql": "SELECT\n    exportateur,\n    any(ip) AS ip,\n    interface,\n    least(100, sum(debit_in) / (greatest(max(vitesse_if), 1) * 1000000) * 100) AS utilisation_in,\n    least(100, sum(debit_out) / (greatest(max(vitesse_if), 1) * 1000000) * 100) AS utilisation_out\nFROM (\n    SELECT\n        ExporterName AS exportateur,\n        any(replaceOne(IPv6NumToString(ExporterAddress), '::ffff:', '')) AS ip,\n        InIfName AS interface,\n        any(InIfSpeed) AS vitesse_if,\n        sum(Bytes * SamplingRate) * 8 / greatest(toUnixTimestamp($__toTime) - toUnixTimestamp($__fromTime), 1) AS debit_in,\n        0 AS debit_out\n    FROM flows\n    WHERE $__timeFilter(TimeReceived)\n        AND ExporterName IN (${exporter:singlequote})\n        AND InIfName != ''\n    GROUP BY exportateur, interface\n    UNION ALL\n    SELECT\n        ExporterName AS exportateur,\n        any(replaceOne(IPv6NumToString(ExporterAddress), '::ffff:', '')) AS ip,\n        OutIfName AS interface,\n        any(OutIfSpeed) AS vitesse_if,\n        0 AS debit_in,\n        sum(Bytes * SamplingRate) * 8 / greatest(toUnixTimestamp($__toTime) - toUnixTimestamp($__fromTime), 1) AS debit_out\n    FROM flows\n    WHERE $__timeFilter(TimeReceived)\n        AND ExporterName IN (${exporter:singlequote})\n        AND OutIfName != ''\n    GROUP BY exportateur, interface\n)\nGROUP BY exportateur, interface\nHAVING interface IN (${interface:singlequote})\nORDER BY utilisation_in DESC\nLIMIT 20",
           "format": 1
         }
       ]

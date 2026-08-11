@@ -66,6 +66,21 @@
         "sort": 1
       },
       {
+        "name": "net_role",
+        "type": "query",
+        "label": "Rôle réseau",
+        "description": "Rôle déclaré du réseau source ou destination (table `networks` d'Akvorado, bloc `networks:` d'outlet.yaml), peuplé dynamiquement, plus une entrée synthétique 'Hors périmètre déclaré' (jamais figée) pour le trafic dont ni SrcNetRole ni DstNetRole ne sont renseignés — un rôle absent en entreprise (350 routeurs) signale une plage réseau non déclarée, pas une absence de trafic.",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "ClickHouse"
+        },
+        "query": "SELECT role FROM (SELECT SrcNetRole AS role FROM flows WHERE $__timeFilter(TimeReceived) AND SrcNetRole != '' UNION DISTINCT SELECT DstNetRole AS role FROM flows WHERE $__timeFilter(TimeReceived) AND DstNetRole != '' UNION DISTINCT SELECT 'Hors périmètre déclaré' AS role) ORDER BY role",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "sort": 1
+      },
+      {
         "name": "protocole",
         "type": "query",
         "label": "Protocole",
@@ -899,6 +914,209 @@
         {
           "refId": "A",
           "rawSql": "SELECT\n    concat('AS', toString(DstAS)) AS as_dst,\n    DstCountry AS pays_arrivee,\n    sum(Bytes * SamplingRate) AS volume,\n    count() AS flux\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\n    AND (DstAS != 0 OR DstCountry != '')\n    AND DstCountry IN (${pays_dst:singlequote})\nGROUP BY as_dst, pays_arrivee\nORDER BY volume DESC\nLIMIT 25",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "type": "row",
+      "title": "Segmentation réseau — qui parle à qui, par réseau déclaré",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 72
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 18,
+      "type": "table",
+      "title": "Matrice de flux — réseau source → réseau destination",
+      "description": "Champs SrcNetName/DstNetName de la table `networks` d'Akvorado (bloc `networks:` d'outlet.yaml, éditable depuis Okvorado) : qui parle à qui, en NOMS DE RÉSEAU lisibles plutôt qu'en adresses IP — la vue que tout exploitant réseau réclame en premier. QUELLE SOURCE ALIMENTE CE PANNEAU : SrcNetName/DstNetName ne sont renseignés que pour une adresse couverte par une plage déclarée dans outlet.yaml (mesuré à 78,4%/71,5% de remplissage sur ce homelab, 3 valeurs distinctes). Une ligne 'Hors périmètre déclaré' (ni source ni destination ne matchent une plage connue) N'EST JAMAIS filtrée hors du résultat : mesuré à 8,9 Go/3h, PLUS gros que chacun des deux réseaux déclarés — en entreprise (350 routeurs SFR, plages par agence) ce volume qui grossit signale des plages manquantes dans la déclaration, c'est un signal d'exploitation direct, pas du bruit. count() n'est jamais mis à l'échelle. Cliquer une ligne filtre l'accueil sur ce rôle réseau (variable $net_role). LIMIT 50.",
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 73
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "left",
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "volume"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "reseau_source"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Filtrer l'accueil sur ce rôle réseau",
+                    "url": "/d/okvorado-accueil-traffic-summary/okvorado-accueil-traffic-summary?var-net_role=${__value.raw}",
+                    "targetBlank": false,
+                    "keepTime": true,
+                    "includeVars": true
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "reseau_destination"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Filtrer l'accueil sur ce rôle réseau",
+                    "url": "/d/okvorado-accueil-traffic-summary/okvorado-accueil-traffic-summary?var-net_role=${__value.raw}",
+                    "targetBlank": false,
+                    "keepTime": true,
+                    "includeVars": true
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "footer": {
+          "show": true,
+          "enablePagination": true
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "rawSql": "SELECT\n    multiIf(SrcNetName = '', 'Hors périmètre déclaré', SrcNetName) AS reseau_source,\n    multiIf(DstNetName = '', 'Hors périmètre déclaré', DstNetName) AS reseau_destination,\n    sum(Bytes * SamplingRate) AS volume,\n    count() AS flux\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\nGROUP BY reseau_source, reseau_destination, SrcNetRole, DstNetRole\nHAVING multiIf(SrcNetRole = '', 'Hors périmètre déclaré', SrcNetRole) IN (${net_role:singlequote})\n    OR multiIf(DstNetRole = '', 'Hors périmètre déclaré', DstNetRole) IN (${net_role:singlequote})\nORDER BY volume DESC\nLIMIT 50",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 19,
+      "type": "piechart",
+      "title": "Volume par rôle réseau — reste interne ou sort",
+      "description": "Champs SrcNetRole/DstNetRole (table `networks` d'Akvorado) : le trafic reste-t-il dans un rôle interne (lan, internal…) ou sort-il vers un rôle non déclaré ? Le rôle est retenu côté SOURCE (SrcNetRole) ; quand la source n'a pas de rôle déclaré, la catégorie 'Hors périmètre déclaré' est affichée EXPLICITEMENT (jamais une part vide fondue dans le total) — mesuré à 8,9 Go/3h sur ce homelab, plus gros que chaque rôle déclaré pris seul. Cliquer une part filtre l'accueil sur ce rôle (variable $net_role).",
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 0,
+        "y": 83
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "links": [
+            {
+              "title": "Filtrer l'accueil sur ce rôle réseau",
+              "url": "/d/okvorado-accueil-traffic-summary/okvorado-accueil-traffic-summary?var-net_role=${__data.fields.role}",
+              "targetBlank": false,
+              "keepTime": true,
+              "includeVars": true
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "pieType": "donut",
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "value",
+            "percent"
+          ]
+        },
+        "reduceOptions": {
+          "values": true,
+          "calcs": [],
+          "fields": ""
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "rawSql": "SELECT\n    multiIf(SrcNetRole = '', 'Hors périmètre déclaré', SrcNetRole) AS role,\n    sum(Bytes * SamplingRate) AS volume\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\nGROUP BY role\nHAVING role IN (${net_role:singlequote})\nORDER BY volume DESC\nLIMIT 20",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "type": "barchart",
+      "title": "Top N préfixes de destination déclarés (DstNetPrefix)",
+      "description": "Champ DstNetPrefix (table `networks` d'Akvorado) : les préfixes de destination réellement observés — mesuré à 100% de remplissage, 7 valeurs distinctes sur ce homelab. Un préfixe qui apparaît ici sans nom de réseau lisible associé (DstNetName vide malgré DstNetPrefix renseigné) signale une plage déclarée mais mal nommée dans outlet.yaml. count() n'est jamais mis à l'échelle. LIMIT 15.",
+      "gridPos": {
+        "h": 9,
+        "w": 16,
+        "x": 8,
+        "y": 83
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "links": [
+            {
+              "title": "Filtrer l'accueil sur ce rôle réseau",
+              "url": "/d/okvorado-accueil-traffic-summary/okvorado-accueil-traffic-summary?var-net_role=${__data.fields.role}",
+              "targetBlank": false,
+              "keepTime": true,
+              "includeVars": true
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "xField": "prefixe_destination"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "rawSql": "SELECT\n    multiIf(DstNetPrefix = '', 'Hors périmètre déclaré', DstNetPrefix) AS prefixe_destination,\n    multiIf(DstNetRole = '', 'Hors périmètre déclaré', DstNetRole) AS role,\n    sum(Bytes * SamplingRate) AS volume\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\nGROUP BY prefixe_destination, role\nORDER BY volume DESC\nLIMIT 15",
           "format": 1
         }
       ]

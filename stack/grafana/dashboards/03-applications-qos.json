@@ -81,6 +81,36 @@
         "multi": true,
         "includeAll": true,
         "sort": 1
+      },
+      {
+        "name": "src_addr",
+        "type": "query",
+        "label": "IP source",
+        "description": "Peuplée dynamiquement : les IP sources réellement vues sur $exporter pour la fenêtre courante, bornées au Top 50 par volume (jamais un uniqExact() nu sur toute la table brute). Filtre les tableaux de convergence et de top talkers sur une conversation précise.",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "ClickHouse"
+        },
+        "query": "SELECT source FROM (SELECT replaceOne(IPv6NumToString(SrcAddr), '::ffff:', '') AS source, sum(Bytes * SamplingRate) AS volume FROM flows WHERE $__timeFilter(TimeReceived) AND ExporterName IN (${exporter:singlequote}) GROUP BY source ORDER BY volume DESC LIMIT 50) ORDER BY source",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "sort": 1
+      },
+      {
+        "name": "dst_addr",
+        "type": "query",
+        "label": "IP destination",
+        "description": "Peuplée dynamiquement : les IP destinations réellement vues sur $exporter pour la fenêtre courante, bornées au Top 50 par volume. Filtre les tableaux de convergence et de top talkers sur une conversation précise.",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "ClickHouse"
+        },
+        "query": "SELECT destination FROM (SELECT replaceOne(IPv6NumToString(DstAddr), '::ffff:', '') AS destination, sum(Bytes * SamplingRate) AS volume FROM flows WHERE $__timeFilter(TimeReceived) AND ExporterName IN (${exporter:singlequote}) GROUP BY destination ORDER BY volume DESC LIMIT 50) ORDER BY destination",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "sort": 1
       }
     ]
   },
@@ -795,7 +825,162 @@
         {
           "refId": "A",
           "format": 1,
-          "rawSql": "SELECT\n    multiIf(\n        least(SrcPort,DstPort) = 443, 'HTTPS',\n        least(SrcPort,DstPort) = 80, 'HTTP',\n        least(SrcPort,DstPort) = 8080, 'HTTP-ALT',\n        least(SrcPort,DstPort) = 8443, 'HTTPS-ALT',\n        least(SrcPort,DstPort) = 22, 'SSH',\n        least(SrcPort,DstPort) = 3389, 'RDP',\n        least(SrcPort,DstPort) = 445, 'SMB (microsoft-ds)',\n        least(SrcPort,DstPort) = 139, 'NetBIOS-SSN',\n        least(SrcPort,DstPort) = 137, 'NetBIOS-NS',\n        least(SrcPort,DstPort) = 53, 'DNS',\n        least(SrcPort,DstPort) = 25, 'SMTP',\n        least(SrcPort,DstPort) = 389, 'LDAP',\n        least(SrcPort,DstPort) = 1433, 'MSSQL',\n        least(SrcPort,DstPort) = 3306, 'MySQL',\n        least(SrcPort,DstPort) = 5432, 'PostgreSQL',\n        concat(if(Proto = 6, 'tcp/', 'udp/'), toString(least(SrcPort,DstPort)))\n    ) AS application,\n    replaceOne(IPv6NumToString(SrcAddr), '::ffff:', '') AS source,\n    replaceOne(IPv6NumToString(DstAddr), '::ffff:', '') AS destination,\n    multiIf(\n        bitShiftRight(IPTos, 2) = 0, 'BE',\n        bitShiftRight(IPTos, 2) = 8, 'CS1',\n        bitShiftRight(IPTos, 2) = 10, 'AF11',\n        bitShiftRight(IPTos, 2) = 18, 'AF21',\n        bitShiftRight(IPTos, 2) = 24, 'CS3',\n        bitShiftRight(IPTos, 2) = 40, 'CS5',\n        bitShiftRight(IPTos, 2) = 46, 'EF',\n        bitShiftRight(IPTos, 2) = 48, 'CS6',\n        concat('DSCP ', toString(bitShiftRight(IPTos, 2)))\n    ) AS classe_dscp,\n    sum(Bytes * SamplingRate) AS volume,\n    count() AS flux\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\n    AND Proto IN (6, 17)\n    AND multiIf(\n        least(SrcPort,DstPort) = 443, 'HTTPS',\n        least(SrcPort,DstPort) = 80, 'HTTP',\n        least(SrcPort,DstPort) = 8080, 'HTTP-ALT',\n        least(SrcPort,DstPort) = 8443, 'HTTPS-ALT',\n        least(SrcPort,DstPort) = 22, 'SSH',\n        least(SrcPort,DstPort) = 3389, 'RDP',\n        least(SrcPort,DstPort) = 445, 'SMB (microsoft-ds)',\n        least(SrcPort,DstPort) = 139, 'NetBIOS-SSN',\n        least(SrcPort,DstPort) = 137, 'NetBIOS-NS',\n        least(SrcPort,DstPort) = 53, 'DNS',\n        least(SrcPort,DstPort) = 25, 'SMTP',\n        least(SrcPort,DstPort) = 389, 'LDAP',\n        least(SrcPort,DstPort) = 1433, 'MSSQL',\n        least(SrcPort,DstPort) = 3306, 'MySQL',\n        least(SrcPort,DstPort) = 5432, 'PostgreSQL',\n        concat(if(Proto = 6, 'tcp/', 'udp/'), toString(least(SrcPort,DstPort)))\n    ) IN (${application:singlequote})\nGROUP BY application, SrcAddr, DstAddr, classe_dscp\nORDER BY volume DESC\nLIMIT 30"
+          "rawSql": "SELECT\n    multiIf(\n        least(SrcPort,DstPort) = 443, 'HTTPS',\n        least(SrcPort,DstPort) = 80, 'HTTP',\n        least(SrcPort,DstPort) = 8080, 'HTTP-ALT',\n        least(SrcPort,DstPort) = 8443, 'HTTPS-ALT',\n        least(SrcPort,DstPort) = 22, 'SSH',\n        least(SrcPort,DstPort) = 3389, 'RDP',\n        least(SrcPort,DstPort) = 445, 'SMB (microsoft-ds)',\n        least(SrcPort,DstPort) = 139, 'NetBIOS-SSN',\n        least(SrcPort,DstPort) = 137, 'NetBIOS-NS',\n        least(SrcPort,DstPort) = 53, 'DNS',\n        least(SrcPort,DstPort) = 25, 'SMTP',\n        least(SrcPort,DstPort) = 389, 'LDAP',\n        least(SrcPort,DstPort) = 1433, 'MSSQL',\n        least(SrcPort,DstPort) = 3306, 'MySQL',\n        least(SrcPort,DstPort) = 5432, 'PostgreSQL',\n        concat(if(Proto = 6, 'tcp/', 'udp/'), toString(least(SrcPort,DstPort)))\n    ) AS application,\n    replaceOne(IPv6NumToString(SrcAddr), '::ffff:', '') AS source,\n    replaceOne(IPv6NumToString(DstAddr), '::ffff:', '') AS destination,\n    multiIf(\n        bitShiftRight(IPTos, 2) = 0, 'BE',\n        bitShiftRight(IPTos, 2) = 8, 'CS1',\n        bitShiftRight(IPTos, 2) = 10, 'AF11',\n        bitShiftRight(IPTos, 2) = 18, 'AF21',\n        bitShiftRight(IPTos, 2) = 24, 'CS3',\n        bitShiftRight(IPTos, 2) = 40, 'CS5',\n        bitShiftRight(IPTos, 2) = 46, 'EF',\n        bitShiftRight(IPTos, 2) = 48, 'CS6',\n        concat('DSCP ', toString(bitShiftRight(IPTos, 2)))\n    ) AS classe_dscp,\n    sum(Bytes * SamplingRate) AS volume,\n    count() AS flux\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\n    AND Proto IN (6, 17)\n    AND multiIf(\n        least(SrcPort,DstPort) = 443, 'HTTPS',\n        least(SrcPort,DstPort) = 80, 'HTTP',\n        least(SrcPort,DstPort) = 8080, 'HTTP-ALT',\n        least(SrcPort,DstPort) = 8443, 'HTTPS-ALT',\n        least(SrcPort,DstPort) = 22, 'SSH',\n        least(SrcPort,DstPort) = 3389, 'RDP',\n        least(SrcPort,DstPort) = 445, 'SMB (microsoft-ds)',\n        least(SrcPort,DstPort) = 139, 'NetBIOS-SSN',\n        least(SrcPort,DstPort) = 137, 'NetBIOS-NS',\n        least(SrcPort,DstPort) = 53, 'DNS',\n        least(SrcPort,DstPort) = 25, 'SMTP',\n        least(SrcPort,DstPort) = 389, 'LDAP',\n        least(SrcPort,DstPort) = 1433, 'MSSQL',\n        least(SrcPort,DstPort) = 3306, 'MySQL',\n        least(SrcPort,DstPort) = 5432, 'PostgreSQL',\n        concat(if(Proto = 6, 'tcp/', 'udp/'), toString(least(SrcPort,DstPort)))\n    ) IN (${application:singlequote})\n    AND replaceOne(IPv6NumToString(SrcAddr), '::ffff:', '') IN (${src_addr:singlequote})\n    AND replaceOne(IPv6NumToString(DstAddr), '::ffff:', '') IN (${dst_addr:singlequote})\nGROUP BY application, SrcAddr, DstAddr, classe_dscp\nORDER BY volume DESC\nLIMIT 30"
+        }
+      ]
+    },
+    {
+      "id": 25,
+      "type": "row",
+      "title": "Segmentation réseau — quel tenant/préfixe consomme quelle application",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 72
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 26,
+      "type": "table",
+      "title": "Applications par tenant réseau (SrcNetTenant / DstNetTenant)",
+      "description": "Champs SrcNetTenant/DstNetTenant de la table `networks` d'Akvorado (bloc `networks:` d'outlet.yaml) : quelle application consomme quel tenant réseau — en entreprise (350 routeurs SFR), le tenant porte typiquement l'agence ou l'entité cliente, ce panneau répond à 'quelle agence consomme quoi'. QUELLE SOURCE ALIMENTE CE PANNEAU : SrcNetTenant/DstNetTenant ne sont renseignés que pour une adresse couverte par une plage déclarée (mesuré à 78,4%/71,5% de remplissage sur ce homelab, 2 valeurs distinctes). Le tenant retenu est celui de la SOURCE ; quand la source n'a pas de tenant déclaré, la ligne affiche EXPLICITEMENT 'Hors périmètre déclaré' plutôt que d'être écartée — ce volume qui grossit signale des plages manquantes dans outlet.yaml. count() n'est jamais mis à l'échelle. Cliquer une application filtre ce dashboard sur $application. LIMIT 40.",
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 73
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "left",
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "volume"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "application"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Voir cette application",
+                    "url": "/d/okvorado-applications-qos/okvorado-applications-qos?var-application=${__value.raw}",
+                    "targetBlank": false,
+                    "keepTime": true,
+                    "includeVars": true
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "footer": {
+          "show": true,
+          "enablePagination": true
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "rawSql": "SELECT\n    multiIf(\n        least(SrcPort,DstPort) = 443, 'HTTPS',\n        least(SrcPort,DstPort) = 80, 'HTTP',\n        least(SrcPort,DstPort) = 8080, 'HTTP-ALT',\n        least(SrcPort,DstPort) = 8443, 'HTTPS-ALT',\n        least(SrcPort,DstPort) = 22, 'SSH',\n        least(SrcPort,DstPort) = 3389, 'RDP',\n        least(SrcPort,DstPort) = 445, 'SMB (microsoft-ds)',\n        least(SrcPort,DstPort) = 139, 'NetBIOS-SSN',\n        least(SrcPort,DstPort) = 137, 'NetBIOS-NS',\n        least(SrcPort,DstPort) = 53, 'DNS',\n        least(SrcPort,DstPort) = 25, 'SMTP',\n        least(SrcPort,DstPort) = 389, 'LDAP',\n        least(SrcPort,DstPort) = 1433, 'MSSQL',\n        least(SrcPort,DstPort) = 3306, 'MySQL',\n        least(SrcPort,DstPort) = 5432, 'PostgreSQL',\n        concat(if(Proto = 6, 'tcp/', 'udp/'), toString(least(SrcPort,DstPort)))\n    ) AS application,\n    multiIf(SrcNetTenant = '', 'Hors périmètre déclaré', SrcNetTenant) AS tenant_source,\n    multiIf(DstNetTenant = '', 'Hors périmètre déclaré', DstNetTenant) AS tenant_destination,\n    sum(Bytes * SamplingRate) AS volume,\n    count() AS flux\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\n    AND Proto IN (6, 17)\n    AND multiIf(\n        least(SrcPort,DstPort) = 443, 'HTTPS',\n        least(SrcPort,DstPort) = 80, 'HTTP',\n        least(SrcPort,DstPort) = 8080, 'HTTP-ALT',\n        least(SrcPort,DstPort) = 8443, 'HTTPS-ALT',\n        least(SrcPort,DstPort) = 22, 'SSH',\n        least(SrcPort,DstPort) = 3389, 'RDP',\n        least(SrcPort,DstPort) = 445, 'SMB (microsoft-ds)',\n        least(SrcPort,DstPort) = 139, 'NetBIOS-SSN',\n        least(SrcPort,DstPort) = 137, 'NetBIOS-NS',\n        least(SrcPort,DstPort) = 53, 'DNS',\n        least(SrcPort,DstPort) = 25, 'SMTP',\n        least(SrcPort,DstPort) = 389, 'LDAP',\n        least(SrcPort,DstPort) = 1433, 'MSSQL',\n        least(SrcPort,DstPort) = 3306, 'MySQL',\n        least(SrcPort,DstPort) = 5432, 'PostgreSQL',\n        concat(if(Proto = 6, 'tcp/', 'udp/'), toString(least(SrcPort,DstPort)))\n    ) IN (${application:singlequote})\nGROUP BY application, tenant_source, tenant_destination\nORDER BY volume DESC\nLIMIT 40"
+        }
+      ]
+    },
+    {
+      "id": 27,
+      "type": "table",
+      "title": "Convergence applicative par préfixe réseau source (SrcNetPrefix)",
+      "description": "Champ SrcNetPrefix de la table `networks` d'Akvorado : pour chaque préfixe réseau source réellement observé (100% de remplissage mesuré, 4 valeurs distinctes), la ou les applications qui en sortent le plus. Reprend le motif de convergence (N sources -> destinations, cf. panneaux ci-dessus) mais côté PLAGE déclarée plutôt que côté adresse individuelle — en entreprise, répond à 'quel site/agence (identifié par son préfixe) génère quel trafic'. Le filtre source interne (RFC1918 + CGNAT 100.64/10, mesure décisive n°1 de app/services/diagnostics.py) écarte le bruit Internet du classement. count() n'est jamais mis à l'échelle. LIMIT 30.",
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 83
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "left",
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "volume"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "application"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Voir cette application",
+                    "url": "/d/okvorado-applications-qos/okvorado-applications-qos?var-application=${__value.raw}",
+                    "targetBlank": false,
+                    "keepTime": true,
+                    "includeVars": true
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "footer": {
+          "show": true,
+          "enablePagination": true
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "rawSql": "SELECT\n    multiIf(SrcNetPrefix = '', 'Hors périmètre déclaré', SrcNetPrefix) AS prefixe_source,\n    multiIf(\n        least(SrcPort,DstPort) = 443, 'HTTPS',\n        least(SrcPort,DstPort) = 80, 'HTTP',\n        least(SrcPort,DstPort) = 8080, 'HTTP-ALT',\n        least(SrcPort,DstPort) = 8443, 'HTTPS-ALT',\n        least(SrcPort,DstPort) = 22, 'SSH',\n        least(SrcPort,DstPort) = 3389, 'RDP',\n        least(SrcPort,DstPort) = 445, 'SMB (microsoft-ds)',\n        least(SrcPort,DstPort) = 139, 'NetBIOS-SSN',\n        least(SrcPort,DstPort) = 137, 'NetBIOS-NS',\n        least(SrcPort,DstPort) = 53, 'DNS',\n        least(SrcPort,DstPort) = 25, 'SMTP',\n        least(SrcPort,DstPort) = 389, 'LDAP',\n        least(SrcPort,DstPort) = 1433, 'MSSQL',\n        least(SrcPort,DstPort) = 3306, 'MySQL',\n        least(SrcPort,DstPort) = 5432, 'PostgreSQL',\n        concat(if(Proto = 6, 'tcp/', 'udp/'), toString(least(SrcPort,DstPort)))\n    ) AS application,\n    uniqExact(DstAddr) AS destinations_distinctes,\n    sum(Bytes * SamplingRate) AS volume,\n    count() AS flux\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\n    AND Proto IN (6, 17)\n    AND (\n        (SrcAddr >= toIPv6('::ffff:10.0.0.0') AND SrcAddr <= toIPv6('::ffff:10.255.255.255'))\n        OR (SrcAddr >= toIPv6('::ffff:172.16.0.0') AND SrcAddr <= toIPv6('::ffff:172.31.255.255'))\n        OR (SrcAddr >= toIPv6('::ffff:192.168.0.0') AND SrcAddr <= toIPv6('::ffff:192.168.255.255'))\n        OR (SrcAddr >= toIPv6('::ffff:100.64.0.0') AND SrcAddr <= toIPv6('::ffff:100.127.255.255'))\n    )\n    AND multiIf(\n        least(SrcPort,DstPort) = 443, 'HTTPS',\n        least(SrcPort,DstPort) = 80, 'HTTP',\n        least(SrcPort,DstPort) = 8080, 'HTTP-ALT',\n        least(SrcPort,DstPort) = 8443, 'HTTPS-ALT',\n        least(SrcPort,DstPort) = 22, 'SSH',\n        least(SrcPort,DstPort) = 3389, 'RDP',\n        least(SrcPort,DstPort) = 445, 'SMB (microsoft-ds)',\n        least(SrcPort,DstPort) = 139, 'NetBIOS-SSN',\n        least(SrcPort,DstPort) = 137, 'NetBIOS-NS',\n        least(SrcPort,DstPort) = 53, 'DNS',\n        least(SrcPort,DstPort) = 25, 'SMTP',\n        least(SrcPort,DstPort) = 389, 'LDAP',\n        least(SrcPort,DstPort) = 1433, 'MSSQL',\n        least(SrcPort,DstPort) = 3306, 'MySQL',\n        least(SrcPort,DstPort) = 5432, 'PostgreSQL',\n        concat(if(Proto = 6, 'tcp/', 'udp/'), toString(least(SrcPort,DstPort)))\n    ) IN (${application:singlequote})\nGROUP BY prefixe_source, application\nORDER BY volume DESC\nLIMIT 30"
         }
       ]
     }

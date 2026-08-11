@@ -3123,9 +3123,9 @@ class TestForwardingStatusZeroSilencieux:
 
 
 PANNEAUX_PIECHART_ATTENDUS: dict[str, list[int]] = {
-    "00-accueil-traffic-summary.json": [4, 7, 8, 9, 15],
-    "01-vue-ensemble-parc.json": [7, 8, 10],
-    "02-par-exportateur.json": [3, 4],
+    "00-accueil-traffic-summary.json": [4, 7, 8, 9, 15, 19],
+    "01-vue-ensemble-parc.json": [7, 8, 10, 14],
+    "02-par-exportateur.json": [3, 4, 35, 37],
     "03-applications-qos.json": [1, 3],
     "04-network-snapshot.json": [4],
     "05-diagnostic-incidents.json": [40, 42],
@@ -3134,9 +3134,27 @@ PANNEAUX_PIECHART_ATTENDUS: dict[str, list[int]] = {
 
 
 def _panneau_par_id(dashboard: dict[str, Any], panel_id: int) -> dict[str, Any] | None:
+    """Retrouve un panneau par son id, y compris IMBRIQUÉ dans une `row`.
+
+    Rend `None` si absent — l'appelant décide du message d'erreur, qui est plus
+    utile qu'un échec générique (« la liste des piecharts attendus a changé,
+    mettre à jour ce test » dit quoi faire ; « aucun panneau id=N » ne dit rien).
+
+    DÉFAUT CORRIGÉ LE 2026-08-11 : deux lots parallèles avaient chacun défini
+    cette fonction au niveau module, avec des comportements DIFFÉRENTS (l'une
+    rendait `None`, l'autre appelait `pytest.fail` et fouillait les
+    sous-panneaux). En Python la seconde écrase la première pour TOUS les
+    appels, y compris ceux écrits avant elle : un test pouvait donc s'exécuter
+    contre une implémentation qui n'était pas la sienne. La suite restait verte
+    par chance, pas par construction. Les deux sont fusionnées ici — la
+    recherche dans les `row` (le cas capable) est conservée.
+    """
     for panel in dashboard.get("panels", []) or []:
         if panel.get("id") == panel_id:
             return panel
+        for sous_panel in panel.get("panels", []) or []:
+            if sous_panel.get("id") == panel_id:
+                return sous_panel
     return None
 
 
@@ -3261,4 +3279,1243 @@ class TestDonutsRendentUnePartParLigne:
             "la configuration appliquée par le fix (values: true) aurait dû "
             "être reconnue comme correcte — sinon ce garde-fou a un faux "
             "positif sur sa propre solution"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 14. LOT « Champs disponibles non exploités » (2026-08-11) — PacketSizeBucket,
+#     PacketSize, InIfBoundary/OutIfBoundary, FlowDirection,
+#     InIfDescription/OutIfDescription
+# ---------------------------------------------------------------------------
+#
+# Constat de l'utilisateur : 18 champs remplis en base mais exploités par
+# AUCUN dashboard — dont 11 à 100 % de remplissage. Cardinalité mesurée sur
+# 3h de production (prompt de la tâche) :
+#   - PacketSizeBucket : 16 valeurs distinctes, 100 % de remplissage — la
+#     SIGNATURE APPLICATIVE (petits paquets = voix/contrôle, gros = transfert
+#     de masse).
+#   - InIfBoundary / OutIfBoundary : 3 valeurs (external/internal/undefined),
+#     100 % — la matrice de frontières, lecture opérateur classique.
+#   - FlowDirection : 3 valeurs, 100 %.
+#   - InIfDescription / OutIfDescription : 5 valeurs, ~100 % — libellés
+#     d'interface lisibles sans connaître les noms techniques.
+#   - ExporterRole/ExporterRegion/ExporterTenant : 1 SEULE valeur mesurée —
+#     CONSTANTS, donc SANS pouvoir discriminant. Volontairement écartés de
+#     tout graphique (un donut dessus rendrait une part unique à 100 %,
+#     exactement le défaut du bloc 12/13 ci-dessus) : garde-fou dédié
+#     ci-dessous qui PROUVE qu'aucun panneau ne les utilise comme dimension
+#     de GROUP BY.
+
+
+def _dashboard_vue_ensemble() -> dict[str, Any]:
+    for chemin in _fichiers_dashboards():
+        dashboard = _charger_dashboard(chemin)
+        if chemin.name == "01-vue-ensemble-parc.json":
+            return dashboard
+    pytest.fail("01-vue-ensemble-parc.json introuvable")
+
+
+def _dashboard_par_exportateur() -> dict[str, Any]:
+    for chemin in _fichiers_dashboards():
+        dashboard = _charger_dashboard(chemin)
+        if chemin.name == "02-par-exportateur.json":
+            return dashboard
+    pytest.fail("02-par-exportateur.json introuvable")
+
+
+def _a_ratio_taille_moyenne_ponderee(sql: str) -> bool:
+    """Détecte sum(Bytes*SamplingRate) / sum(Packets*SamplingRate), avec ou
+    sans le garde anti-division-par-zéro `greatest(..., 1)` autour du
+    dénominateur — les deux formes sont la moyenne PONDÉRÉE correcte."""
+    motif_numerateur = r"sum\(\s*Bytes\s*\*\s*SamplingRate\s*\)\s*/\s*"
+    return bool(
+        re.search(motif_numerateur + r"greatest\(\s*sum\(\s*Packets\s*\*\s*SamplingRate\s*\)", sql)
+        or re.search(motif_numerateur + r"sum\(\s*Packets\s*\*\s*SamplingRate\s*\)", sql)
+    )
+
+
+class TestDistributionTaillesDePaquets:
+    """PacketSizeBucket : 16 valeurs distinctes, 100 % de remplissage —
+    signature applicative directement lisible par un exploitant (petits
+    paquets = voix/contrôle/interactif, gros paquets = transfert de masse)."""
+
+    def test_un_panneau_du_parc_ventile_par_packetsizebucket(self) -> None:
+        dashboard = _dashboard_vue_ensemble()
+        trouve = False
+        for panel in dashboard.get("panels", []):
+            for target in panel.get("targets", []) or []:
+                sql = _sans_commentaires_sql(target.get("rawSql", ""))
+                if re.search(r"(?i)\bPacketSizeBucket\b", sql):
+                    trouve = True
+        assert trouve, (
+            "aucun panneau de 01-vue-ensemble-parc.json ne ventile par "
+            "PacketSizeBucket — champ mesuré à 100% de remplissage, 16 "
+            "valeurs distinctes, non exploité"
+        )
+
+    def test_le_panneau_packetsizebucket_utilise_bien_sum_bytes_samplingrate(self) -> None:
+        """Le volume de ce panneau doit suivre la même règle d'échelle que
+        tout le reste — pas d'exception pour ce nouveau champ."""
+        dashboard = _dashboard_vue_ensemble()
+        trouve = False
+        for panel in dashboard.get("panels", []):
+            for target in panel.get("targets", []) or []:
+                sql = _sans_commentaires_sql(target.get("rawSql", ""))
+                if re.search(r"(?i)\bPacketSizeBucket\b", sql) and re.search(
+                    r"sum\(\s*Bytes\s*\*\s*SamplingRate\s*\)", sql
+                ):
+                    trouve = True
+        assert trouve, (
+            "le panneau PacketSizeBucket ne calcule pas son volume via "
+            "sum(Bytes * SamplingRate)"
+        )
+
+    def test_le_panneau_packetsizebucket_exclut_les_valeurs_vides_sans_les_masquer(self) -> None:
+        """Règle zéro silencieux du prompt : exclure les valeurs vides de
+        l'agrégation SANS masquer une catégorie légitime (ex. 'undefined')."""
+        dashboard = _dashboard_vue_ensemble()
+        trouve = False
+        for panel in dashboard.get("panels", []):
+            for target in panel.get("targets", []) or []:
+                sql = _sans_commentaires_sql(target.get("rawSql", ""))
+                if re.search(r"(?i)\bPacketSizeBucket\b", sql) and re.search(
+                    r"PacketSizeBucket\s*!=\s*''", sql
+                ):
+                    trouve = True
+        assert trouve, (
+            "le panneau PacketSizeBucket n'exclut pas explicitement les "
+            "valeurs vides (PacketSizeBucket != '') — une catégorie vide "
+            "pourrait dominer le graphe sans qu'on sache que c'est un défaut "
+            "de source"
+        )
+
+
+class TestFrontieresDeTraficInOutBoundary:
+    """InIfBoundary × OutIfBoundary : 3 valeurs chacune (external/internal/
+    undefined), 100 % de remplissage — matrice de frontières, lecture
+    opérateur classique (transit / interne / sortant)."""
+
+    def test_un_panneau_croise_iniboundary_et_outifboundary(self) -> None:
+        dashboard = _dashboard_vue_ensemble()
+        trouve = False
+        for panel in dashboard.get("panels", []):
+            for target in panel.get("targets", []) or []:
+                sql = _sans_commentaires_sql(target.get("rawSql", ""))
+                if re.search(r"(?i)\bInIfBoundary\b", sql) and re.search(
+                    r"(?i)\bOutIfBoundary\b", sql
+                ):
+                    trouve = True
+        assert trouve, (
+            "aucun panneau ne croise InIfBoundary et OutIfBoundary dans la "
+            "même requête — la matrice de frontières (transit/interne/"
+            "sortant) mesurée en production (external->external 13.8 Go, "
+            "internal->internal 4.4 Go, undefined->undefined 2.4 Go) est "
+            "absente"
+        )
+
+    def test_le_panneau_frontieres_groupe_bien_par_les_deux_dimensions_ensemble(self) -> None:
+        """Le SELECT projette InIfBoundary/OutIfBoundary sous alias
+        (convention déjà en place dans ce dashboard pour SrcNetMask ->
+        masque_src) ; le GROUP BY porte donc légitimement les alias, pas les
+        noms de colonnes source. On vérifie que les DEUX alias SELECTionnés
+        depuis InIfBoundary/OutIfBoundary apparaissent bien ENSEMBLE dans le
+        même GROUP BY."""
+        dashboard = _dashboard_vue_ensemble()
+        trouve = False
+        for panel in dashboard.get("panels", []):
+            for target in panel.get("targets", []) or []:
+                sql = _sans_commentaires_sql(target.get("rawSql", ""))
+                if not (
+                    re.search(r"(?i)\bInIfBoundary\b", sql)
+                    and re.search(r"(?i)\bOutIfBoundary\b", sql)
+                ):
+                    continue
+                alias_in = re.search(
+                    r"(?i)InIfBoundary\s+AS\s+(\w+)", sql
+                )
+                alias_out = re.search(
+                    r"(?i)OutIfBoundary\s+AS\s+(\w+)", sql
+                )
+                if not (alias_in and alias_out):
+                    continue
+                match = re.search(r"(?i)GROUP\s+BY\s+([^\n]+)", sql)
+                if (
+                    match
+                    and re.search(rf"\b{alias_in.group(1)}\b", match.group(1))
+                    and re.search(rf"\b{alias_out.group(1)}\b", match.group(1))
+                ):
+                    trouve = True
+        assert trouve, (
+            "aucun GROUP BY ne porte à la fois l'alias dérivé de InIfBoundary "
+            "et l'alias dérivé de OutIfBoundary — le croisement doit agréger "
+            "sur les deux ensemble, pas deux requêtes séparées"
+        )
+
+    def test_le_panneau_frontieres_nexclut_pas_silencieusement_undefined(self) -> None:
+        """Règle zéro silencieux du prompt, cas nommé explicitement :
+        'undefined' représente 2,4 Go mesurés — c'est une information à
+        MONTRER, pas à cacher. Le SQL ne doit pas filtrer InIfBoundary ou
+        OutIfBoundary sur une exclusion de 'undefined'."""
+        dashboard = _dashboard_vue_ensemble()
+        for panel in dashboard.get("panels", []):
+            for target in panel.get("targets", []) or []:
+                sql = _sans_commentaires_sql(target.get("rawSql", ""))
+                if re.search(r"(?i)\bInIfBoundary\b", sql) and re.search(
+                    r"(?i)\bOutIfBoundary\b", sql
+                ):
+                    assert not re.search(
+                        r"(?i)(InIfBoundary|OutIfBoundary)\s*!=\s*'undefined'", sql
+                    ), (
+                        "le panneau frontières exclut 'undefined' — cette "
+                        "catégorie représente du trafic réel mesuré (2,4 Go), "
+                        "elle doit rester visible"
+                    )
+
+
+class TestTailleMoyenneDePaquetParExportateur:
+    """Taille moyenne de paquet par exportateur — révèle immédiatement un
+    profil anormal (un exportateur avec une moyenne très différente du parc
+    signale un comportement à investiguer)."""
+
+    def test_un_panneau_calcule_la_taille_moyenne_de_paquet_par_exportateur(self) -> None:
+        """La moyenne pondérée correcte est sum(Bytes*SamplingRate) /
+        sum(Packets*SamplingRate) — une simple avg(PacketSize) non pondérée
+        par le taux d'échantillonnage biaiserait le résultat entre
+        exportateurs à taux différents."""
+        dashboard = _dashboard_vue_ensemble()
+        trouve = False
+        for panel in dashboard.get("panels", []):
+            for target in panel.get("targets", []) or []:
+                sql = _sans_commentaires_sql(target.get("rawSql", ""))
+                a_group_exportateur = re.search(r"(?i)GROUP\s+BY\s+[^\n]*exportateur", sql)
+                if a_group_exportateur and _a_ratio_taille_moyenne_ponderee(sql):
+                    trouve = True
+        assert trouve, (
+            "aucun panneau ne calcule la taille moyenne de paquet par "
+            "exportateur via sum(Bytes*SamplingRate)/sum(Packets*SamplingRate) "
+            "groupé par exportateur — la moyenne pondérée par le taux "
+            "d'échantillonnage est absente"
+        )
+
+    def test_le_panneau_taille_moyenne_est_plafonne_par_limit(self) -> None:
+        dashboard = _dashboard_vue_ensemble()
+        for panel in dashboard.get("panels", []):
+            for target in panel.get("targets", []) or []:
+                sql = _sans_commentaires_sql(target.get("rawSql", ""))
+                if _a_ratio_taille_moyenne_ponderee(sql):
+                    assert re.search(r"(?i)\blimit\s+\d+", sql), (
+                        f"panneau taille moyenne sans LIMIT : {sql[:120]}"
+                    )
+
+
+class TestExporterRoleRegionTenantJamaisAxeDeGraphique:
+    """ExporterRole/ExporterRegion/ExporterTenant : UNE SEULE valeur mesurée
+    sur 3h de production — remplis mais CONSTANTS, donc sans pouvoir
+    discriminant. Un graphique dessus rendrait une part/barre unique à
+    100%, exactement le défaut corrigé sur les 16 piecharts (bloc 12/13
+    ci-dessus). Garde-fou dur : aucun GROUP BY ni piechart/barchart ne doit
+    les utiliser comme dimension d'agrégation."""
+
+    CHAMPS_CONSTANTS = ("ExporterRole", "ExporterRegion", "ExporterTenant")
+
+    def test_aucun_group_by_ne_ventile_par_exporterrole_region_ou_tenant(self) -> None:
+        offenders: list[str] = []
+        for chemin in _fichiers_dashboards():
+            dashboard = _charger_dashboard(chemin)
+            for panel in dashboard.get("panels", []):
+                for target in panel.get("targets", []) or []:
+                    sql = _sans_commentaires_sql(target.get("rawSql", ""))
+                    match = re.search(r"(?i)GROUP\s+BY\s+([^\n]+)", sql)
+                    if not match:
+                        continue
+                    for champ in self.CHAMPS_CONSTANTS:
+                        if re.search(rf"(?i)\b{champ}\b", match.group(1)):
+                            offenders.append(f"{chemin.name}: GROUP BY sur {champ}")
+        assert not offenders, (
+            "un champ CONSTANT (une seule valeur mesurée sur 3h de "
+            f"production) est utilisé comme axe de GROUP BY : {offenders} — "
+            "rendrait une part/barre unique à 100%, sans aucun pouvoir "
+            "discriminant"
+        )
+
+    def test_le_garde_fou_constants_mord_sur_un_group_by_exporterrole_sabote(self) -> None:
+        sql_sabote = (
+            "SELECT ExporterRole, sum(Bytes * SamplingRate) AS volume "
+            "FROM flows WHERE $__timeFilter(TimeReceived) GROUP BY ExporterRole "
+            "ORDER BY volume DESC LIMIT 10"
+        )
+        nettoyee = _sans_commentaires_sql(sql_sabote)
+        match = re.search(r"(?i)GROUP\s+BY\s+([^\n]+)", nettoyee)
+        assert match and re.search(r"(?i)\bExporterRole\b", match.group(1)), (
+            "le sabotage aurait dû rester détectable par le garde-fou"
+        )
+
+
+class TestDescriptionsDInterfaceDeclarees:
+    """InIfDescription/OutIfDescription : ~100% de remplissage, 5 valeurs
+    distinctes — les libellés déclarés ('WAN Internet', 'Tailscale mesh')
+    rendent les écrans lisibles sans connaître les noms techniques
+    d'interface. Exploité sur la fiche équipement (02-par-exportateur)."""
+
+    def test_un_panneau_de_la_fiche_exportateur_expose_inifdescription_ou_outifdescription(
+        self,
+    ) -> None:
+        dashboard = _dashboard_par_exportateur()
+        trouve = False
+        for panel in dashboard.get("panels", []):
+            for target in panel.get("targets", []) or []:
+                sql = _sans_commentaires_sql(target.get("rawSql", ""))
+                if re.search(r"(?i)\bInIfDescription\b", sql) or re.search(
+                    r"(?i)\bOutIfDescription\b", sql
+                ):
+                    trouve = True
+        assert trouve, (
+            "aucun panneau de 02-par-exportateur.json n'expose "
+            "InIfDescription ni OutIfDescription — champ mesuré à ~100% de "
+            "remplissage, non exploité"
+        )
+
+    def test_le_panneau_descriptions_est_filtre_sur_lexportateur_courant(self) -> None:
+        dashboard = _dashboard_par_exportateur()
+        for panel in dashboard.get("panels", []):
+            for target in panel.get("targets", []) or []:
+                sql = _sans_commentaires_sql(target.get("rawSql", ""))
+                if re.search(r"(?i)\bInIfDescription\b", sql) or re.search(
+                    r"(?i)\bOutIfDescription\b", sql
+                ):
+                    assert "$exporter" in sql, (
+                        f"panneau descriptions d'interface sans filtre "
+                        f"$exporter : {sql[:120]}"
+                    )
+
+
+class TestFlowDirectionParExportateur:
+    """FlowDirection : 3 valeurs distinctes, 100% de remplissage — entrant/
+    sortant/interne au niveau du flux, complète la vue interfaces IN/OUT
+    déjà présente sur la fiche équipement."""
+
+    def test_un_panneau_de_la_fiche_exportateur_ventile_par_flowdirection(self) -> None:
+        dashboard = _dashboard_par_exportateur()
+        trouve = False
+        for panel in dashboard.get("panels", []):
+            for target in panel.get("targets", []) or []:
+                sql = _sans_commentaires_sql(target.get("rawSql", ""))
+                if re.search(r"(?i)\bFlowDirection\b", sql):
+                    trouve = True
+        assert trouve, (
+            "aucun panneau de 02-par-exportateur.json ne ventile par "
+            "FlowDirection — champ mesuré à 100% de remplissage, non exploité"
+        )
+
+    def test_le_panneau_flowdirection_utilise_sum_bytes_samplingrate(self) -> None:
+        dashboard = _dashboard_par_exportateur()
+        trouve = False
+        for panel in dashboard.get("panels", []):
+            for target in panel.get("targets", []) or []:
+                sql = _sans_commentaires_sql(target.get("rawSql", ""))
+                if re.search(r"(?i)\bFlowDirection\b", sql) and re.search(
+                    r"sum\(\s*Bytes\s*\*\s*SamplingRate\s*\)", sql
+                ):
+                    trouve = True
+        assert trouve, (
+            "le panneau FlowDirection ne calcule pas son volume via "
+            "sum(Bytes * SamplingRate)"
+        )
+
+
+class TestNouveauxPanneauxChampsDisponiblesOntUnLien:
+    """Rappel de l'exigence transverse (mandatory) : tout panneau de données
+    ajouté par ce lot doit être cliquable et filtrer réellement — pas de
+    contrôle générique ici (déjà couvert par TestExemptionsDeLienExplicitesEt
+    Courtes, qui balaie TOUS les panneaux des 8 dashboards), ce test cible
+    nommément les 4 dimensions de ce lot pour que l'absence de lien soit
+    signalée avec un message spécifique à ce lot plutôt que noyée dans la
+    liste générique."""
+
+    def test_le_panneau_packetsizebucket_porte_un_lien(self) -> None:
+        dashboard = _dashboard_vue_ensemble()
+        for panel in dashboard.get("panels", []):
+            for target in panel.get("targets", []) or []:
+                sql = _sans_commentaires_sql(target.get("rawSql", ""))
+                if re.search(r"(?i)\bPacketSizeBucket\b", sql) and re.search(
+                    r"(?i)GROUP\s+BY", sql
+                ):
+                    assert _liens_dun_panneau(panel), (
+                        f"panneau PacketSizeBucket (id={panel.get('id')}) sans lien "
+                        "— exigence mandatory du prompt : tout panneau de données "
+                        "est cliquable et filtrable"
+                    )
+
+    def test_le_panneau_frontieres_porte_un_lien(self) -> None:
+        dashboard = _dashboard_vue_ensemble()
+        for panel in dashboard.get("panels", []):
+            for target in panel.get("targets", []) or []:
+                sql = _sans_commentaires_sql(target.get("rawSql", ""))
+                if re.search(r"(?i)\bInIfBoundary\b", sql) and re.search(
+                    r"(?i)\bOutIfBoundary\b", sql
+                ):
+                    assert _liens_dun_panneau(panel), (
+                        f"panneau frontières (id={panel.get('id')}) sans lien — "
+                        "exigence mandatory du prompt"
+                    )
+
+    def test_le_panneau_taille_moyenne_par_exportateur_porte_un_lien_vers_la_fiche(
+        self,
+    ) -> None:
+        dashboard = _dashboard_vue_ensemble()
+        for panel in dashboard.get("panels", []):
+            for target in panel.get("targets", []) or []:
+                sql = _sans_commentaires_sql(target.get("rawSql", ""))
+                if _a_ratio_taille_moyenne_ponderee(sql):
+                    liens = _liens_dun_panneau(panel)
+                    assert liens, (
+                        f"panneau taille moyenne par exportateur (id={panel.get('id')}) "
+                        "sans lien"
+                    )
+                    assert any(
+                        "var-exporter=" in lien.get("url", "") for lien in liens
+                    ), (
+                        "le lien du panneau taille moyenne par exportateur ne "
+                        "transmet pas var-exporter= vers la fiche exportateur"
+                    )
+
+
+
+# ---------------------------------------------------------------------------
+# 13. LOT SEGMENTATION RÉSEAU (2026-08-08) — SrcNetName/DstNetName,
+#     SrcNetRole/DstNetRole, SrcNetTenant/DstNetTenant, SrcNetPrefix/
+#     DstNetPrefix (table `networks` d'Akvorado, bloc `networks:` d'outlet.yaml)
+# ---------------------------------------------------------------------------
+#
+# Constat mesuré (prompt de la tâche, 3h de flux réels) : 18 champs remplis
+# mais exploités par AUCUN dashboard. Sur ce lot précis, ~78%/71% de
+# remplissage pour Name/Role/Tenant, 100% pour les préfixes — et surtout un
+# volume "non classé" mesuré à 8,9 Go / 3h, PLUS gros que chacun des deux
+# réseaux déclarés (lan-maison 7,4 Go, tailscale-mesh 4,4 Go). C'est
+# l'information la plus intéressante du lot : le trafic dont la source
+# n'appartient à AUCUN réseau déclaré. En entreprise (350 routeurs SFR,
+# plages par agence), une valeur vide sur SrcNetName/DstNetName ne veut pas
+# dire "rien à signaler" — elle veut dire "il manque une plage réseau dans
+# outlet.yaml". Ce bloc rend cette lecture mécanique et NOMMÉE (jamais un
+# tableau vide indiscernable d'un vide légitime, cf. CLAUDE.md racine, règle
+# "Zéro silencieux").
+
+
+def _dashboard_accueil() -> dict[str, Any]:
+    for chemin in _fichiers_dashboards():
+        dashboard = _charger_dashboard(chemin)
+        titre = dashboard.get("title", "").lower()
+        if "accueil" in titre or "traffic summary" in titre:
+            return dashboard
+    pytest.fail("aucun dashboard d'accueil trouvé")
+
+
+# `_dashboard_diagnostic_incidents` est défini plus haut (~l.1480) — une seconde
+# définition, ajoutée par un lot parallèle le 2026-08-11, ÉCRASAIT la première
+# pour TOUS les appels du module, y compris ceux écrits avant elle. Ici les deux
+# corps étaient identiques, donc invisible ; c'est précisément ce qui rend le
+# motif dangereux. Doublon retiré : UN concept = UNE source.
+
+
+_MOTIF_NON_CLASSE_NOMME = re.compile(
+    r"(?i)hors\s+p[ée]rim[èe]tre\s+d[ée]clar[ée]|non\s+class[ée]"
+)
+
+
+class TestSegmentationReseauChampsExploites:
+    """Les 8 champs SrcNet*/DstNet* doivent être exploités par au moins un
+    panneau des 3 dashboards de ce lot (accueil, applications-qos,
+    diagnostic-incidents) — répond au constat 'champs remplis non exploités'."""
+
+    CHAMPS_ATTENDUS = (
+        "SrcNetName",
+        "DstNetName",
+        "SrcNetRole",
+        "DstNetRole",
+        "SrcNetTenant",
+        "DstNetTenant",
+        "SrcNetPrefix",
+        "DstNetPrefix",
+    )
+
+    def test_chaque_champ_de_segmentation_reseau_est_reference_au_moins_une_fois(
+        self,
+    ) -> None:
+        manquants: list[str] = []
+        toutes_requetes: list[str] = []
+        for chemin in (
+            GRAFANA_DIR / "dashboards" / "00-accueil-traffic-summary.json",
+            GRAFANA_DIR / "dashboards" / "03-applications-qos.json",
+            GRAFANA_DIR / "dashboards" / "05-diagnostic-incidents.json",
+        ):
+            dashboard = _charger_dashboard(chemin)
+            toutes_requetes.extend(_toutes_les_requetes_sql(dashboard))
+        texte = "\n".join(_sans_commentaires_sql(r) for r in toutes_requetes)
+        for champ in self.CHAMPS_ATTENDUS:
+            if not re.search(rf"\b{champ}\b", texte):
+                manquants.append(champ)
+        assert not manquants, (
+            f"champs de segmentation réseau JAMAIS référencés dans le SQL des "
+            f"3 dashboards de ce lot : {manquants} — remplis en production "
+            "(78-100% selon le prompt) mais toujours pas exploités"
+        )
+
+    def test_le_garde_fou_mord_si_un_champ_est_absent_sabote(self) -> None:
+        texte_sabote = "SELECT SrcNetName, SrcNetRole FROM flows"
+        for champ in ("DstNetTenant", "SrcNetPrefix"):
+            assert not re.search(rf"\b{champ}\b", texte_sabote), (
+                "le sabotage aurait dû laisser au moins un champ absent détectable"
+            )
+
+
+class TestVolumeNonClasseNommeEtVisible:
+    """LE CŒUR DU LOT : le trafic dont SrcNetName/DstNetName est vide (aucun
+    réseau déclaré ne le couvre) doit apparaître comme une catégorie NOMMÉE
+    et VISIBLE, jamais comme une ligne vide filtrée hors du résultat.
+    Mesuré : 8,9 Go/3h de 'non classé', plus gros que les deux réseaux
+    déclarés réunis — c'est un signal d'exploitation direct (plages réseau
+    manquantes dans outlet.yaml), pas du bruit à masquer."""
+
+    def test_au_moins_un_panneau_nomme_explicitement_le_trafic_hors_perimetre(
+        self,
+    ) -> None:
+        trouve = False
+        for chemin in (
+            GRAFANA_DIR / "dashboards" / "00-accueil-traffic-summary.json",
+            GRAFANA_DIR / "dashboards" / "03-applications-qos.json",
+            GRAFANA_DIR / "dashboards" / "05-diagnostic-incidents.json",
+        ):
+            dashboard = _charger_dashboard(chemin)
+            for panel in dashboard.get("panels", []):
+                for target in panel.get("targets", []) or []:
+                    sql = _sans_commentaires_sql(target.get("rawSql", ""))
+                    if not re.search(r"(?i)SrcNetName|DstNetName", sql):
+                        continue
+                    if _MOTIF_NON_CLASSE_NOMME.search(sql):
+                        trouve = True
+        assert trouve, (
+            "aucun panneau ne nomme explicitement (ex: 'Hors périmètre "
+            "déclaré') le trafic dont le réseau source/destination est vide "
+            "— le volume le plus intéressant du lot (8,9 Go/3h mesurés) "
+            "resterait une ligne vide indiscernable d'un vide légitime"
+        )
+
+    def test_le_non_classe_nest_jamais_filtre_hors_du_resultat(self) -> None:
+        """Contrôle négatif : une requête qui exploite SrcNetName/DstNetName
+        ne doit JAMAIS porter un `AND SrcNetName != ''` (ou DstNetName) qui
+        écarterait silencieusement le non-classé du classement — le motif
+        interdit exact que le prompt met en garde (masquer comme du bruit)."""
+        offenders: list[str] = []
+        for chemin in (
+            GRAFANA_DIR / "dashboards" / "00-accueil-traffic-summary.json",
+            GRAFANA_DIR / "dashboards" / "03-applications-qos.json",
+            GRAFANA_DIR / "dashboards" / "05-diagnostic-incidents.json",
+        ):
+            dashboard = _charger_dashboard(chemin)
+            for panel in dashboard.get("panels", []):
+                for target in panel.get("targets", []) or []:
+                    sql = _sans_commentaires_sql(target.get("rawSql", ""))
+                    if not re.search(r"(?i)SrcNetName|DstNetName", sql):
+                        continue
+                    if re.search(
+                        r"(?i)(SrcNetName|DstNetName)\s*(!=|<>)\s*''", sql
+                    ):
+                        offenders.append(f"{chemin.name}: filtre le non-classé hors résultat")
+        assert not offenders, (
+            "un panneau de segmentation réseau filtre le non-classé hors du "
+            f"résultat (motif interdit) : {offenders}"
+        )
+
+    def test_le_garde_fou_non_classe_mord_si_la_categorie_disparait_sabotee(
+        self,
+    ) -> None:
+        sql_sabote = (
+            "SELECT SrcNetName AS reseau, sum(Bytes * SamplingRate) AS volume "
+            "FROM flows WHERE $__timeFilter(TimeReceived) AND SrcNetName != '' "
+            "GROUP BY reseau ORDER BY volume DESC LIMIT 20"
+        )
+        nettoyee = _sans_commentaires_sql(sql_sabote)
+        assert not _MOTIF_NON_CLASSE_NOMME.search(nettoyee), (
+            "le sabotage (filtre SrcNetName != '') aurait dû rester détectable "
+            "par l'absence du nommage explicite du non-classé"
+        )
+        assert re.search(r"(?i)SrcNetName\s*(!=|<>)\s*''", nettoyee), (
+            "le sabotage aurait dû rester détectable par le motif de filtre interdit"
+        )
+
+
+class TestMatriceReseauSourceDestination:
+    """Vue demandée en premier par le prompt : qui parle à qui, en noms
+    lisibles (SrcNetName -> DstNetName) plutôt qu'en adresses IP."""
+
+    def test_un_panneau_croise_reseau_source_et_reseau_destination(self) -> None:
+        dashboard = _dashboard_accueil()
+        trouve = False
+        for panel in dashboard.get("panels", []):
+            for target in panel.get("targets", []) or []:
+                sql = _sans_commentaires_sql(target.get("rawSql", ""))
+                if re.search(r"(?i)SrcNetName", sql) and re.search(
+                    r"(?i)DstNetName", sql
+                ):
+                    trouve = True
+        assert trouve, (
+            "aucun panneau de l'accueil ne croise SrcNetName et DstNetName "
+            "dans le même SELECT — la matrice réseau source -> destination "
+            "demandée en premier par le prompt est absente"
+        )
+
+    def test_la_matrice_groupe_bien_par_les_deux_dimensions_ensemble(self) -> None:
+        """Preuve de structure : un seul GROUP BY qui porte les deux
+        dimensions ENSEMBLE, pas deux requêtes séparées qui ne se recoupent
+        jamais (même esprit que TestCroisementApplicationQos)."""
+        dashboard = _dashboard_accueil()
+        trouve = False
+        for panel in dashboard.get("panels", []):
+            for target in panel.get("targets", []) or []:
+                sql = _sans_commentaires_sql(target.get("rawSql", ""))
+                match = re.search(r"(?i)GROUP\s+BY\s+([^\n]+)", sql)
+                if not match:
+                    continue
+                groupe = match.group(1).lower()
+                if "srcnet" in groupe and "dstnet" in groupe:
+                    trouve = True
+        assert trouve, (
+            "aucun GROUP BY ne porte à la fois une dimension réseau source "
+            "et réseau destination ensemble"
+        )
+
+
+class TestVolumeParRoleReseau:
+    """Vue 'lan / internal / hors périmètre' — révèle si le trafic reste
+    interne ou sort. SrcNetRole/DstNetRole, 3 valeurs distinctes mesurées."""
+
+    def test_un_panneau_agrege_le_volume_par_role_reseau(self) -> None:
+        trouve = False
+        for chemin in (
+            GRAFANA_DIR / "dashboards" / "00-accueil-traffic-summary.json",
+            GRAFANA_DIR / "dashboards" / "03-applications-qos.json",
+            GRAFANA_DIR / "dashboards" / "05-diagnostic-incidents.json",
+        ):
+            dashboard = _charger_dashboard(chemin)
+            for panel in dashboard.get("panels", []):
+                for target in panel.get("targets", []) or []:
+                    sql = _sans_commentaires_sql(target.get("rawSql", ""))
+                    if re.search(r"(?i)SrcNetRole|DstNetRole", sql) and re.search(
+                        r"(?i)sum\(\s*Bytes\s*\*\s*SamplingRate\s*\)", sql
+                    ):
+                        trouve = True
+        assert trouve, (
+            "aucun panneau n'agrège le volume par rôle réseau "
+            "(SrcNetRole/DstNetRole) — la vue 'reste interne ou sort' est absente"
+        )
+
+
+class TestDstNetPrefixExploite:
+    """DstNetPrefix : 7 valeurs distinctes mesurées, 100% de remplissage —
+    les préfixes de destination réellement observés."""
+
+    def test_un_panneau_classe_le_volume_par_prefixe_destination(self) -> None:
+        trouve = False
+        for chemin in (
+            GRAFANA_DIR / "dashboards" / "00-accueil-traffic-summary.json",
+            GRAFANA_DIR / "dashboards" / "03-applications-qos.json",
+            GRAFANA_DIR / "dashboards" / "05-diagnostic-incidents.json",
+        ):
+            dashboard = _charger_dashboard(chemin)
+            for panel in dashboard.get("panels", []):
+                for target in panel.get("targets", []) or []:
+                    sql = _sans_commentaires_sql(target.get("rawSql", ""))
+                    if re.search(r"(?i)DstNetPrefix", sql) and re.search(
+                        r"(?i)sum\(\s*Bytes\s*\*\s*SamplingRate\s*\)", sql
+                    ):
+                        trouve = True
+        assert trouve, (
+            "aucun panneau n'exploite DstNetPrefix avec un volume agrégé — "
+            "les préfixes de destination réellement observés restent invisibles"
+        )
+
+
+class TestCourbeNonClasseDansLeTemps:
+    """Piste du prompt : une courbe qui MONTE = des plages à déclarer. Vit
+    dans 'Diagnostic incidents' (la question 'y a-t-il un incident/défaut de
+    déclaration en cours ?' est exactement le rôle de ce dashboard)."""
+
+    def test_un_panneau_temporel_suit_la_part_de_trafic_non_classe(self) -> None:
+        dashboard = _dashboard_diagnostic_incidents()
+        trouve = False
+        for panel in dashboard.get("panels", []):
+            if panel.get("type") != "timeseries":
+                continue
+            for target in panel.get("targets", []) or []:
+                sql = _sans_commentaires_sql(target.get("rawSql", ""))
+                if re.search(r"(?i)SrcNetName|DstNetName", sql) and re.search(
+                    r"(?i)\$__timeInterval", sql
+                ):
+                    trouve = True
+        assert trouve, (
+            "aucun panneau timeseries du dashboard 'Diagnostic incidents' ne "
+            "suit dans le temps la part de trafic non classé — la piste "
+            "'une courbe qui monte = des plages à déclarer' est absente"
+        )
+
+
+class TestVariableNetRoleDynamique:
+    """Comme $exporter/$application, toute variable ajoutée pour ce lot doit
+    être peuplée par requête, jamais figée."""
+
+    def test_toute_variable_net_role_ou_net_name_est_peuplee_par_requete(self) -> None:
+        for chemin in (
+            GRAFANA_DIR / "dashboards" / "00-accueil-traffic-summary.json",
+            GRAFANA_DIR / "dashboards" / "03-applications-qos.json",
+            GRAFANA_DIR / "dashboards" / "05-diagnostic-incidents.json",
+        ):
+            dashboard = _charger_dashboard(chemin)
+            for variable in dashboard.get("templating", {}).get("list", []) or []:
+                nom = (variable.get("name") or "").lower()
+                if "net_role" in nom or "net_name" in nom or "reseau" in nom:
+                    assert variable.get("type") == "query", (
+                        f"{chemin.name}: variable '{variable.get('name')}' doit "
+                        f"être de type 'query', pas {variable.get('type')!r}"
+                    )
+                    assert variable.get("type") not in ("custom", "constant")
+
+
+class TestLiensSegmentationReseau:
+    """Exigence mandatory : tout panneau de données ajouté par ce lot est
+    cliquable et filtre réellement."""
+
+    def test_le_panneau_de_matrice_reseau_porte_des_liens(self) -> None:
+        dashboard = _dashboard_accueil()
+        for panel in dashboard.get("panels", []):
+            for target in panel.get("targets", []) or []:
+                sql = _sans_commentaires_sql(target.get("rawSql", ""))
+                if re.search(r"(?i)SrcNetName", sql) and re.search(
+                    r"(?i)DstNetName", sql
+                ):
+                    assert _liens_dun_panneau(panel), (
+                        f"panneau matrice réseau (id={panel.get('id')}) sans lien "
+                        "— exigence mandatory"
+                    )
+
+    def test_le_panneau_role_reseau_porte_des_liens(self) -> None:
+        for chemin in (
+            GRAFANA_DIR / "dashboards" / "00-accueil-traffic-summary.json",
+            GRAFANA_DIR / "dashboards" / "03-applications-qos.json",
+            GRAFANA_DIR / "dashboards" / "05-diagnostic-incidents.json",
+        ):
+            dashboard = _charger_dashboard(chemin)
+            for panel in dashboard.get("panels", []):
+                for target in panel.get("targets", []) or []:
+                    sql = _sans_commentaires_sql(target.get("rawSql", ""))
+                    if re.search(r"(?i)SrcNetRole|DstNetRole", sql) and re.search(
+                        r"(?i)sum\(\s*Bytes\s*\*\s*SamplingRate\s*\)", sql
+                    ):
+                        assert _liens_dun_panneau(panel), (
+                            f"{chemin.name}: panneau rôle réseau (id={panel.get('id')}) "
+                            "sans lien — exigence mandatory"
+                        )
+
+    def test_les_liens_de_segmentation_reseau_ciblent_une_variable_declaree(
+        self,
+    ) -> None:
+        """Un lien vers une variable ignorée est pire que pas de lien (prompt).
+        Vérifie que toute URL var-net_role=/var-net_name= pointe vers un
+        dashboard qui déclare réellement cette variable dans templating.list
+        ET que le SQL de ce dashboard la consomme dans un WHERE/HAVING."""
+        variables_par_uid: dict[str, set[str]] = {}
+        requetes_par_uid: dict[str, list[str]] = {}
+        for chemin in _fichiers_dashboards():
+            dashboard = _charger_dashboard(chemin)
+            uid = dashboard.get("uid", "")
+            variables_par_uid[uid] = {
+                v.get("name") for v in dashboard.get("templating", {}).get("list", []) or []
+            }
+            requetes_par_uid[uid] = _requetes_des_panneaux_uniquement(dashboard)
+
+        offenders: list[str] = []
+        for chemin in (
+            GRAFANA_DIR / "dashboards" / "00-accueil-traffic-summary.json",
+            GRAFANA_DIR / "dashboards" / "03-applications-qos.json",
+            GRAFANA_DIR / "dashboards" / "05-diagnostic-incidents.json",
+        ):
+            dashboard = _charger_dashboard(chemin)
+            for lien in _tous_les_champs_links(dashboard):
+                url = lien.get("url", "")
+                match_var = re.search(r"var-(net_role|net_name)=", url)
+                if not match_var:
+                    continue
+                nom_variable = match_var.group(1)
+                match_uid = re.search(r"/d/([a-zA-Z0-9\-_]+)/", url)
+                if not match_uid:
+                    offenders.append(f"{chemin.name}: lien sans uid cible : {url}")
+                    continue
+                uid_cible = match_uid.group(1)
+                if nom_variable not in variables_par_uid.get(uid_cible, set()):
+                    offenders.append(
+                        f"{chemin.name}: lien var-{nom_variable}= vers {uid_cible} qui "
+                        "ne déclare pas cette variable dans templating.list"
+                    )
+                    continue
+                sql_cible = "\n".join(
+                    _sans_commentaires_sql(r) for r in requetes_par_uid.get(uid_cible, [])
+                )
+                if not re.search(rf"(?i)\${{?{nom_variable}\b", sql_cible):
+                    offenders.append(
+                        f"{chemin.name}: variable {nom_variable} déclarée sur "
+                        f"{uid_cible} mais jamais consommée dans un WHERE/HAVING"
+                    )
+        assert not offenders, (
+            "liens de segmentation réseau vers une variable ignorée (pire "
+            f"qu'aucun lien, cf. prompt) : {offenders}"
+        )
+
+    def test_le_garde_fou_lien_ignore_mord_sur_une_variable_non_declaree_sabotee(
+        self,
+    ) -> None:
+        variables_par_uid = {"okvorado-accueil-traffic-summary": {"exporter"}}
+        url_sabotee = "/d/okvorado-accueil-traffic-summary/x?var-net_role=lan"
+        match_var = re.search(r"var-(net_role|net_name)=", url_sabotee)
+        assert match_var is not None
+        match_uid = re.search(r"/d/([a-zA-Z0-9\-_]+)/", url_sabotee)
+        assert match_uid is not None
+        assert match_var.group(1) not in variables_par_uid[match_uid.group(1)], (
+            "le sabotage aurait dû rester détectable (variable non déclarée)"
+        )
+
+
+class TestPiechartSegmentationReseauReduceOptions:
+    """Garde-fou n°3 du prompt : tout piechart de ce lot doit porter
+    reduceOptions {values: true, calcs: [], fields: ""} — sinon le donut
+    rend une part à 100% (défaut déjà mesuré sur 16 piecharts)."""
+
+    def test_tout_piechart_de_segmentation_reseau_porte_le_reduceoptions_correct(
+        self,
+    ) -> None:
+        offenders: list[str] = []
+        for chemin in (
+            GRAFANA_DIR / "dashboards" / "00-accueil-traffic-summary.json",
+            GRAFANA_DIR / "dashboards" / "03-applications-qos.json",
+            GRAFANA_DIR / "dashboards" / "05-diagnostic-incidents.json",
+        ):
+            dashboard = _charger_dashboard(chemin)
+            for panel in dashboard.get("panels", []):
+                if panel.get("type") != "piechart":
+                    continue
+                for target in panel.get("targets", []) or []:
+                    sql = _sans_commentaires_sql(target.get("rawSql", ""))
+                    if not re.search(
+                        r"(?i)SrcNetName|DstNetName|SrcNetRole|DstNetRole|"
+                        r"SrcNetTenant|DstNetTenant|SrcNetPrefix|DstNetPrefix",
+                        sql,
+                    ):
+                        continue
+                    reduce_options = panel.get("options", {}).get("reduceOptions", {})
+                    if (
+                        reduce_options.get("values") is not True
+                        or reduce_options.get("calcs") != []
+                        or reduce_options.get("fields") != ""
+                    ):
+                        offenders.append(
+                            f"{chemin.name}: panneau id={panel.get('id')} "
+                            f"reduceOptions={reduce_options!r}"
+                        )
+        assert not offenders, (
+            f"piechart(s) de segmentation réseau sans reduceOptions correct "
+            f"(le donut rendrait une part à 100%) : {offenders}"
+        )
+
+    def test_le_garde_fou_reduceoptions_mord_si_calcs_nest_plus_vide_sabote(
+        self,
+    ) -> None:
+        reduce_options_sabote = {"values": True, "calcs": ["mean"], "fields": ""}
+        assert reduce_options_sabote.get("calcs") != [], (
+            "le sabotage aurait dû rester détectable (calcs non vide)"
+        )
+
+
+class TestDescriptionZeroSilencieuxSegmentationReseau:
+    """Chaque panneau de segmentation réseau porte une description qui NOMME
+    la source des champs (table `networks` d'Akvorado / outlet.yaml), pour
+    qu'un exploitant sache pourquoi une ligne est vide."""
+
+    def test_les_panneaux_de_segmentation_reseau_ont_une_description_non_vide(
+        self,
+    ) -> None:
+        offenders: list[str] = []
+        for chemin in (
+            GRAFANA_DIR / "dashboards" / "00-accueil-traffic-summary.json",
+            GRAFANA_DIR / "dashboards" / "03-applications-qos.json",
+            GRAFANA_DIR / "dashboards" / "05-diagnostic-incidents.json",
+        ):
+            dashboard = _charger_dashboard(chemin)
+            for panel in dashboard.get("panels", []):
+                for target in panel.get("targets", []) or []:
+                    sql = _sans_commentaires_sql(target.get("rawSql", ""))
+                    if re.search(
+                        r"(?i)SrcNetName|DstNetName|SrcNetRole|DstNetRole|"
+                        r"SrcNetTenant|DstNetTenant|SrcNetPrefix|DstNetPrefix",
+                        sql,
+                    ):
+                        if not (panel.get("description") or "").strip():
+                            offenders.append(f"{chemin.name}: panneau id={panel.get('id')}")
+                        break
+        assert not offenders, (
+            f"panneau(x) de segmentation réseau sans description (zéro "
+            f"silencieux — d'où vient le champ, que veut dire une ligne vide) : "
+            f"{offenders}"
+        )
+
+
+class TestBornesDePeriodeSegmentationReseau:
+    """Miroir ciblé de TestBornesDePeriode : les nouvelles requêtes de ce lot
+    respectent elles aussi $__timeFilter et un LIMIT plafonné sur les classements."""
+
+    def test_les_requetes_de_segmentation_reseau_utilisent_le_timefilter(self) -> None:
+        offenders: list[str] = []
+        for chemin in (
+            GRAFANA_DIR / "dashboards" / "00-accueil-traffic-summary.json",
+            GRAFANA_DIR / "dashboards" / "03-applications-qos.json",
+            GRAFANA_DIR / "dashboards" / "05-diagnostic-incidents.json",
+        ):
+            dashboard = _charger_dashboard(chemin)
+            for panel in dashboard.get("panels", []):
+                for target in panel.get("targets", []) or []:
+                    sql = _sans_commentaires_sql(target.get("rawSql", ""))
+                    if not re.search(
+                        r"(?i)SrcNetName|DstNetName|SrcNetRole|DstNetRole|"
+                        r"SrcNetTenant|DstNetTenant|SrcNetPrefix|DstNetPrefix",
+                        sql,
+                    ):
+                        continue
+                    if "$__timeFilter" not in sql:
+                        offenders.append(f"{chemin.name}: panneau id={panel.get('id')}")
+        assert not offenders, (
+            f"requête(s) de segmentation réseau sans $__timeFilter : {offenders}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 14. LOT « filtrer sur tous les champs » (2026-08-12) — 8 trous de filtrage
+#     mesurés : SrcAddr/DstAddr/DstPort (02), SrcAddr/DstAddr (03),
+#     OutIfName (04), SrcAddr/DstAddr (06, réutilise $adresse existante).
+#
+# Le test qui compte (prompt) : pour chaque champ agrégé dans un GROUP BY non
+# temporel, il existe une variable de template QUI EST CONSOMMÉE dans le SQL
+# de CE panneau — pas seulement déclarée. Une variable ignorée par le WHERE
+# est un faux filtre, pire que l'absence de filtre (l'exploitant croit
+# filtrer). Chaque test ci-dessous vérifie donc la CONSOMMATION dans la
+# clause WHERE/HAVING du panneau qui agrège le champ, jamais seulement
+# l'existence de la variable dans templating.list.
+# ---------------------------------------------------------------------------
+
+
+# `_panneau_par_id` est défini plus haut (~l.3136) et fusionné avec la version
+# qui vivait ici : la recherche dans les `row` y a été reprise. Voir son
+# docstring — deux définitions concurrentes au niveau module rendaient la suite
+# verte par chance, pas par construction.
+
+
+def _panneau_par_id_requis(dashboard: dict[str, Any], panel_id: int) -> dict[str, Any]:
+    """Variante stricte : échoue si le panneau est absent.
+
+    Pour les appelants qui n'ont rien de plus utile à dire qu'« il devrait être
+    là » — les autres utilisent `_panneau_par_id` et écrivent leur propre
+    message.
+    """
+    panel = _panneau_par_id(dashboard, panel_id)
+    if panel is None:
+        pytest.fail(f"aucun panneau id={panel_id} trouvé")
+    return panel
+
+
+def _sql_du_panneau(panel: dict[str, Any]) -> str:
+    sqls = [
+        _sans_commentaires_sql(t.get("rawSql", ""))
+        for t in panel.get("targets", []) or []
+        if isinstance(t, dict) and t.get("rawSql")
+    ]
+    return "\n".join(sqls)
+
+
+class TestFiltrageSrcAddrDstAddrDstPortParExportateur:
+    """02-par-exportateur.json, panneau id=5 « Top conversations » : GROUP BY
+    SrcAddr, DstAddr, DstPort sans aucune variable pour restreindre le
+    classement à une conversation précise — trou mesuré (prompt)."""
+
+    def _dashboard(self) -> dict[str, Any]:
+        return _charger_dashboard(DASHBOARDS_DIR / "02-par-exportateur.json")
+
+    def test_les_variables_src_addr_dst_addr_port_dst_existent(self) -> None:
+        dashboard = self._dashboard()
+        noms = {v.get("name") for v in dashboard.get("templating", {}).get("list", []) or []}
+        for attendu in ("src_addr", "dst_addr", "port_dst"):
+            assert attendu in noms, (
+                f"02-par-exportateur.json: variable '{attendu}' absente "
+                f"(variables présentes : {sorted(noms)})"
+            )
+
+    def test_les_variables_sont_peuplees_par_requete_bornee(self) -> None:
+        """Même modèle que $interface/$application déjà en place sur ce
+        dashboard : type 'query', requête bornée par $__timeFilter et
+        LIMIT — jamais un uniqExact() nu sur toute la table brute."""
+        dashboard = self._dashboard()
+        variables = {
+            v.get("name"): v for v in dashboard.get("templating", {}).get("list", []) or []
+        }
+        for nom in ("src_addr", "dst_addr", "port_dst"):
+            variable = variables[nom]
+            assert variable.get("type") == "query", (
+                f"02-par-exportateur.json: variable '{nom}' doit être de type "
+                f"'query', pas {variable.get('type')!r}"
+            )
+            query = variable.get("query", "")
+            assert "$__timeFilter" in query, (
+                f"02-par-exportateur.json: la requête de '{nom}' n'est pas "
+                f"bornée par $__timeFilter — coûteuse sur la table brute"
+            )
+            assert re.search(r"(?i)\blimit\s+\d+", query), (
+                f"02-par-exportateur.json: la requête de '{nom}' n'a pas de LIMIT"
+            )
+
+    def test_le_panneau_top_conversations_consomme_les_trois_variables(self) -> None:
+        dashboard = self._dashboard()
+        panel = _panneau_par_id_requis(dashboard, 5)
+        sql = _sql_du_panneau(panel)
+        assert "${src_addr:singlequote}" in sql, (
+            "02-par-exportateur.json panneau id=5: SQL ne consomme pas "
+            "${src_addr:singlequote} — variable déclarée mais ignorée (faux filtre)"
+        )
+        assert "${dst_addr:singlequote}" in sql, (
+            "02-par-exportateur.json panneau id=5: SQL ne consomme pas "
+            "${dst_addr:singlequote} — variable déclarée mais ignorée (faux filtre)"
+        )
+        assert "${port_dst:singlequote}" in sql, (
+            "02-par-exportateur.json panneau id=5: SQL ne consomme pas "
+            "${port_dst:singlequote} — variable déclarée mais ignorée (faux filtre)"
+        )
+
+    def test_le_filtre_src_addr_compare_la_meme_representation_demappee(self) -> None:
+        """SrcAddr/DstAddr sont IPv6 en base (IPv4-mapped) — le filtre DOIT
+        comparer la même représentation démappée que la colonne affichée
+        (replaceOne(IPv6NumToString(...), '::ffff:', '')), sinon le filtre ne
+        matche jamais rien (mesuré ailleurs sur ce projet, cf. cutIPv6)."""
+        dashboard = self._dashboard()
+        panel = _panneau_par_id_requis(dashboard, 5)
+        sql = _sql_du_panneau(panel)
+        assert re.search(
+            r"(?i)replaceOne\(\s*IPv6NumToString\(\s*SrcAddr\s*\)\s*,\s*'::ffff:'\s*,\s*''\s*\)"
+            r"\s+IN\s*\(\s*\$\{src_addr:singlequote\}\s*\)",
+            sql,
+        ), (
+            "02-par-exportateur.json panneau id=5: le filtre src_addr ne "
+            "compare pas replaceOne(IPv6NumToString(SrcAddr),'::ffff:','') — "
+            "risque de comparer une IPv4-mapped brute à une IP démappée, "
+            "le filtre ne matcherait jamais"
+        )
+        assert re.search(
+            r"(?i)replaceOne\(\s*IPv6NumToString\(\s*DstAddr\s*\)\s*,\s*'::ffff:'\s*,\s*''\s*\)"
+            r"\s+IN\s*\(\s*\$\{dst_addr:singlequote\}\s*\)",
+            sql,
+        ), (
+            "02-par-exportateur.json panneau id=5: le filtre dst_addr ne "
+            "compare pas la même représentation démappée que la colonne affichée"
+        )
+
+    def test_le_garde_fou_mord_si_la_clause_where_est_retiree_sabote(self) -> None:
+        """Sabotage : simule le panneau SANS la clause IN(${src_addr...}) —
+        preuve que le test ci-dessus détecterait une variable orpheline."""
+        sql_sabote = (
+            "SELECT replaceOne(IPv6NumToString(SrcAddr), '::ffff:', '') AS source "
+            "FROM flows WHERE $__timeFilter(TimeReceived) AND ExporterName = '$exporter' "
+            "GROUP BY SrcAddr, DstAddr, DstPort ORDER BY volume DESC LIMIT 25"
+        )
+        assert "${src_addr:singlequote}" not in sql_sabote, (
+            "le sabotage aurait dû faire disparaître la consommation de src_addr"
+        )
+
+
+class TestFiltrageSrcAddrDstAddrApplicationsQos:
+    """03-applications-qos.json, panneaux id=7 (convergence), id=8 (détail
+    convergence), id=9 (top talkers) : GROUP BY SrcAddr/DstAddr sans variable
+    pour restreindre à une conversation précise — trou mesuré (prompt)."""
+
+    def _dashboard(self) -> dict[str, Any]:
+        return _charger_dashboard(DASHBOARDS_DIR / "03-applications-qos.json")
+
+    def test_les_variables_src_addr_dst_addr_existent_et_sont_dynamiques(self) -> None:
+        dashboard = self._dashboard()
+        variables = {
+            v.get("name"): v for v in dashboard.get("templating", {}).get("list", []) or []
+        }
+        for nom in ("src_addr", "dst_addr"):
+            assert nom in variables, (
+                f"03-applications-qos.json: variable '{nom}' absente "
+                f"(variables présentes : {sorted(variables)})"
+            )
+            variable = variables[nom]
+            assert variable.get("type") == "query", (
+                f"03-applications-qos.json: variable '{nom}' doit être de "
+                f"type 'query', pas {variable.get('type')!r}"
+            )
+            query = variable.get("query", "")
+            assert "$__timeFilter" in query and re.search(r"(?i)\blimit\s+\d+", query), (
+                f"03-applications-qos.json: la requête de '{nom}' doit être "
+                f"bornée ($__timeFilter + LIMIT)"
+            )
+
+    def test_le_panneau_top_talkers_consomme_src_addr_et_dst_addr(self) -> None:
+        dashboard = self._dashboard()
+        panel = _panneau_par_id_requis(dashboard, 9)
+        sql = _sql_du_panneau(panel)
+        assert "${src_addr:singlequote}" in sql, (
+            "03-applications-qos.json panneau id=9 (top talkers): ne consomme "
+            "pas ${src_addr:singlequote}"
+        )
+        assert "${dst_addr:singlequote}" in sql, (
+            "03-applications-qos.json panneau id=9 (top talkers): ne consomme "
+            "pas ${dst_addr:singlequote}"
+        )
+
+    def test_les_filtres_comparent_la_representation_demappee(self) -> None:
+        dashboard = self._dashboard()
+        panel = _panneau_par_id_requis(dashboard, 9)
+        sql = _sql_du_panneau(panel)
+        assert re.search(
+            r"(?i)replaceOne\(\s*IPv6NumToString\(\s*SrcAddr\s*\)\s*,\s*'::ffff:'\s*,\s*''\s*\)"
+            r"\s+IN\s*\(\s*\$\{src_addr:singlequote\}\s*\)",
+            sql,
+        ), (
+            "03-applications-qos.json panneau id=9: le filtre src_addr doit "
+            "comparer replaceOne(IPv6NumToString(SrcAddr),'::ffff:',''), pas "
+            "SrcAddr brut (IPv4-mapped), sinon il ne matche jamais"
+        )
+
+    def test_le_garde_fou_mord_si_les_variables_sont_ignorees_sabote(self) -> None:
+        sql_sabote = (
+            "SELECT SrcAddr, DstAddr FROM flows WHERE $__timeFilter(TimeReceived) "
+            "GROUP BY SrcAddr, DstAddr LIMIT 30"
+        )
+        assert "${src_addr:singlequote}" not in sql_sabote and (
+            "${dst_addr:singlequote}" not in sql_sabote
+        ), "le sabotage aurait dû faire disparaître les deux consommations"
+
+
+class TestFiltrageInterfaceNetworkSnapshot:
+    """04-network-snapshot.json, panneaux id=1 (Top N Interfaces by Speed) et
+    id=2 (Top N Interfaces by Utilization) : GROUP BY sur l'alias 'interface'
+    (union InIfName/OutIfName) sans aucune variable — ce dashboard n'a QUE
+    $exporter, trou mesuré (prompt : OutIfName agrégé sans variable)."""
+
+    def _dashboard(self) -> dict[str, Any]:
+        return _charger_dashboard(DASHBOARDS_DIR / "04-network-snapshot.json")
+
+    def test_la_variable_interface_existe_et_est_dynamique(self) -> None:
+        dashboard = self._dashboard()
+        variables = {
+            v.get("name"): v for v in dashboard.get("templating", {}).get("list", []) or []
+        }
+        assert "interface" in variables, (
+            f"04-network-snapshot.json: variable 'interface' absente "
+            f"(variables présentes : {sorted(variables)})"
+        )
+        variable = variables["interface"]
+        assert variable.get("type") == "query", (
+            f"04-network-snapshot.json: variable 'interface' doit être de "
+            f"type 'query', pas {variable.get('type')!r}"
+        )
+        query = variable.get("query", "")
+        assert "$__timeFilter" in query, (
+            "04-network-snapshot.json: la requête de 'interface' n'est pas "
+            "bornée par $__timeFilter"
+        )
+
+    def test_les_panneaux_top_interfaces_consomment_la_variable_interface(self) -> None:
+        dashboard = self._dashboard()
+        for panel_id in (1, 2):
+            panel = _panneau_par_id_requis(dashboard, panel_id)
+            sql = _sql_du_panneau(panel)
+            assert "${interface:singlequote}" in sql, (
+                f"04-network-snapshot.json panneau id={panel_id} "
+                f"({panel.get('title')}): ne consomme pas "
+                f"${{interface:singlequote}} — variable déclarée mais ignorée"
+            )
+
+    def test_le_garde_fou_mord_si_la_variable_interface_est_ignoree_sabote(self) -> None:
+        sql_sabote = (
+            "SELECT interface, sum(debit_in) FROM (...) GROUP BY exportateur, "
+            "interface ORDER BY vitesse_in DESC LIMIT 20"
+        )
+        assert "${interface:singlequote}" not in sql_sabote, (
+            "le sabotage aurait dû faire disparaître la consommation d'interface"
+        )
+
+
+class TestFiltrageAdresseReutiliseeSurAnomalies:
+    """06-anomalies.json, panneaux id=61 (flux suspects) et id=63 (score dans
+    le temps) : GROUP BY SrcAddr, DstAddr sans consommer la variable $adresse
+    déjà déclarée sur ce dashboard. Règle anti-redondance du projet : UN
+    concept = UNE source — pas de nouvelle variable, réutilisation de
+    $adresse existante en filtre optionnel (0.0.0.0 = pas de restriction,
+    cohérent avec son défaut déjà documenté sur le panneau id=68)."""
+
+    def _dashboard(self) -> dict[str, Any]:
+        return _charger_dashboard(DASHBOARDS_DIR / "06-anomalies.json")
+
+    def test_aucune_nouvelle_variable_adresse_nest_creee(self) -> None:
+        """Anti-redondance : une seule variable 'adresse' sur ce dashboard."""
+        dashboard = self._dashboard()
+        variables = dashboard.get("templating", {}).get("list", []) or []
+        noms_adresse = [v.get("name") for v in variables if "adresse" in (v.get("name") or "")]
+        assert noms_adresse == ["adresse"], (
+            f"06-anomalies.json: attendu exactement une variable 'adresse' "
+            f"(anti-redondance, UN concept = UNE source), trouvé : {noms_adresse}"
+        )
+
+    def test_les_panneaux_flux_suspects_et_score_temps_consomment_adresse(self) -> None:
+        dashboard = self._dashboard()
+        for panel_id in (61, 63):
+            panel = _panneau_par_id_requis(dashboard, panel_id)
+            sql = _sql_du_panneau(panel)
+            assert "$adresse" in sql, (
+                f"06-anomalies.json panneau id={panel_id} ({panel.get('title')}): "
+                f"ne consomme pas $adresse — variable déclarée sur ce dashboard "
+                f"mais ignorée par ce panneau (faux filtre)"
+            )
+
+    def test_le_filtre_adresse_reste_optionnel_par_defaut(self) -> None:
+        """Le défaut de $adresse est '0.0.0.0' (cf. panneau id=68 : 'vide par
+        défaut'). Sur les panneaux 61/63 — censés afficher TOUT le classement
+        par défaut — le filtre doit donc être conditionnel (activé seulement
+        si $adresse != '0.0.0.0'), jamais une égalité stricte qui viderait
+        ces panneaux par défaut."""
+        dashboard = self._dashboard()
+        for panel_id in (61, 63):
+            panel = _panneau_par_id_requis(dashboard, panel_id)
+            sql = _sql_du_panneau(panel)
+            assert re.search(r"(?i)'\$adresse'\s*=\s*'0\.0\.0\.0'", sql), (
+                f"06-anomalies.json panneau id={panel_id}: le filtre $adresse "
+                f"doit rester optionnel (comparaison explicite à '0.0.0.0' "
+                f"pour ne pas restreindre par défaut), motif absent"
+            )
+
+    def test_le_filtre_adresse_compare_la_representation_demappee(self) -> None:
+        dashboard = self._dashboard()
+        for panel_id in (61, 63):
+            panel = _panneau_par_id_requis(dashboard, panel_id)
+            sql = _sql_du_panneau(panel)
+            assert re.search(
+                r"(?i)IPv6NumToString\(\s*(?:s\.)?SrcAddr\s*\)", sql
+            ) and re.search(r"(?i)IPv6NumToString\(\s*(?:s\.)?DstAddr\s*\)", sql), (
+                f"06-anomalies.json panneau id={panel_id}: le filtre $adresse "
+                f"doit comparer la représentation démappée (IPv6NumToString), "
+                f"pas SrcAddr/DstAddr bruts"
+            )
+
+    def test_le_garde_fou_mord_si_adresse_nest_pas_consommee_sabote(self) -> None:
+        sql_sabote = (
+            "SELECT SrcAddr, DstAddr, score FROM stats WHERE score >= $seuil_score "
+            "ORDER BY score DESC LIMIT 50"
+        )
+        assert "$adresse" not in sql_sabote, (
+            "le sabotage aurait dû faire disparaître la consommation de $adresse"
         )

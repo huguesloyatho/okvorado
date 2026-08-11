@@ -840,6 +840,69 @@
           "rawSql": "SELECT\n    SrcCountry AS pays_depart,\n    concat('AS', toString(SrcAS)) AS as_src,\n    sum(Bytes * SamplingRate) AS volume_recu,\n    count() AS flux,\n    uniqExact(DstAddr) AS cibles_internes\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\n    AND (SrcCountry != '' OR SrcAS != 0)\n    AND SrcCountry IN (${pays_src:singlequote})\n    AND (\n        (DstAddr >= toIPv6('::ffff:10.0.0.0') AND DstAddr <= toIPv6('::ffff:10.255.255.255'))\n        OR (DstAddr >= toIPv6('::ffff:172.16.0.0') AND DstAddr <= toIPv6('::ffff:172.31.255.255'))\n        OR (DstAddr >= toIPv6('::ffff:192.168.0.0') AND DstAddr <= toIPv6('::ffff:192.168.255.255'))\n        OR (DstAddr >= toIPv6('::ffff:100.64.0.0') AND DstAddr <= toIPv6('::ffff:100.127.255.255'))\n    )\n    AND NOT (\n        (SrcAddr >= toIPv6('::ffff:10.0.0.0') AND SrcAddr <= toIPv6('::ffff:10.255.255.255'))\n        OR (SrcAddr >= toIPv6('::ffff:172.16.0.0') AND SrcAddr <= toIPv6('::ffff:172.31.255.255'))\n        OR (SrcAddr >= toIPv6('::ffff:192.168.0.0') AND SrcAddr <= toIPv6('::ffff:192.168.255.255'))\n        OR (SrcAddr >= toIPv6('::ffff:100.64.0.0') AND SrcAddr <= toIPv6('::ffff:100.127.255.255'))\n    )\nGROUP BY pays_depart, as_src\nORDER BY volume_recu DESC\nLIMIT 30"
         }
       ]
+    },
+    {
+      "id": 44,
+      "type": "row",
+      "title": "Segmentation réseau — plages déclarées vs trafic non classé",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 91
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 45,
+      "type": "timeseries",
+      "title": "Part du trafic non classé dans le temps (SrcNetName vide)",
+      "description": "Champ SrcNetName de la table `networks` d'Akvorado (bloc `networks:` d'outlet.yaml) : une source dont l'adresse n'appartient à AUCUNE plage déclarée est 'Hors périmètre déclaré'. LE DISCRIMINANT DE CE PANNEAU : une courbe qui MONTE = des plages réseau manquent dans la déclaration — c'est un geste d'exploitation direct (éditer outlet.yaml depuis Okvorado), pas un incident réseau au sens classique. Mesuré sur ce homelab : 8,9 Go/3h de non classé, PLUS gros que chaque réseau déclaré pris seul — jamais un tableau vide qu'on confondrait avec 'rien à signaler'. Série empilée à 100% (percent) : 'Hors périmètre déclaré' vs le volume classé, pour lire la PART sans dépendre du volume absolu de la fenêtre.",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 92
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "links": [
+            {
+              "title": "Voir la matrice réseau source -> destination (accueil)",
+              "url": "/d/okvorado-accueil-traffic-summary/okvorado-accueil-traffic-summary",
+              "targetBlank": false,
+              "keepTime": true,
+              "includeVars": true
+            }
+          ],
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 40,
+            "stacking": {
+              "mode": "percent",
+              "group": "A"
+            },
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 0,
+          "rawSql": "SELECT\n    $__timeInterval(TimeReceived) AS time,\n    multiIf(SrcNetName = '', 'Hors périmètre déclaré', 'Classé') AS reseau_source,\n    sum(Bytes * SamplingRate) AS volume\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\nGROUP BY time, reseau_source\nORDER BY time ASC"
+        }
+      ]
     }
   ]
 }
