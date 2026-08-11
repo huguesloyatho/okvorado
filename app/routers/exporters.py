@@ -56,7 +56,14 @@ from app.config import DEFAULT_WINDOW, WINDOW_CHOICES, settings, window_to_inter
 from app.models import ExporterHealth, ExporterStatus
 from app.services import snmp_inventory
 from app.services.config_writer import stage_change
-from app.services.exporters import build_exporter_statuses, build_if_indexes_from_snmp
+from app.services.exporters import (
+    InterfaceFiltrageResult,
+    _declared_interface_names,
+    build_exporter_statuses,
+    build_if_indexes_from_snmp,
+    filtrer_interfaces_exploitables,
+    resolve_interface_table_ssh,
+)
 from app.templating import build_templates
 
 log = logging.getLogger(__name__)
@@ -208,6 +215,7 @@ async def get_exporters(
             "error": error,
             "active_page": "exporters",
             "snmp_configured": _snmp_configured(),
+            "ssh_fallback_enabled": settings.ssh_ifindex_fallback_enabled,
         },
     )
 
@@ -233,6 +241,20 @@ class _ResolveRow:
     message: str
     interface_count: int = 0
     staged: bool = False
+    source: str = "snmp"
+    """`'snmp'` ou `'ssh'` — QUELLE source a résolu la table. Distinction
+    OBLIGATOIRE à l'écran (cf. CLAUDE.md, mission SSH 2026-08-11) : un succès
+    SSH qui se lirait comme un succès SNMP masquerait que l'agent SNMP est
+    absent de l'hôte, information dont l'exploitant a besoin pour savoir si
+    la voie PRINCIPALE (transposable en entreprise) fonctionne réellement."""
+
+    total_vues: int = 0
+    total_ecartees: int = 0
+    """Décompte du filtrage `filtrer_interfaces_exploitables` — OBLIGATOIRE à
+    l'écran (jonction ajoutée 2026-08-11) : sans lui, un exportateur qui
+    déclare des dizaines d'interfaces de bruit de virtualisation verrait son
+    filtrage disparaître silencieusement derrière un simple compteur
+    d'interfaces retenues."""
 
 
 def _snmp_configured() -> bool:
@@ -263,8 +285,8 @@ def _v3_credentials_from_settings() -> snmp_inventory.SnmpV3Credentials | None:
     )
 
 
-def _resolve_one_blocking(address: str) -> snmp_inventory.InterfaceTableResult:
-    """Sonde UN équipement, en choisissant la version SNMP disponible.
+def _resolve_snmp_blocking(address: str) -> snmp_inventory.InterfaceTableResult:
+    """Sonde UN équipement par SNMP, en choisissant la version disponible.
 
     Préfère v2c si une communauté est configurée (c'est encore la majorité du
     parc), sinon v3. Bloquant : `resolve_interface_table` appelle
@@ -284,23 +306,91 @@ def _resolve_one_blocking(address: str) -> snmp_inventory.InterfaceTableResult:
     )
 
 
+def _resolve_one_blocking(address: str) -> tuple[snmp_inventory.InterfaceTableResult, str]:
+    """Sonde UN équipement, SNMP en voie PRINCIPALE, SSH en COMPLÉMENT de secours.
+
+    BLOCAGE MESURÉ (2026-08-11) : `snmpd` n'est pas déployé sur une partie du
+    parc homelab où l'ifIndex de `tailscale0` a dérivé — SNMP y rend
+    systématiquement `no_response`. Le bouton « Résoudre par SNMP » reste la
+    voie PRINCIPALE (inchangée, nécessaire pour la cible entreprise : Palo
+    Alto, routeurs SFR répondent en SNMP). SSH ne prend le relais QUE si :
+      1. SNMP a répondu `no_response` (pas `auth_failure` : un agent qui
+         REFUSE l'authentification a répondu, ce n'est pas le cas visé — le
+         corriger, c'est corriger les credentials SNMP, pas basculer de
+         protocole) ;
+      2. `settings.ssh_ifindex_fallback_enabled` est activé (défaut `False` :
+         ne dégrade JAMAIS la cible entreprise où SNMP répond nativement).
+
+    Retourne `(résultat, source)` — `source` vaut `'snmp'` ou `'ssh'`, pour
+    que l'écran DISE laquelle des deux voies a résolu (zéro silencieux : un
+    succès SSH qui se lirait comme un succès SNMP masquerait l'absence
+    d'agent SNMP sur l'hôte).
+    """
+    snmp_result = _resolve_snmp_blocking(address)
+    if snmp_result.status != "no_response" or not settings.ssh_ifindex_fallback_enabled:
+        return snmp_result, "snmp"
+
+    log.info(
+        "resolution snmp muette, repli ssh active: address=%s",
+        address,
+    )
+    ssh_result = resolve_interface_table_ssh(
+        address=address,
+        ssh_user=settings.ssh_ifindex_user,
+        timeout_seconds=settings.ssh_ifindex_timeout_seconds,
+    )
+    if ssh_result.is_usable:
+        return ssh_result, "ssh"
+    # Le repli SSH a lui aussi échoué : on rend le résultat SSH (message
+    # orienté action propre à SSH) plutôt que de revenir au message SNMP —
+    # c'est la DERNIÈRE tentative faite, l'exploitant doit voir son échec à
+    # elle, pas celui de la voie déjà connue comme muette.
+    return ssh_result, "ssh"
+
+
+@dataclass
+class _StageResult:
+    """Sort de `_stage_resolved_if_indexes` — ZÉRO SILENCIEUX.
+
+    `staged` seul ne suffit pas : un appelant a aussi besoin de savoir COMBIEN
+    d'interfaces le filtre a écartées (`filtrage`), sinon un filtrage actif
+    devient lui-même un zéro silencieux (l'exploitant voit « 3 résolues » sans
+    savoir que N ont été retirées, cf. le cas d'un exportateur Docker mesuré
+    qui déclare des dizaines d'interfaces `veth*`/`br-*` bruyantes)."""
+
+    staged: bool
+    filtrage: InterfaceFiltrageResult | None = None
+
+
 def _stage_resolved_if_indexes(
     conn: sqlite3.Connection,
     status: ExporterStatus,
     table: dict[int, str],
-) -> bool:
-    """Met en file d'attente le remplacement des `if-indexes` d'un exportateur.
+) -> _StageResult:
+    """Filtre puis met en file d'attente le remplacement des `if-indexes`.
 
-    Réutilise le MÉCANISME D'ÉCRITURE EXISTANT (`stage_change` ->
+    JONCTION AJOUTÉE (2026-08-11, signalée par le coordinateur) : la table
+    brute (SNMP ou repli SSH — indifféremment, cette fonction est le POINT DE
+    JONCTION UNIQUE des deux chemins) est d'abord passée par
+    `filtrer_interfaces_exploitables` pour écarter les interfaces sans valeur
+    NetFlow (`lo`, `docker0`, `br-*`, `veth*` par défaut,
+    `OKVORADO_INTERFACE_EXCLUDE_PATTERNS`). Sans ce filtre, un exportateur
+    Docker peut déclarer des dizaines d'interfaces qui sont du pur bruit de
+    virtualisation (cas mesuré sur le parc homelab). `declared_names` protège
+    toute interface DÉJÀ déclarée par l'exploitant : le filtre ne défait
+    jamais une décision humaine.
+
+    Réutilise ensuite le MÉCANISME D'ÉCRITURE EXISTANT (`stage_change` ->
     `apply_pending_changes`), qui porte déjà le verrou optimiste, le backup
     horodaté, l'écriture atomique et le rollback. Écrire `outlet.yaml`
     directement depuis ici dupliquerait ces garanties — et un YAML tronqué
     empêche Akvorado de redémarrer.
 
-    Retourne `False` (sans rien mettre en attente) si l'exportateur n'a pas
-    de déclaration nominative : il n'y a alors pas de CIDR à mettre à jour,
-    et fabriquer une déclaration au passage dépasserait ce que l'exploitant
-    a demandé (il existe un bouton dédié « Déclarer cet exportateur »).
+    Ne met RIEN en file d'attente si l'exportateur n'a pas de déclaration
+    nominative, si le filtre écarte TOUTES les interfaces vues
+    (`filtrage.tout_ecarte` — signal d'alarme, pas un résultat à appliquer
+    silencieusement), ou si la traduction finale ne produit aucune interface
+    exploitable.
     """
     if status.declared is None:
         log.error(
@@ -308,16 +398,30 @@ def _stage_resolved_if_indexes(
             "address=%s",
             status.address,
         )
-        return False
+        return _StageResult(staged=False)
 
-    resolved = build_if_indexes_from_snmp(table, existing=status.declared.if_indexes)
+    declared_names = _declared_interface_names(status.declared)
+    filtrage = filtrer_interfaces_exploitables(table, declared_names=declared_names)
+
+    if filtrage.tout_ecarte:
+        log.error(
+            "resolution snmp: filtre a ecarte TOUTES les interfaces vues, aucun changement "
+            "mis en attente: address=%s total_vues=%d motifs_probablement_inadaptes=true",
+            status.address,
+            filtrage.total_vues,
+        )
+        return _StageResult(staged=False, filtrage=filtrage)
+
+    table_filtree = {if_index: spec.name for if_index, spec in filtrage.retenues.items()}
+
+    resolved = build_if_indexes_from_snmp(table_filtree, existing=status.declared.if_indexes)
     if not resolved:
         log.error(
             "resolution snmp sans aucune interface exploitable, aucun changement mis en attente: "
             "address=%s",
             status.address,
         )
-        return False
+        return _StageResult(staged=False, filtrage=filtrage)
 
     stage_change(
         conn,
@@ -349,12 +453,14 @@ def _stage_resolved_if_indexes(
         _SNMP_AUTHOR,
     )
     log.info(
-        "resolution snmp mise en attente: address=%s cidr=%s interfaces=%d",
+        "resolution snmp mise en attente: address=%s cidr=%s interfaces=%d "
+        "ecartees_par_filtre=%d",
         status.address,
         status.declared.cidr,
         len(resolved),
+        filtrage.total_ecartees,
     )
-    return True
+    return _StageResult(staged=True, filtrage=filtrage)
 
 
 def _error_fragment(message: str, status_code: int = 422) -> HTMLResponse:
@@ -427,14 +533,25 @@ async def post_resolve_snmp_one(
             "n'a été émise. Okvorado n'interroge que les exportateurs observés ou déclarés."
         )
 
-    result = await asyncio.to_thread(_resolve_one_blocking, address)
+    result, source = await asyncio.to_thread(_resolve_one_blocking, address)
 
     if not result.is_usable:
         # ZÉRO SILENCIEUX : l'échec est DIT, avec son motif propre et une
         # consigne d'action — jamais une table vide à l'écran.
         return _error_fragment(result.message)
 
-    staged = _stage_resolved_if_indexes(conn, status, result.interfaces)
+    stage_result = _stage_resolved_if_indexes(conn, status, result.interfaces)
+
+    if stage_result.filtrage is not None and stage_result.filtrage.tout_ecarte:
+        # SIGNAL D'ALARME, pas un résultat : le filtre a écarté TOUTES les
+        # interfaces vues, probablement des motifs inadaptés à cet équipement
+        # (OKVORADO_INTERFACE_EXCLUDE_PATTERNS) plutôt qu'un vrai succès vide.
+        return _error_fragment(
+            f"L'équipement a répondu ({stage_result.filtrage.total_vues} interface(s) lue(s)) "
+            "mais le filtre d'exclusion les a TOUTES écartées : aucun changement n'a été mis "
+            "en attente. Vérifier OKVORADO_INTERFACE_EXCLUDE_PATTERNS — les motifs sont "
+            "probablement inadaptés à cet équipement."
+        )
 
     return templates.TemplateResponse(
         request,
@@ -443,7 +560,9 @@ async def post_resolve_snmp_one(
             "address": address,
             "exporter_name": status.name,
             "result": result,
-            "staged": staged,
+            "staged": stage_result.staged,
+            "source": source,
+            "filtrage": stage_result.filtrage,
         },
     )
 
@@ -535,23 +654,25 @@ async def post_resolve_snmp_all(
     )
 
     rows: list[_ResolveRow] = []
-    for status, result in zip(candidates, resultats, strict=True):
-        if isinstance(result, BaseException):
+    for status, resultat_ou_erreur in zip(candidates, resultats, strict=True):
+        if isinstance(resultat_ou_erreur, BaseException):
             log.error(
                 "resolution snmp globale: echec inattendu sur un exportateur: address=%s erreur=%s",
                 status.address,
-                result,
-                exc_info=result,
+                resultat_ou_erreur,
+                exc_info=resultat_ou_erreur,
             )
             rows.append(
                 _ResolveRow(
                     address=status.address,
                     name=status.name,
                     status="error",
-                    message=f"Erreur inattendue pendant la résolution : {result}",
+                    message=f"Erreur inattendue pendant la résolution : {resultat_ou_erreur}",
                 )
             )
             continue
+
+        result, source = resultat_ou_erreur
 
         if not result.is_usable:
             rows.append(
@@ -560,24 +681,53 @@ async def post_resolve_snmp_all(
                     name=status.name,
                     status=result.status,
                     message=result.message,
+                    source=source,
                 )
             )
             continue
 
-        staged = _stage_resolved_if_indexes(conn, status, result.interfaces)
+        stage_result = _stage_resolved_if_indexes(conn, status, result.interfaces)
+        filtrage = stage_result.filtrage
+
+        if filtrage is not None and filtrage.tout_ecarte:
+            # SIGNAL D'ALARME dédié : distinct de `empty_table` (l'équipement
+            # A répondu avec des interfaces, c'est le FILTRE qui n'en garde
+            # aucune) — l'exploitant doit comprendre que ce sont ses motifs
+            # d'exclusion, pas l'équipement, qui sont en cause ici.
+            rows.append(
+                _ResolveRow(
+                    address=status.address,
+                    name=status.name,
+                    status="filtre_tout_ecarte",
+                    message=(
+                        f"{filtrage.total_vues} interface(s) lue(s) mais TOUTES écartées par "
+                        "le filtre d'exclusion (OKVORADO_INTERFACE_EXCLUDE_PATTERNS) : aucun "
+                        "changement mis en attente. Motifs probablement inadaptés à cet "
+                        "équipement."
+                    ),
+                    source=source,
+                    total_vues=filtrage.total_vues,
+                    total_ecartees=filtrage.total_ecartees,
+                )
+            )
+            continue
+
         rows.append(
             _ResolveRow(
                 address=status.address,
                 name=status.name,
-                status="ok" if staged else "empty_table",
+                status="ok" if stage_result.staged else "empty_table",
                 message=(
                     result.message
-                    if staged
+                    if stage_result.staged
                     else "Table résolue mais aucun changement n'a pu être mis en attente "
                     "(exportateur sans déclaration nominative)."
                 ),
                 interface_count=len(result.interfaces),
-                staged=staged,
+                staged=stage_result.staged,
+                source=source,
+                total_vues=filtrage.total_vues if filtrage is not None else 0,
+                total_ecartees=filtrage.total_ecartees if filtrage is not None else 0,
             )
         )
 

@@ -23,6 +23,70 @@
     <p class="notice notice-crit"><strong>Indisponible</strong>{{ error }}</p>
   {% endif %}
 
+  {# ------------------------------------------------------------------------
+     DÉRIVE D'IFINDEX — décompte GLOBAL et proportion, pas seulement le nombre
+     d'exportateurs en anomalie (CLAUDE.md, mission du 2026-08-11). Un
+     exportateur à 3 flux/h et un à 30 000 ne pèsent pas pareil : c'est la
+     PROPORTION DE FLUX qui dit l'ampleur réelle du problème.
+
+     ZÉRO SILENCIEUX : `derive_erreur` distinct de `derive_resume=none` —
+     jamais un 0 % qui se lirait « tout va bien » quand la mesure a échoué.
+  ------------------------------------------------------------------------ #}
+  <section class="derive-ifindex panel">
+    <h2>Dérive d'ifIndex</h2>
+    {% if derive_erreur %}
+      <p class="notice notice-crit">
+        <strong>Indisponible</strong> — la proportion de flux mal classés n'a pas pu être
+        mesurée : {{ derive_erreur }}
+      </p>
+    {% elif derive_resume %}
+      <p class="derive-taux-global">
+        <strong>{{ derive_resume.taux_global }} %</strong> des flux
+        ({{ derive_resume.total_unknown | humanize_number }} sur
+        {{ derive_resume.total_flux | humanize_number }}) portent une interface non résolue
+        (<code class="mono">unknown</code>) sur la fenêtre {{ current_period }}.
+      </p>
+      {% if derive_resume.lignes %}
+        <p class="hint">
+          <strong>Dérive</strong> : certains flux de l'exportateur résolvent encore, l'ifIndex
+          a probablement changé — une resynchronisation SNMP suffit (bouton
+          <a href="{{ '/exporters' | prefixed }}">Exportateurs</a>).
+          <strong>Non déclaré</strong> : aucun flux ne résout, aucune interface n'est déclarée
+          pour cet exportateur — une déclaration est à créer avant toute résolution SNMP.
+        </p>
+        <table class="derive-table">
+          <thead>
+            <tr>
+              <th>Exportateur</th>
+              <th>Cause</th>
+              <th>Flux mal classés</th>
+              <th>Total flux</th>
+              <th>Proportion</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for ligne in derive_resume.lignes %}
+              <tr>
+                <td>{{ ligne.exporter_name }}</td>
+                <td>{{ ligne.cause_label }}</td>
+                <td class="num">{{ ligne.unknown_count | humanize_number }}</td>
+                <td class="num">{{ ligne.total_count | humanize_number }}</td>
+                <td class="num">{{ ligne.taux }} %</td>
+                <td>
+                  <a href="{{ '/exporters/' | prefixed }}{{ ligne.exporter_name | urlencode }}"
+                     class="link-action">Voir sur Exportateurs</a>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <p class="empty">Aucun flux mal classé sur cette fenêtre.</p>
+      {% endif %}
+    {% endif %}
+  </section>
+
   <form id="convergence-filter-form"
         hx-get="{{ '/diagnostics/convergence' | prefixed }}"
         hx-target="#convergence-page"

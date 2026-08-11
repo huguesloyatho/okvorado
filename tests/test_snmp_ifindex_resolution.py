@@ -541,10 +541,22 @@ class TestConstructionDesIfIndexes:
     def test_une_interface_inconnue_de_la_config_prend_un_defaut_neutre(self) -> None:
         """Une interface découverte qui n'était pas déclarée ne doit pas se
         voir attribuer un `boundary` INVENTÉ : `undefined` est l'état honnête
-        (l'exploitant tranchera), jamais `internal` ou `external` deviné."""
+        (l'exploitant tranchera), jamais `internal` ou `external` deviné.
+
+        ÉVOLUTION DATÉE (2026-08-11) : le nom d'interface utilisé ici est
+        passé de `br-nouveau` à `eth1-nouveau`. Le cas `br-nouveau` est
+        devenu CONTRADICTOIRE avec l'introduction du filtrage par motif
+        (`app.services.exporters.filtrer_interfaces_exploitables`, motif
+        `br-*` exclu par défaut — cf. `test_filtrage_interfaces.py`) : une
+        interface `br-*` n'est plus censée atteindre `build_if_indexes_from_snmp`
+        du tout, elle est écartée EN AMONT par le filtre. `build_if_indexes_from_snmp`
+        reste une traduction PURE de ce qu'on lui donne (elle ne fait pas elle-même
+        de filtrage, ce n'est pas son rôle) : ce test vérifie donc son comportement
+        sur *n'importe quelle* interface inconnue de la config, avec un nom qui
+        n'illustre plus, à tort, un cas que le filtre amont a vocation à exclure."""
         from app.services.exporters import build_if_indexes_from_snmp
 
-        specs = build_if_indexes_from_snmp({7: "br-nouveau"}, existing={})
+        specs = build_if_indexes_from_snmp({7: "eth1-nouveau"}, existing={})
 
         assert specs[7].boundary == Boundary.UNDEFINED
         assert specs[7].speed > 0
@@ -642,9 +654,18 @@ class TestBoutonResoudreUnExportateur:
         assert change.change_type == "update_exporter"
         assert change.payload["cidr"] == "192.0.2.7/32"
         # Les ifIndex fantômes disparaissent, les réels apparaissent.
+        # DEPUIS LE CÂBLAGE DU FILTRAGE (2026-08-11, cf.
+        # tests/test_ssh_ifindex_resolution.py::TestFiltrageCableSurLaResolutionSnmp) :
+        # `lo` (1) et `br-780869fa3032` (4) sont désormais écartés par le
+        # filtre par défaut (OKVORADO_INTERFACE_EXCLUDE_PATTERNS =
+        # "lo,docker0,br-*,veth*"), qui s'applique AVANT la mise en file
+        # d'attente. Seules eth0 (2, déjà déclarée) et tailscale0 (3, le cas
+        # réel de ce module) survivent.
         indexes = {int(key) for key in change.payload["if_indexes"]}
-        assert indexes == {1, 2, 3, 4}
+        assert indexes == {2, 3}
         assert 999 not in indexes
+        assert 1 not in indexes
+        assert 4 not in indexes
 
     def test_adresse_invalide_est_refusee_sans_sondage(
         self, db_conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch

@@ -124,6 +124,85 @@ def _erreur_html(message: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Dérive d'ifIndex — proportion de flux mal classés (mesure globale)
+#
+# PROBLÈME MESURÉ EN PRODUCTION (2026-08-11) : 53 % des flux (101 326/189 449
+# sur 30 min) portaient une interface `unknown`, découvert seulement à l'écran.
+# L'écran affichait déjà « Interface inconnue » PAR EXPORTATEUR ; ce bloc
+# ajoute le CHIFFRE QUI COMPTE — la proportion de FLUX, pas le nombre
+# d'exportateurs en anomalie — et distingue DÉRIVE (resynchronisation) de
+# NON-DÉCLARÉ (déclaration à créer), deux causes dont le remède diffère.
+# ---------------------------------------------------------------------------
+
+
+def _calculer_taux_derive(*, unknown: int, total: int) -> float:
+    """Proportion de flux mal classés, en pourcentage, arrondie à 1 décimale.
+
+    `total == 0` (aucun flux observé sur la fenêtre) rend 0.0 : c'est une
+    mesure RÉELLE d'absence de flux, pas un échec — la division par zéro est
+    évitée ici, mais un échec ClickHouse est déjà intercepté en amont par
+    `_run_query`, qui produit un état DISTINCT (« indisponible »), jamais ce
+    0.0 (CLAUDE.md, règle n°2 : zéro silencieux)."""
+    if total <= 0:
+        return 0.0
+    return round((unknown / total) * 100, 1)
+
+
+class _LigneDerive:
+    """Une ligne du tableau de dérive : un exportateur et sa mesure propre.
+
+    `cause` distingue DÉRIVE (`0 < unknown_count < total_count`, certains flux
+    résolvent encore — resynchronisation SNMP suffit) de NON-DÉCLARÉ
+    (`unknown_count == total_count`, aucun flux ne résout — pas d'interface
+    déclarée du tout, ou source qui n'émet pas l'information). Le geste de
+    correction diffère : appliquer le remède de l'un à l'autre échoue."""
+
+    def __init__(self, exporter_name: str, unknown_count: int, total_count: int) -> None:
+        self.exporter_name = exporter_name
+        self.unknown_count = unknown_count
+        self.total_count = total_count
+        self.taux = _calculer_taux_derive(unknown=unknown_count, total=total_count)
+        self.cause = "non_declare" if unknown_count >= total_count > 0 else "derive"
+
+    @property
+    def cause_label(self) -> str:
+        return "Non déclaré" if self.cause == "non_declare" else "Dérive"
+
+
+def _construire_resume_derive(items: list[dict[str, Any]]) -> dict[str, Any]:
+    """Assemble le résumé global + le classement par impact depuis les lignes
+    ClickHouse déjà exécutées.
+
+    Ne conserve QUE les exportateurs avec au moins un flux mal classé —
+    350 lignes non filtrées, dont 310 parfaitement saines, rendraient le
+    tableau inutilisable (CLAUDE.md, exigence de transposabilité). Le tri est
+    par IMPACT (`unknown_count` décroissant) : c'est déjà l'ordre du SQL
+    (`ORDER BY unknown_count DESC`), mais on le refait ici en Python — cette
+    fonction ne doit pas dépendre d'un ordre implicite du driver ClickHouse.
+    """
+    total_unknown = sum(int(item.get("unknown_count", 0) or 0) for item in items)
+    total_flux = sum(int(item.get("total_count", 0) or 0) for item in items)
+
+    lignes = [
+        _LigneDerive(
+            exporter_name=str(item.get("ExporterName", "—")),
+            unknown_count=int(item.get("unknown_count", 0) or 0),
+            total_count=int(item.get("total_count", 0) or 0),
+        )
+        for item in items
+        if int(item.get("unknown_count", 0) or 0) > 0
+    ]
+    lignes.sort(key=lambda ligne: ligne.unknown_count, reverse=True)
+
+    return {
+        "taux_global": _calculer_taux_derive(unknown=total_unknown, total=total_flux),
+        "total_unknown": total_unknown,
+        "total_flux": total_flux,
+        "lignes": lignes,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Traduction DSCP -> nom de classe QoS (mesuré en prod : EF, AF21, CS6, CS1...)
 # ---------------------------------------------------------------------------
 
@@ -225,6 +304,15 @@ def get_convergence_page(
     items, erreur = _run_query(client, sql, parameters)
     _injecter_applications(conn, items)
 
+    sql_derive, params_derive = diagnostics.build_unknown_interface_summary_query(period=period)
+    items_derive, erreur_derive = _run_query(client, sql_derive, params_derive)
+    # ZÉRO SILENCIEUX : `derive_erreur` distinct de `derive_resume=None` — le
+    # gabarit doit pouvoir dire « indisponible » plutôt que d'afficher un
+    # résumé à 0.0 % construit sur une liste vide (CLAUDE.md, règle n°2 —
+    # motif fondateur : un échec de mesure ne rend JAMAIS un 0 % qui se lit
+    # « tout va bien »).
+    derive_resume = _construire_resume_derive(items_derive) if erreur_derive is None else None
+
     return templates.TemplateResponse(
         request,
         "convergence.html",
@@ -242,6 +330,8 @@ def get_convergence_page(
             # montrer la mesure faite, pas la saisie non appliquée.
             "min_sources": parameters["min_sources"],
             "limit": parameters["limit"],
+            "derive_resume": derive_resume,
+            "derive_erreur": erreur_derive,
         },
     )
 

@@ -10,15 +10,42 @@
    manuelle d'un ifIndex est le geste que ce fragment supprime : on affiche la
    table RÉELLEMENT lue par le walk IF-MIB, pour que l'exploitant VOIE ce qui
    va être écrit avant que ça le soit. #}
+{# QUELLE source a résolu — obligatoire à l'écran (2026-08-11) : un succès SSH
+   qui se lirait comme un succès SNMP masquerait que l'agent SNMP est absent
+   de cet hôte, information dont l'exploitant a besoin pour savoir si la voie
+   principale (transposable en entreprise) fonctionne réellement ici. #}
 <p class="notice notice-ok">
   <strong>Table d'interfaces résolue</strong> pour
   <strong>{{ exporter_name }}</strong> (<code class="mono">{{ address }}</code>) —
-  {{ result.interfaces | length }} interface(s) lue(s) par walk SNMP.
+  {{ result.interfaces | length }} interface(s) lue(s)
+  {% if source == "ssh" %}
+    par <strong>SSH</strong> (repli — l'agent SNMP de cet hôte n'a pas répondu).
+  {% else %}
+    par walk SNMP.
+  {% endif %}
 </p>
 
-{# La table est affichée intégralement, pas seulement comptée : un compteur seul
-   ne permettrait pas de vérifier que les index lus correspondent bien aux
-   interfaces attendues — c'est exactement l'erreur du 2026-08-10. #}
+{# JONCTION FILTRAGE (2026-08-11) : `filtrage` porte le décompte exact de ce
+   que `filtrer_interfaces_exploitables` a retenu/écarté AVANT mise en file
+   d'attente. Le restituer est OBLIGATOIRE — sinon le filtrage lui-même
+   devient un zéro silencieux (l'exploitant voit N interfaces lues sans
+   savoir combien ont été retirées avant écriture). #}
+{% if filtrage is defined and filtrage and filtrage.total_ecartees > 0 %}
+<p class="notice notice-info">
+  <strong>{{ filtrage.total_vues }}</strong> interface(s) vue(s) —
+  <strong>{{ filtrage.total_ecartees }}</strong> écartée(s) par le filtre
+  d'exclusion (bruit de virtualisation : <code class="mono">lo</code>,
+  <code class="mono">docker0</code>, <code class="mono">br-*</code>,
+  <code class="mono">veth*</code> par défaut — ajustable via
+  <code class="mono">OKVORADO_INTERFACE_EXCLUDE_PATTERNS</code>),
+  <strong>{{ filtrage.total_retenues }}</strong> retenue(s) et mise(s) en
+  attente ci-dessous.
+</p>
+{% endif %}
+
+{# La table RETENUE est affichée intégralement, pas seulement comptée : un
+   compteur seul ne permettrait pas de vérifier que les index lus correspondent
+   bien aux interfaces attendues — c'est exactement l'erreur du 2026-08-10. #}
 <table>
   <thead>
     <tr>
@@ -27,21 +54,36 @@
     </tr>
   </thead>
   <tbody>
-    {% for if_index, name in result.interfaces | dictsort %}
-    <tr>
-      <td class="mono">{{ if_index }}</td>
-      <td class="mono">{{ name }}</td>
-    </tr>
-    {% endfor %}
+    {% if filtrage is defined and filtrage %}
+      {% for if_index, spec in filtrage.retenues | dictsort %}
+      <tr>
+        <td class="mono">{{ if_index }}</td>
+        <td class="mono">{{ spec.name }}</td>
+      </tr>
+      {% endfor %}
+    {% else %}
+      {% for if_index, name in result.interfaces | dictsort %}
+      <tr>
+        <td class="mono">{{ if_index }}</td>
+        <td class="mono">{{ name }}</td>
+      </tr>
+      {% endfor %}
+    {% endif %}
   </tbody>
 </table>
 
+{% if source == "ssh" %}
+<p class="hint">
+  Source : commande exécutée sur l'hôte via SSH — <code class="mono">{{ result.source_oid }}</code>.
+</p>
+{% else %}
 <p class="hint">
   OID source du walk : <code class="mono">{{ result.source_oid }}</code> —
   <code class="mono">1.3.6.1.2.1.31.1.1.1.1</code> = IF-MIB::ifName (nom court,
   privilégié), <code class="mono">1.3.6.1.2.1.2.2.1.2</code> = IF-MIB::ifDescr
   (description, utilisée en repli quand l'agent n'expose pas ifName).
 </p>
+{% endif %}
 
 {% if result.message %}
 <p class="hint">{{ result.message }}</p>

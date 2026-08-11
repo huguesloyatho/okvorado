@@ -240,6 +240,45 @@ class Settings(BaseSettings):
         """
         return parse_internal_networks(self.internal_networks)
 
+    interface_exclude_patterns: str = "lo,docker0,br-*,veth*"
+    """Motifs d'interfaces SANS VALEUR NetFlow, exclues par défaut de la
+    résolution SNMP (`app.services.exporters.filtrer_interfaces_exploitables`).
+    CSV, un motif exact (`lo`, `docker0`) ou un préfixe wildcard (`br-*`,
+    `veth*` — le `*` doit être en fin de motif, seul le préfixe compte).
+
+    MESURE QUI MOTIVE CE RÉGLAGE (2026-08-11) : `outlet.yaml` en production
+    déclarait pour un seul exportateur Docker du homelab 40 interfaces sans
+    aucune valeur NetFlow (`lo`, `docker0`, 12 `br-*` bridges Docker, ~26
+    `veth*` liens virtuels de conteneurs) — noyant les 3 interfaces réellement
+    utiles. Aucun de ces bruits ne porte jamais de trafic routé mesurable : la
+    loopback ne quitte pas la machine, les bridges/veth Docker sont des
+    artefacts de virtualisation locale, pas des liens réseau physiques ou WAN.
+
+    PAR MOTIF, JAMAIS PAR LISTE NOMINATIVE : le projet vise 350 routeurs SFR
+    (cf. CLAUDE.md « L'auto-découverte n'est pas un confort, c'est la
+    condition de déployabilité ») — une liste d'interfaces en dur ne tient
+    pas à cette échelle, et c'est exactement le geste que ce projet supprime.
+
+    CIBLE ENTREPRISE (pare-feu, routeurs) — volontairement PAS ajoutée au
+    défaut, faute de mesure : les interfaces virtuelles d'un Palo Alto
+    (`vlan.X`, `tunnel.X`) ou d'un routeur Cisco/SFR (`Null0`, `Loopback0`,
+    `Tunnel0`) n'ont pas les mêmes noms qu'un bridge Linux, et inventer ces
+    motifs sans les avoir vus sur un équipement réel produirait un filtre
+    FAUX plus dangereux qu'utile (il écarterait potentiellement une vraie
+    interface WAN nommée `Tunnel0`). Le réglage EST la réponse à ce besoin :
+    chaque déploiement ajoute ses propres motifs via
+    `OKVORADO_INTERFACE_EXCLUDE_PATTERNS` une fois les noms réels observés,
+    plutôt que de faire deviner au code des conventions de nommage
+    constructeur non vérifiées.
+
+    Une interface DÉJÀ déclarée dans `outlet.yaml` (ex. un exploitant qui
+    veut mesurer `docker0`) n'est JAMAIS écartée par ce filtre, quel que soit
+    le motif — voir `filtrer_interfaces_exploitables(declared_names=...)`."""
+
+    def interface_exclude_patterns_list(self) -> list[str]:
+        """Parse `interface_exclude_patterns` en liste de motifs non vides."""
+        return [part.strip() for part in self.interface_exclude_patterns.split(",") if part.strip()]
+
     snmp_community: str = ""
     """Communauté SNMPv2c utilisée pour interroger la MIB-II système
     (inventaire équipement, `app.services.snmp_inventory`). Vide = collecte
@@ -279,6 +318,26 @@ class Settings(BaseSettings):
     snmp_v3_priv_password: str = ""
     """Mot de passe de chiffrement (privacy) SNMPv3. JAMAIS logué ni rendu en
     clair, même garde que `snmp_v3_auth_password` ci-dessus."""
+
+    ssh_ifindex_fallback_enabled: bool = False
+    """Active le repli SSH (`ip -o link show`) pour résoudre les ifIndex quand
+    SNMP rend `no_response`. Défaut `False` : DÉLIBÉRÉ, ne dégrade jamais la
+    cible entreprise (Palo Alto, routeurs SFR répondent nativement en SNMP,
+    cf. CLAUDE.md « transposable en entreprise »). SNMP reste la voie
+    PRINCIPALE dans tous les cas ; SSH n'est qu'un COMPLÉMENT de secours,
+    utile sur un parc homelab où `snmpd` n'est pas déployé. À activer via
+    `OKVORADO_SSH_IFINDEX_FALLBACK_ENABLED=true` sur les déploiements
+    concernés."""
+
+    ssh_ifindex_user: str = "root"
+    """Utilisateur SSH utilisé pour le sondage `ip -o link show` (repli
+    ifIndex). Se règle via `OKVORADO_SSH_IFINDEX_USER` — jamais en dur dans
+    la commande, l'adresse cible venant elle de la base des exportateurs."""
+
+    ssh_ifindex_timeout_seconds: float = 5.0
+    """Délai avant de considérer un hôte SSH muet (état `no_response`),
+    même sémantique que `snmp_timeout_seconds`. Se règle via
+    `OKVORADO_SSH_IFINDEX_TIMEOUT_SECONDS`."""
 
     snmp_version_default: str = "v2c"
     """`"v2c"` ou `"v3"` — version SNMP utilisée par défaut pour tout

@@ -3049,7 +3049,10 @@ class TestForwardingStatusZeroSilencieux:
             f"id=30 ({panel['title']!r}): le SQL ne compte nulle part les "
             f"flux où ForwardingStatus est réellement renseigné : {sql!r}"
         )
-        assert re.search(r"countIf\(\s*ForwardingStatus\s*!=\s*0\s*\)[\s\S]{0,120}\)\s*=\s*0\b", sql), (
+        motif_absence_totale = (
+            r"countIf\(\s*ForwardingStatus\s*!=\s*0\s*\)[\s\S]{0,120}\)\s*=\s*0\b"
+        )
+        assert re.search(motif_absence_totale, sql), (
             f"id=30 ({panel['title']!r}): le SQL ne teste pas l'absence "
             f"totale d'information par exportateur/fenêtre : {sql!r}"
         )

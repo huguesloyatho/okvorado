@@ -103,6 +103,18 @@
         <code class="mono">OKVORADO_SNMP_V3_USERNAME</code> n'est pas renseigné.
       </p>
     {% endif %}
+    {# Le repli SSH est un COMPLÉMENT de secours (parc sans snmpd), désactivé
+       par défaut pour ne jamais dégrader la cible entreprise où SNMP répond
+       nativement. Le dire ici évite la confusion « pourquoi SNMP échoue et
+       rien ne se passe » quand le repli n'est pas activé. #}
+    {% if ssh_fallback_enabled is defined and ssh_fallback_enabled %}
+      <p class="hint">
+        Repli SSH activé : si un équipement ne répond pas en SNMP
+        (<code class="mono">no_response</code>), Okvorado tente
+        <code class="mono">ip -o link show</code> par SSH avant d'abandonner.
+        Le compte rendu indique toujours QUELLE source a résolu chaque table.
+      </p>
+    {% endif %}
     {# `hx-indicator` EST OBLIGATOIRE ICI, pas décoratif. DÉFAUT MESURÉ À
        L'ÉCRAN (2026-08-10) : interroger un équipement dont l'agent SNMP est
        muet coûte son timeout complet (3,4 s mesurées). Le bouton mettait donc

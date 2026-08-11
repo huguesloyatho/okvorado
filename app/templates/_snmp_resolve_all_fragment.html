@@ -39,7 +39,9 @@
       <td>
         {% if row.status == "ok" %}
           <span class="badge badge-healthy">Résolu</span>
-          <span class="hint">{{ row.interface_count }} interface(s)</span>
+          <span class="hint">{{ row.interface_count }} interface(s)
+          {% if row.source == "ssh" %}— par SSH (repli, agent SNMP absent){% else %}— par SNMP{% endif %}
+          {% if row.total_ecartees > 0 %}— {{ row.total_ecartees }} écartée(s) par le filtre{% endif %}</span>
         {% elif row.status == "no_response" %}
           <span class="badge badge-silent">Sans réponse</span>
         {% elif row.status == "auth_failure" %}
@@ -50,6 +52,12 @@
           <span class="badge badge-rejected">Adresse invalide</span>
         {% elif row.status == "empty_table" %}
           <span class="badge badge-unknown_interface">Aucune interface déclarée</span>
+        {% elif row.status == "filtre_tout_ecarte" %}
+          {# SIGNAL D'ALARME dédié : l'équipement A répondu, c'est le FILTRE
+             qui n'a rien laissé passer — cause différente de "empty_table"
+             (équipement muet), l'exploitant doit regarder ses motifs
+             d'exclusion, pas l'équipement. #}
+          <span class="badge badge-rejected">Tout écarté par le filtre</span>
         {% else %}
           {# Statut hors énumération connue : on l'affiche BRUT plutôt que de
              rendre une cellule vide, qui se confondrait avec un succès muet. #}

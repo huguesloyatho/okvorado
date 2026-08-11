@@ -643,6 +643,73 @@ LIMIT {limit:UInt32}
     }
 
 
+# ---------------------------------------------------------------------------
+# 4. Dérive d'ifIndex — mesure GLOBALE de la proportion de flux mal classés
+#
+# PROBLÈME MESURÉ EN PRODUCTION (2026-08-11) : 53 % des flux (101 326 / 189 449
+# sur 30 min) portaient une interface `unknown`, et l'exploitant ne l'a
+# découvert qu'en regardant l'écran. Cause : l'ifIndex de `tailscale0` change
+# à chaque redémarrage de l'interface, les valeurs déclarées dans outlet.yaml
+# deviennent périmées EN SILENCE. L'écran affichait déjà « Interface inconnue »
+# PAR EXPORTATEUR (cf. app/services/exporters.py::ExporterHealth.UNKNOWN_INTERFACE)
+# mais rien ne donnait le décompte GLOBAL ni la PROPORTION — un exploitant à
+# 350 routeurs ne peut pas parcourir 350 lignes pour découvrir que la moitié
+# de ses flux est mal classée.
+#
+# `count()` ici est un COMPTAGE DE FLUX : il ne se met JAMAIS à l'échelle par
+# `SamplingRate` (cette règle vaut pour les VOLUMES uniquement, cf. docstring
+# de module et `tests/test_sampling_rate.py`).
+# ---------------------------------------------------------------------------
+
+
+def build_unknown_interface_summary_query(
+    *, period: str, limit: int = MAX_CONVERGENCE_LIMIT
+) -> tuple[str, dict[str, Any]]:
+    """Compte, PAR EXPORTATEUR, les flux dont l'interface (entrante ou
+    sortante) est `unknown`, face au total de flux de cet exportateur.
+
+    C'est la mesure qui rend la dérive d'ifIndex VISIBLE sans parcourir la
+    liste des exportateurs un par un. Le résultat permet à la couche
+    appelante de :
+      - calculer la PROPORTION GLOBALE de flux mal classés (somme de
+        `unknown_count` / somme de `total_count`) ;
+      - distinguer DÉRIVE (`0 < unknown_count < total_count`, certains flux
+        résolvent) de NON-DÉCLARÉ (`unknown_count == total_count`, aucun flux
+        ne résout — ex. l'OPNsense du contexte métier, sans interface
+        déclarée du tout) ;
+      - classer par IMPACT (`unknown_count` décroissant), condition de
+        lisibilité à 350 exportateurs (CLAUDE.md).
+
+    Tape la table brute `default.flows` (mesure décisive n°2 du module : les
+    tables d'agrégat ne portent pas `InIfName`/`OutIfName`).
+
+    Args:
+        period: fenêtre, doit appartenir à `DIAGNOSTIC_PERIOD_CHOICES`.
+        limit: nombre d'exportateurs rendus, plafonné à `MAX_CONVERGENCE_LIMIT`
+            — transpose à 350 routeurs sans requête non bornée.
+
+    Returns:
+        `(sql, parameters)`. Aucune valeur utilisateur interpolée : `period`
+        est validée contre l'énumération fermée AVANT toute construction SQL.
+
+    Raises:
+        ValueError: `period` hors de l'énumération fermée.
+    """
+    period_seconds = _validate_period(period)
+    sql = """
+SELECT
+    ExporterName,
+    countIf(InIfName = 'unknown' OR OutIfName = 'unknown') AS unknown_count,
+    count() AS total_count
+FROM default.flows
+WHERE TimeReceived >= now() - toIntervalSecond({window_seconds:UInt32})
+GROUP BY ExporterName
+ORDER BY unknown_count DESC
+LIMIT {limit:UInt32}
+"""
+    return sql, {"window_seconds": period_seconds, "limit": _clamp_limit(limit)}
+
+
 def build_exporter_qos_query(*, exporter_name: str, period: str) -> tuple[str, dict[str, Any]]:
     """Répartition QoS (DSCP) du trafic d'un exportateur.
 

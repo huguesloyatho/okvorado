@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: okvorado:0.1.0
+    image: okvorado:0.1.1-sqlite-fix
     container_name: okvorado
     restart: unless-stopped
 
@@ -32,7 +32,32 @@ services:
       # Collecte d inventaire SNMP. La valeur vient du .env, jamais en clair ici.
       # Sans elle, l ecran Inventaire affiche « SNMP non configure » et la
       # collecte reste desactivee — etat DISTINCT, pas un tableau vide trompeur.
+      # --- AUTHENTIFICATION (deployee 2026-08-09) ---------------------
+      # Okvorado porte desormais sa propre authentification : page de
+      # connexion, sessions, comptes multi-utilisateurs, TOTP optionnel.
+      # Le vhost BunkerWeb impose deja Authelia en amont — les deux se
+      # superposent sans conflit (defense en profondeur).
+      # Mot de passe vide = genere aleatoirement au premier demarrage et
+      # affiche UNE FOIS dans les logs (jamais de defaut faible).
+      OKVORADO_AUTH_USER: ${OKVORADO_AUTH_USER:-admin}
+      OKVORADO_AUTH_PASSWORD: ${OKVORADO_AUTH_PASSWORD:-}
+      OKVORADO_AUTH_SESSION_SECRET: ${OKVORADO_AUTH_SESSION_SECRET:-}
+      # HTTP nu derriere BunkerWeb qui porte le TLS : cookie non-secure,
+      # sinon le navigateur ne l'enverrait jamais sur la liaison interne.
+      OKVORADO_AUTH_COOKIE_SECURE: ${OKVORADO_AUTH_COOKIE_SECURE:-false}
+      # Plages considerees comme le reseau INTERNE de ce deploiement.
+      OKVORADO_INTERNAL_NETWORKS: ${INTERNAL_NETWORKS:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
       OKVORADO_SNMP_COMMUNITY: ${SNMP_COMMUNITY:-public}
+      # Repli SSH (ip -o link show) quand SNMP est muet — desactive par
+      # defaut (SNMP reste la voie principale, cible entreprise inchangee).
+      OKVORADO_SSH_IFINDEX_FALLBACK_ENABLED: ${SSH_IFINDEX_FALLBACK_ENABLED:-false}
+      OKVORADO_SSH_IFINDEX_USER: ${SSH_IFINDEX_USER:-root}
+      OKVORADO_SSH_IFINDEX_TIMEOUT_SECONDS: ${SSH_IFINDEX_TIMEOUT_SECONDS:-5.0}
+      # Motifs d'interfaces SANS VALEUR NetFlow, exclues par defaut de la
+      # resolution SNMP (lo, docker0, bridges/veth Docker) — ajustable a la
+      # cible (Palo Alto, routeurs SFR) sans toucher au code.
+      OKVORADO_INTERFACE_EXCLUDE_PATTERNS: ${INTERFACE_EXCLUDE_PATTERNS:-lo,docker0,br-*,veth*}
+      OKVORADO_GRAFANA_DASHBOARDS_PATH: /etc/grafana-dashboards
       OKVORADO_SQLITE_PATH: /data/okvorado.db
       OKVORADO_SILENT_THRESHOLD_HOURS: "1"
 

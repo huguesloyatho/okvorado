@@ -94,7 +94,28 @@ services:
     # l exterieur. Le stack tournait donc chez nous par le seul effet du cache
     # d images local, et echouait partout ailleurs.
     # Tags reellement publies verifies a la source : latest, 4.3.1, 4.3.0, 4.2.1.
-    image: apache/kafka:4.3.1
+    #
+    # SECURITE (2026-08-10) : le tag nu `apache/kafka:4.3.1` porte 9 CVE HIGH
+    # (jackson-core/databind 2.21.2, jetty 12.0.34, jline-remote-telnet, libexpat
+    # et p11-kit cote Alpine). Verifie A LA SOURCE le 2026-08-10 via l'API Docker
+    # Hub : 4.3.1 EST le dernier tag stable publie (digest sha256:77e3df90...,
+    # 2026-06-23, identique a `latest`), il n'existe ni 4.3.2 ni 4.4.0 =>
+    # `docker pull` ne corrige RIEN, c'est un NO-OP strict.
+    #
+    # PARADE, sans sacrifier la portabilite : l'image est CONSTRUITE PAR CE
+    # COMPOSE (voir kafka-cvefix/Dockerfile, qui documente chaque CVE et la
+    # contre-mesure). Le defaut du 2026-08-07 etait un tag `:cvefix` PRE-CONSTRUIT
+    # a la main, absent de tout registre public (`manifest unknown` ailleurs) ;
+    # ici il n'y a aucun tag a aller chercher — `up -d` build a partir de sources
+    # publiques uniquement (Docker Hub + Maven Central + CDN Alpine), deja
+    # requises par le stack. Aucun registre prive, la machine nue reste servie.
+    #
+    # Le tag local ci-dessous n'est QU'UN NOM pour l'image construite ici : il
+    # n'est jamais tire d'un registre (`build:` a la priorite), donc il ne peut
+    # pas reproduire le `manifest unknown` du 2026-08-07.
+    image: okvorado-kafka:4.3.1-cvefix
+    build:
+      context: ./kafka-cvefix
     restart: unless-stopped
     mem_limit: ${KAFKA_MEM_LIMIT:-1g}
     logging:
@@ -876,6 +897,22 @@ services:
       # l'écran Découverte SNMP doit pouvoir l'ajuster sans reconstruire l'image.
       OKVORADO_SNMP_TIMEOUT_SECONDS: ${SNMP_TIMEOUT_SECONDS:-3.0}
       OKVORADO_SNMP_POLL_INTERVAL_SECONDS: ${SNMP_POLL_INTERVAL_SECONDS:-300}
+      # Interfaces SANS valeur NetFlow, écartées à la découverte. Motifs (pas
+      # une liste nominative) : à 350 routeurs, énumérer les interfaces une par
+      # une est précisément le geste que ce projet supprime. Défaut mesuré sur
+      # le homelab : `docker-takas` déclarait 40 interfaces `veth*`/`br-*`/
+      # `docker0` qui noyaient ses 3 interfaces utiles.
+      # Réglable : un exploitant qui VEUT mesurer `docker0` retire le motif.
+      OKVORADO_INTERFACE_EXCLUDE_PATTERNS: ${INTERFACE_EXCLUDE_PATTERNS:-lo,docker0,br-*,veth*}
+      # Repli SSH pour résoudre les ifIndex quand l'agent SNMP ne répond pas.
+      # DÉSACTIVÉ par défaut : en entreprise (Palo Alto, routeurs SFR) SNMP est
+      # la voie normale, et ouvrir SSH vers les équipements n'est pas anodin.
+      # Utile là où aucun agent SNMP n'est installé (cas mesuré au homelab :
+      # `snmpd` absent sur 12 des 13 hôtes, d'où des ifIndex jamais
+      # resynchronisés — `tailscale0` change d'index à chaque redémarrage).
+      OKVORADO_SSH_IFINDEX_FALLBACK_ENABLED: ${SSH_IFINDEX_FALLBACK_ENABLED:-false}
+      OKVORADO_SSH_IFINDEX_USER: ${SSH_IFINDEX_USER:-root}
+      OKVORADO_SSH_IFINDEX_TIMEOUT_SECONDS: ${SSH_IFINDEX_TIMEOUT_SECONDS:-5.0}
       # Autorise Grafana (et LUI SEUL) à afficher Okvorado dans un <iframe>
       # (CSP frame-ancestors, voir app/main.py) — décision « une seule URL »
       # de la demande utilisateur. Défaut : l'origine du Grafana de CE stack,
