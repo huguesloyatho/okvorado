@@ -2331,3 +2331,79 @@ class TestTouteVariableLueParComposeEstDocumentee:
         assert "VAR" not in lues, (
             "un placeholder de commentaire est compte comme une vraie variable"
         )
+
+
+class TestPiegesDeploiementDocumentes:
+    """Les deux erreurs qui ont bloqué un déploiement d'entreprise réel doivent
+    rester documentées, avec leur parade.
+
+    MESURÉ le 2026-08-11 sur un serveur d'entreprise : `docker compose up -d`
+    s'arrêtait sur deux erreurs distinctes, dont AUCUNE n'était prédite par la
+    documentation d'alors.
+
+    1. `no matching manifest for linux/amd64` — l'image Akvorado `main` n'est
+       publiée qu'en variante `amd64/v3`. Le README disait de vérifier AVX2 ;
+       or le serveur EXPOSAIT avx2 et le pull échouait quand même. Le niveau v3
+       exige AVX+AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE, et Docker refuse au niveau
+       du MANIFESTE, avant tout examen du binaire. Un contrôle qui ne prédit pas
+       l'échec qu'il prétend couvrir est pire qu'absent : il rassure à tort.
+
+    2. `pull access denied for okvorado` — le service déclare pourtant `build:`.
+       Docker ne tente un pull que si le contexte de build est absent, c'est-à-dire
+       si seul `stack/` a été copié au lieu du dépôt complet (`context: ..`).
+
+    Ce test n'est pas cosmétique : il empêche que la documentation reperde ces
+    deux paradees au prochain remaniement du `.env.example`.
+    """
+
+    _ENV = ENV_EXAMPLE
+
+    def test_le_piege_de_la_variante_v3_est_documente(self) -> None:
+        contenu = self._ENV.read_text(encoding="utf-8")
+        assert "no matching manifest" in contenu, (
+            "l'erreur EXACTE que voit l'exploitant doit figurer dans la doc — "
+            "c'est ce qu'il colle dans un moteur de recherche"
+        )
+        # Le point décisif : dire qu'AVX2 seul ne suffit pas à prédire l'échec.
+        assert "bmi1" in contenu.lower() and "bmi2" in contenu.lower(), (
+            "le niveau v3 exige plus qu'AVX2 (BMI1, BMI2, F16C, FMA...) : sans "
+            "cette précision, un exploitant dont le CPU annonce avx2 conclut à "
+            "tort que le prérequis est satisfait"
+        )
+
+    def test_une_parade_concrete_est_donnee_pour_la_variante_v3(self) -> None:
+        contenu = self._ENV.read_text(encoding="utf-8")
+        assert "akvorado-amd64" in contenu, (
+            "documenter le problème sans donner d'image de repli laisse "
+            "l'exploitant bloqué"
+        )
+
+    def test_le_tag_latest_reste_signale_comme_NON_utilisable(self) -> None:
+        """Piège inverse : `latest` a bien un manifeste amd64 standard, donc il
+        SEMBLE résoudre le problème — mais il porte v2.4.1, qui rejette la
+        configuration de ce stack. Sans cet avertissement, c'est la première
+        chose qu'on essaie."""
+        contenu = self._ENV.read_text(encoding="utf-8")
+        assert "2.4.1" in contenu, "la version du tag `latest` doit être nommée"
+        # La mention doit être RELIÉE à `latest`, sinon elle n'avertit de rien :
+        # on vérifie que les deux apparaissent dans le même voisinage textuel.
+        i = contenu.find("2.4.1")
+        voisinage = contenu[max(0, i - 400) : i + 400]
+        assert "latest" in voisinage, (
+            "la version 2.4.1 doit être explicitement rattachée au tag `latest` — "
+            "sinon rien n'avertit que ce tag, pourtant amd64 standard, est une impasse"
+        )
+        assert "rejette" in voisinage.lower(), (
+            "dire que `latest` REJETTE la configuration est l'information qui "
+            "évite de perdre une heure à l'essayer"
+        )
+
+    def test_le_pull_access_denied_est_explique(self) -> None:
+        contenu = self._ENV.read_text(encoding="utf-8")
+        assert "pull access denied" in contenu, (
+            "la seconde erreur bloquante du déploiement réel doit être documentée"
+        )
+        assert "context: .." in contenu or "racine du dépôt" in contenu.lower(), (
+            "la cause (contexte de build absent = dépôt incomplet) doit être "
+            "donnée, sinon l'exploitant cherche un problème d'authentification"
+        )
