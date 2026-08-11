@@ -2407,3 +2407,46 @@ class TestPiegesDeploiementDocumentes:
             "la cause (contexte de build absent = dépôt incomplet) doit être "
             "donnée, sinon l'exploitant cherche un problème d'authentification"
         )
+
+
+class TestImagesPreconstruitesDocumentees:
+    """Les images pré-construites et leur usage derrière un proxy filtrant.
+
+    CONTEXTE (2026-08-11) : le déploiement d'entreprise échouait sur
+    `no matching manifest for linux/amd64`. Plutôt que d'exiger un changement
+    de configuration CPU côté hyperviseur, deux images ont été publiées avec
+    un manifeste SANS contrainte de variante — vérifiées par un pull ANONYME
+    réel (docker logout préalable).
+
+    Le point qui a une vraie valeur opérationnelle : derrière un proxy
+    filtrant, savoir QUELS domaines demander à ouvrir. Mesuré en traçant les
+    trois étapes d'un pull anonyme : tout passe par le domaine du registre,
+    RIEN par le fournisseur d'identité — celui-ci ne protège que l'interface
+    web. Demander l'ouverture d'un domaine inutile fait perdre du temps à
+    l'équipe sécurité et affaiblit la demande.
+    """
+
+    _ENV = ENV_EXAMPLE
+
+    def test_les_deux_images_preconstruites_sont_documentees(self) -> None:
+        contenu = self._ENV.read_text(encoding="utf-8")
+        for variable in ("AKVORADO_IMAGE", "OKVORADO_IMAGE"):
+            assert variable in contenu, f"{variable} doit rester documentée"
+        assert "akvorado-amd64" in contenu, (
+            "l'image Akvorado ré-étiquetée est LA parade au blocage de variante : "
+            "sans elle documentée, l'exploitant reste bloqué"
+        )
+
+    def test_le_perimetre_de_whitelist_est_precis(self) -> None:
+        """Une whitelist trop large est une demande sécurité mal fondée."""
+        contenu = self._ENV.read_text(encoding="utf-8").lower()
+        assert "proxy filtrant" in contenu or "zscaler" in contenu, (
+            "le cas du proxy filtrant doit être traité : c'est la situation "
+            "réelle du déploiement d'entreprise"
+        )
+        # L'information décisive : le pull ne touche PAS le fournisseur d'identité.
+        assert "aucune requête" in contenu or "aucune requete" in contenu, (
+            "il faut dire explicitement qu'aucune requête ne part vers le "
+            "fournisseur d'identité — sinon on demande l'ouverture d'un domaine "
+            "inutile"
+        )
