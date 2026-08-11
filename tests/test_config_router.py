@@ -189,6 +189,145 @@ class TestQueueAddExporter:
         assert list_pending_changes(memory_conn) == []
 
 
+class TestInterfaceParDefautALaSouris:
+    """Le formulaire d'ajout doit permettre de RENSEIGNER l'interface par défaut.
+
+    DÉFAUT MESURÉ EN PRODUCTION (2026-08-11) : le formulaire ne demandait que
+    CIDR + nom, donc le payload partait avec `default: None` et l'exportateur
+    déclaré était écrit sans métadonnées — 100 % de ses flux rejetés en
+    « metadata missing ».
+
+    Le repli d'écriture (`akvorado_yaml.build_fallback_interface_spec`) garantit
+    désormais l'INGESTION dans tous les cas. Mais garantir l'ingestion ne suffit
+    pas à la règle du projet : « toute action métier faisable à la souris,
+    jamais en éditant un YAML ». Un exploitant qui veut classifier son
+    équipement (débit réel, périmètre interne/externe) doit pouvoir le faire à
+    la déclaration, pas seulement subir `unknown`/`undefined`.
+    """
+
+    def test_les_metadonnees_saisies_sont_mises_en_attente(
+        self, memory_conn: sqlite3.Connection, yaml_path: str
+    ) -> None:
+        client = _client(memory_conn, yaml_path)
+
+        response = client.post(
+            "/config/exporters",
+            data={
+                "cidr": "192.0.2.60/32",
+                "name": "opnsense",
+                "default_name": "wan-fibre",
+                "default_description": "collecte SFR",
+                "default_speed": "10000",
+                "default_boundary": "external",
+            },
+        )
+
+        assert response.status_code in (200, 201)
+        pending = list_pending_changes(memory_conn)
+        assert len(pending) == 1
+        default = pending[0].payload["default"]
+        assert default is not None, (
+            "les métadonnées saisies à l'écran doivent atteindre la file "
+            "d'attente, sinon le formulaire ne sert à rien"
+        )
+        assert default["name"] == "wan-fibre"
+        assert default["description"] == "collecte SFR"
+        assert default["speed"] == 10000
+        assert default["boundary"] == "external"
+
+    def test_sans_saisie_le_payload_porte_quand_meme_des_metadonnees(
+        self, memory_conn: sqlite3.Connection, yaml_path: str
+    ) -> None:
+        """LE GESTE RAPIDE RESTE RAPIDE : CIDR + nom seuls restent acceptés.
+
+        C'est le cas exact qui a cassé la prod. Le payload mis en attente doit
+        déjà porter des métadonnées exploitables — attendre le repli de la
+        couche d'écriture suffirait techniquement, mais la file serait alors
+        illisible (`default: null` affiché à l'exploitant, qui ne saurait pas
+        ce qui sera réellement écrit).
+        """
+        client = _client(memory_conn, yaml_path)
+
+        response = client.post(
+            "/config/exporters",
+            data={"cidr": "192.0.2.61/32", "name": "geste-rapide"},
+        )
+
+        assert response.status_code in (200, 201)
+        pending = list_pending_changes(memory_conn)
+        default = pending[0].payload["default"]
+        assert default is not None
+        assert default["name"] == "unknown"
+        assert default["description"] == "unclassified"
+        assert default["speed"] == 1000
+        assert default["boundary"] == "undefined"
+
+    def test_debit_invalide_refuse_sans_rien_mettre_en_attente(
+        self, memory_conn: sqlite3.Connection, yaml_path: str
+    ) -> None:
+        """Un débit <= 0 est refusé À LA SAISIE plutôt qu'écrit puis rejeté par
+        `validate_exporters` au moment d'appliquer — l'erreur doit se voir là où
+        le geste est fait."""
+        client = _client(memory_conn, yaml_path)
+
+        response = client.post(
+            "/config/exporters",
+            data={
+                "cidr": "192.0.2.62/32",
+                "name": "debit-invalide",
+                "default_name": "wan",
+                "default_speed": "0",
+                "default_boundary": "external",
+            },
+        )
+
+        assert response.status_code == 422
+        assert list_pending_changes(memory_conn) == []
+
+    def test_boundary_invalide_refusee_sans_rien_mettre_en_attente(
+        self, memory_conn: sqlite3.Connection, yaml_path: str
+    ) -> None:
+        client = _client(memory_conn, yaml_path)
+
+        response = client.post(
+            "/config/exporters",
+            data={
+                "cidr": "192.0.2.63/32",
+                "name": "boundary-invalide",
+                "default_name": "wan",
+                "default_speed": "1000",
+                "default_boundary": "n-importe-quoi",
+            },
+        )
+
+        assert response.status_code == 422
+        assert list_pending_changes(memory_conn) == []
+
+    def test_le_gabarit_expose_les_champs_a_la_souris(self) -> None:
+        """Les champs doivent EXISTER dans le formulaire rendu.
+
+        Une route qui accepte `default_*` mais un gabarit qui ne les propose
+        pas laisserait la fonctionnalité inatteignable autrement qu'en forgeant
+        une requête — l'une des 4 familles de défauts invisibles aux tests
+        recensées dans CLAUDE.md (« service existant non branché »).
+        """
+        from pathlib import Path
+
+        config_html = Path("app/templates/config.html").read_text(encoding="utf-8")
+        debut = config_html.index('id="add-exporter-panel"')
+        fin = config_html.index('id="add-interface-panel"')
+        formulaire = config_html[debut:fin]
+
+        assert 'name="default_name"' in formulaire
+        assert 'name="default_description"' in formulaire
+        assert 'name="default_speed"' in formulaire
+        assert 'name="default_boundary"' in formulaire
+        # Pré-remplissage : le geste rapide doit rester rapide (un formulaire
+        # vide obligerait à tout saisir pour ne pas casser l'ingestion).
+        assert 'value="unknown"' in formulaire
+        assert 'value="1000"' in formulaire
+
+
 class TestQueueAddInterface:
     def test_valid_interface_stages_change(
         self, memory_conn: sqlite3.Connection, yaml_path: str

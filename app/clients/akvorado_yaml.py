@@ -329,17 +329,83 @@ def _interface_spec_to_yaml(spec: InterfaceSpec) -> dict[str, Any]:
     return entry
 
 
+def build_fallback_interface_spec() -> InterfaceSpec:
+    """Métadonnées d'interface de REPLI, posées quand l'appelant n'en fournit pas.
+
+    CONFIG_HARDCODE_OK: les valeurs ci-dessous (`unknown`, `unclassified`,
+    1000, `undefined`) ne sont pas de la configuration mais le CONTRAT de
+    lecture d'Akvorado — c'est la forme littérale que son enricher attend et
+    que portent déjà les exportateurs qui fonctionnent en production. Les
+    rendre paramétrables permettrait de configurer une valeur qui recasse
+    l'ingestion. L'exploitant qui veut d'AUTRES valeurs les saisit à l'écran
+    (formulaire d'ajout d'exportateur), ce qui produit un `default` fourni :
+    ce repli ne s'applique alors pas.
+
+    `boundary: undefined` est un choix DÉLIBÉRÉ et non un oubli — Okvorado ne
+    devine JAMAIS si une interface regarde Internet ou le réseau interne. Le
+    repli garantit l'INGESTION (des flux classés « non classifié » valent
+    infiniment mieux que zéro flux) ; la classification métier reste un geste
+    explicite de l'exploitant, à la souris.
+    """
+    return InterfaceSpec(
+        if_index=0,
+        name="unknown",
+        description="unclassified",
+        speed=1000,
+        boundary=Boundary.UNDEFINED,
+    )
+
+
 def _exporter_to_yaml_entry(exporter: DeclaredExporter) -> dict[str, Any]:
     """Construit la représentation YAML (dict brut) d'un exportateur, dans
-    l'ordre attendu par la structure documentée de outlet.yaml."""
+    l'ordre attendu par la structure documentée de outlet.yaml.
+
+    ⚠️ LE BLOC `default:` EST TOUJOURS ÉCRIT — DÉFAUT MESURÉ EN PRODUCTION
+    (2026-08-11), 100 % de flux rejetés sur un équipement qui fonctionnait.
+
+    Historique du défaut : cette fonction n'écrivait `default` que si
+    `exporter.default is not None`. Le formulaire d'ajout d'exportateur ne
+    renseignant que CIDR + nom, l'entrée produite pour un pare-feu OPNsense
+    déclaré à l'écran portait le SEUL nom :
+
+        <adresse-du-pare-feu>/32:
+          name: opnsense
+
+    Akvorado n'a alors aucune métadonnée d'interface à appliquer et rejette
+    TOUS les flux de cet exportateur en « metadata missing ».
+
+    L'AGGRAVANT, qui fait de ce défaut un piège plutôt qu'une simple omission :
+    une déclaration nominative `/32` PRIME sur le filet CIDR large, lequel
+    porte un `default` valide. Déclarer un exportateur sans `default` lui
+    RETIRE donc les métadonnées que le filet lui fournissait — on CASSE une
+    ingestion qui fonctionnait en croyant seulement NOMMER l'équipement. Zéro
+    silencieux caractérisé (CLAUDE.md) : l'écran affiche « appliqué avec
+    succès » et le trafic disparaît.
+
+    POURQUOI LE REPLI ICI, ET PAS UN REFUS À LA SAISIE : cette fonction est le
+    DERNIER point de passage avant le YAML. Le repli y couvre TOUS les
+    appelants — le formulaire, la résolution SNMP, le rejeu de la file
+    `pending_config_changes`, et tout appelant futur — là où un refus devrait
+    être dupliqué à chaque point d'entrée (donc oublié au premier ajouté, et le
+    défaut reviendrait). Il respecte en outre l'intention réelle du geste :
+    « je veux juste nommer mon équipement » ne doit pas exiger de remplir un
+    formulaire de classification pour ne pas casser la collecte.
+
+    Un `default` FOURNI par l'appelant n'est jamais écrasé : le repli ne
+    s'applique qu'à l'absence.
+    """
     entry: dict[str, Any] = {"name": exporter.name}
     if exporter.if_indexes:
         entry["if-indexes"] = {
             if_index: _interface_spec_to_yaml(spec)
             for if_index, spec in sorted(exporter.if_indexes.items())
         }
-    if exporter.default is not None:
-        entry["default"] = _interface_spec_to_yaml(exporter.default)
+    # `if_indexes` ne dispense PAS du `default` : il couvre les interfaces
+    # CONNUES, `default` couvre toutes les autres. Un flux dont l'ifIndex n'est
+    # pas listé est rejeté si aucun `default` n'existe.
+    entry["default"] = _interface_spec_to_yaml(
+        exporter.default if exporter.default is not None else build_fallback_interface_spec()
+    )
     return entry
 
 

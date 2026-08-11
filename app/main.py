@@ -27,7 +27,7 @@ from app.auth import (
     verify_session,
 )
 from app.config import DEFAULT_WINDOW, settings
-from app.db import init_database
+from app.db import init_database, open_connection
 from app.routers import proxy_akvorado
 from app.templating import templates
 
@@ -61,7 +61,22 @@ async def _snmp_inventory_periodic_loop() -> None:
             await asyncio.sleep(settings.snmp_poll_interval_seconds)
             statuses = await load_exporter_statuses(DEFAULT_WINDOW)
             addresses = [status.address for status in statuses]
-            conn = sqlite3.connect(settings.sqlite_path, check_same_thread=False)
+            # DÉFAUT CORRIGÉ LE 2026-08-11 — la collecte SNMP automatique n'a
+            # JAMAIS fonctionné depuis sa mise en place. Cette ligne était un
+            # `sqlite3.connect(settings.sqlite_path, check_same_thread=False)`
+            # NU, sans `row_factory = sqlite3.Row`. Les lignes revenaient donc
+            # en `tuple`, et `snmp_inventory._row_to_item` — qui appelle
+            # `row.keys()` puis indexe par nom — plantait à CHAQUE cycle sur
+            # « 'tuple' object has no attribute 'keys' ». Le `except Exception`
+            # ci-dessous avalait l'échec en log ERROR et la boucle repartait
+            # pour un tour identique : la tâche survivait, la fonctionnalité
+            # était morte. Ce n'était pas un défaut de logique (le code de
+            # collecte est juste) mais un CÂBLAGE MANQUANT d'une seule ligne.
+            # `open_connection` (app/db.py) est désormais la porte d'entrée
+            # UNIQUE vers SQLite et pose `row_factory` systématiquement ;
+            # `tests/test_sqlite_row_factory.py` interdit mécaniquement toute
+            # autre porte pour que l'oubli redevienne impossible.
+            conn = open_connection(check_same_thread=False)
             try:
                 # `collect_all` est SYNCHRONE et bloquante (appelle
                 # `asyncio.run()` en interne pour piloter pysnmp) : exécutée
@@ -117,7 +132,7 @@ async def _db_health_periodic_loop() -> None:
                 log.error("db_health: echec connexion pour le cycle periodique: %s", exc)
                 snapshot = build_unavailable_snapshot(str(exc))
 
-            conn = sqlite3.connect(settings.sqlite_path, check_same_thread=False)
+            conn = open_connection(check_same_thread=False)
             try:
                 _record_history(conn, snapshot)
             finally:
@@ -170,7 +185,7 @@ async def _purge_periodic_loop() -> None:
     while True:
         try:
             await asyncio.sleep(settings.purge_poll_interval_seconds)
-            conn = sqlite3.connect(settings.sqlite_path, check_same_thread=False)
+            conn = open_connection(check_same_thread=False)
             try:
                 rows = conn.execute(
                     "SELECT setting_key, setting_value FROM retention_settings"
@@ -246,7 +261,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         admin = resolve_bootstrap_admin(
             env_user=settings.auth_user, env_password=settings.auth_password
         )
-        conn = sqlite3.connect(settings.sqlite_path)
+        conn = open_connection()
         try:
             existing = conn.execute("SELECT COUNT(*) FROM auth_users").fetchone()[0]
             ensure_bootstrap_user(conn, admin)
@@ -280,7 +295,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     try:
         from app.services.portmap import seed_iana_defaults
 
-        conn = sqlite3.connect(settings.sqlite_path)
+        conn = open_connection()
         try:
             seed_iana_defaults(conn)
             conn.commit()
@@ -301,7 +316,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
             seed_metier_defaults,
         )
 
-        conn = sqlite3.connect(settings.sqlite_path)
+        conn = open_connection()
         try:
             status = ensure_catalog_seeded_at_startup(conn)
             log.info(
@@ -505,7 +520,7 @@ async def require_authentication(request: Request, call_next: object) -> object:
     # défaut, écran Comptes) sans re-décoder le cookie à chaque endroit qui
     # en a besoin.
     request.state.auth_username = username
-    conn = sqlite3.connect(settings.sqlite_path)
+    conn = open_connection()
     try:
         row = conn.execute(
             "SELECT is_default_password, role FROM auth_users WHERE username = ?", (username,)
@@ -560,6 +575,8 @@ def _register_routers() -> list[str]:
         ("app.routers.inventory", "router"),
         ("app.routers.app_catalog", "router"),
         ("app.routers.db_health", "router"),
+        ("app.routers.field_catalog", "router"),
+        ("app.routers.flow_export", "router"),
         ("app.routers.proxy_akvorado", "router"),
         # Écran d'intégration de la console (`/akvorado`) — encadre le proxy
         # ci-dessus dans une page Okvorado. Monté APRÈS lui : il importe
@@ -609,7 +626,7 @@ def _wire_dependencies() -> list[str]:
             # créée et utilisée dans des threads différents. C'est sans risque
             # car la connexion est ouverte PAR REQUÊTE puis refermée — elle
             # n'est jamais partagée entre deux requêtes concurrentes.
-            conn = sqlite3.connect(settings.sqlite_path, check_same_thread=False)
+            conn = open_connection(check_same_thread=False)
             conn.row_factory = sqlite3.Row
             try:
                 yield conn
@@ -807,6 +824,34 @@ def _wire_dependencies() -> list[str]:
             lambda: settings.db_health_memory_limit_bytes
         )
         wired.append("db_health")
+
+        # --- Catalogue des champs (écran « Champs disponibles ») -----------
+        # Lit le schéma RÉEL via system.columns (pas la table statique
+        # FLOW_COLUMNS, qui a déjà dérivé du réel : elle ignore IPTos, pourtant
+        # en production et consommée par 4 dashboards). Client natif : le
+        # service lit `.result_rows` lui-même, comme views.
+        from app.routers import field_catalog as field_catalog_router
+
+        app.dependency_overrides[field_catalog_router.get_clickhouse_client] = (
+            get_clickhouse_client
+        )
+        app.dependency_overrides[field_catalog_router.get_dashboards_dir] = lambda: Path(
+            settings.grafana_dashboards_path
+        )
+        wired.append("field_catalog")
+
+        # --- Export de flux (écran « Export de flux », 2026-08-11) ----------
+        # Prélèvement d'échantillon pour QUALIFIER un équipement client (Palo
+        # Alto, routeur SFR) : isoler l'équipement, voir ce qu'il remplit
+        # vraiment, emporter le fichier. Client natif comme field_catalog : le
+        # service lit `.result_rows` et `.column_names` lui-même — il a besoin
+        # des noms de colonnes, que `RowsAdapter` ne rend pas.
+        from app.routers import flow_export as flow_export_router
+
+        app.dependency_overrides[flow_export_router.get_clickhouse_client] = (
+            get_clickhouse_client
+        )
+        wired.append("flow_export")
 
         # --- Diagnostic d'ingestion (tendance, LOT db_health étendu) -------
         # Même `_open_db` que les autres routers : la table

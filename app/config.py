@@ -159,6 +159,19 @@ class Settings(BaseSettings):
 
     akvorado_config_path: str = "/etc/akvorado-config/outlet.yaml"
 
+    grafana_dashboards_path: str = "/etc/grafana-dashboards"
+    """Dossier des dashboards Grafana provisionnés — source du décompte
+    « champs exploités » de l'écran Champs disponibles.
+
+    CONFIG_HARDCODE_OK: fallback de `BaseSettings`, surchargé par
+    OKVORADO_GRAFANA_DASHBOARDS_PATH. C'est un montage `:ro` (docker-compose) :
+    l'écran LIT les dashboards pour savoir quelles colonnes ils consomment, il
+    n'en écrit jamais aucun.
+
+    ⚠️ Sans ce montage, le dossier est absent et l'écran affiche « décompte
+    indisponible » — un état DISTINCT, jamais « 0 champ exploité » qui
+    annoncerait faussement 100 % de potentiel inexploité."""
+
     sqlite_path: str = "./data/okvorado.db"
     http_timeout_seconds: float = 10.0
 

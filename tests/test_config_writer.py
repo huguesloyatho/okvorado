@@ -290,6 +290,178 @@ class TestWriteDeclaredExportersRoundTrip:
         assert backups == []
 
 
+class TestDefautDeRepliObligatoire:
+    """DÉFAUT MESURÉ EN PRODUCTION (2026-08-11) — 100 % de flux rejetés.
+
+    L'utilisateur a déclaré un pare-feu OPNsense (192.0.2.25) depuis l'écran.
+    Résultat : 100 % de ses flux sont passés en rejet « metadata missing »,
+    ZÉRO accepté. AVANT la déclaration, ils étaient ingérés correctement.
+
+    Mécanisme : le formulaire d'ajout ne renseigne que CIDR + nom, donc
+    `exporter.default is None`, et `_exporter_to_yaml_entry` n'écrivait le bloc
+    `default:` QUE si `default is not None`. L'entrée produite portait le seul
+    nom :
+
+        192.0.2.25/32:
+          name: opnsense
+
+    Akvorado n'a alors AUCUNE métadonnée d'interface à appliquer et rejette
+    tous les flux.
+
+    L'AGGRAVANT qui fait de ce défaut un piège : une déclaration nominative
+    `/32` PRIME sur le filet CIDR large (`100.64.0.0/10`), qui porte, lui, un
+    `default` valide. Déclarer l'exportateur lui RETIRE donc les métadonnées
+    que le filet lui fournissait : on CASSE une ingestion qui fonctionnait, en
+    croyant seulement nommer l'équipement. C'est un zéro silencieux au sens de
+    CLAUDE.md — l'écran dit « appliqué avec succès » et le trafic disparaît.
+    """
+
+    def test_exportateur_sans_default_recoit_les_metadonnees_de_repli(
+        self, yaml_path: Path
+    ) -> None:
+        """LE CAS EXACT QUI A CASSÉ LA PROD : `default=None` à l'écriture.
+
+        Reproduit la déclaration faite à l'écran (CIDR + nom, rien d'autre) et
+        exige que le YAML écrit porte quand même des métadonnées exploitables.
+        """
+        original_hash = compute_config_hash(str(yaml_path))
+        exporters = load_declared_exporters(str(yaml_path))
+        exporters.append(
+            DeclaredExporter(
+                cidr="192.0.2.25/32",
+                name="opnsense",
+                if_indexes={},
+                default=None,
+                is_catchall=False,
+            )
+        )
+
+        write_declared_exporters(str(yaml_path), exporters, expected_hash=original_hash)
+
+        contenu = yaml_path.read_text(encoding="utf-8")
+        assert "opnsense" in contenu
+
+        rechargés = load_declared_exporters(str(yaml_path))
+        opnsense = next(e for e in rechargés if e.name == "opnsense")
+        assert opnsense.default is not None, (
+            "un exportateur écrit sans `default` repart SANS métadonnée : "
+            "Akvorado rejettera 100 % de ses flux (mesuré en prod le 2026-08-11)"
+        )
+        # La forme de repli reprend celle des exportateurs qui FONCTIONNENT en
+        # production (cf. 100.64.0.18/32 mac-mini-m1).
+        assert opnsense.default.name == "unknown"
+        assert opnsense.default.description == "unclassified"
+        assert opnsense.default.speed == 1000
+        assert opnsense.default.boundary is Boundary.UNDEFINED
+
+    def test_default_fourni_par_l_appelant_n_est_pas_ecrase(self, yaml_path: Path) -> None:
+        """Le repli ne doit JAMAIS écraser un `default` légitime.
+
+        Un exploitant qui a pris la peine de classifier son interface (nom,
+        description, débit, boundary) doit retrouver SES valeurs, pas le repli.
+        """
+        original_hash = compute_config_hash(str(yaml_path))
+        exporters = load_declared_exporters(str(yaml_path))
+        exporters.append(
+            DeclaredExporter(
+                cidr="192.0.2.25/32",
+                name="opnsense",
+                if_indexes={},
+                default=InterfaceSpec(
+                    if_index=0,
+                    name="wan-fibre",
+                    description="collecte SFR",
+                    speed=10000,
+                    boundary=Boundary.EXTERNAL,
+                ),
+                is_catchall=False,
+            )
+        )
+
+        write_declared_exporters(str(yaml_path), exporters, expected_hash=original_hash)
+
+        rechargés = load_declared_exporters(str(yaml_path))
+        opnsense = next(e for e in rechargés if e.name == "opnsense")
+        assert opnsense.default is not None
+        assert opnsense.default.name == "wan-fibre"
+        assert opnsense.default.description == "collecte SFR"
+        assert opnsense.default.speed == 10000
+        assert opnsense.default.boundary is Boundary.EXTERNAL
+
+    def test_les_if_indexes_continuent_d_etre_ecrits(self, yaml_path: Path) -> None:
+        """Non-régression : le repli ne doit pas perturber les `if-indexes`.
+
+        C'est la résolution SNMP qui les écrit (`app/routers/exporters.py`) —
+        les perdre transformerait une classification par interface en un seul
+        seau indifférencié.
+        """
+        original_hash = compute_config_hash(str(yaml_path))
+        exporters = load_declared_exporters(str(yaml_path))
+        exporters.append(
+            DeclaredExporter(
+                cidr="192.0.2.25/32",
+                name="opnsense",
+                if_indexes={
+                    1: InterfaceSpec(
+                        if_index=1,
+                        name="igb0",
+                        description="WAN",
+                        speed=1000,
+                        boundary=Boundary.EXTERNAL,
+                    ),
+                    2: InterfaceSpec(
+                        if_index=2,
+                        name="igb1",
+                        description="LAN",
+                        speed=1000,
+                        boundary=Boundary.INTERNAL,
+                    ),
+                },
+                default=None,
+                is_catchall=False,
+            )
+        )
+
+        write_declared_exporters(str(yaml_path), exporters, expected_hash=original_hash)
+
+        rechargés = load_declared_exporters(str(yaml_path))
+        opnsense = next(e for e in rechargés if e.name == "opnsense")
+        assert set(opnsense.if_indexes) == {1, 2}
+        assert opnsense.if_indexes[1].name == "igb0"
+        assert opnsense.if_indexes[1].boundary is Boundary.EXTERNAL
+        assert opnsense.if_indexes[2].name == "igb1"
+        assert opnsense.if_indexes[2].boundary is Boundary.INTERNAL
+        # …et le repli s'applique QUAND MÊME : `if-indexes` couvre les
+        # interfaces CONNUES, `default` couvre les autres. Akvorado rejette un
+        # flux dont l'ifIndex n'est pas listé si aucun `default` n'existe.
+        assert opnsense.default is not None
+        assert opnsense.default.name == "unknown"
+
+    def test_exportateur_existant_sans_default_est_repare_a_la_reecriture(
+        self, yaml_path: Path
+    ) -> None:
+        """Un exportateur DÉJÀ en place sans `default` est réparé, pas figé.
+
+        Cas de l'OPNsense réel : il est déjà écrit dans `outlet.yaml` sans
+        `default` (c'est l'état cassé de la prod). Toute réécriture ultérieure
+        doit le doter du repli plutôt que de reconduire l'entrée mutilée.
+        """
+        yaml_path.write_text(
+            SAMPLE_YAML_WITH_COMMENTS + "        192.0.2.25/32:\n          name: opnsense\n",
+            encoding="utf-8",
+        )
+        original_hash = compute_config_hash(str(yaml_path))
+        exporters = load_declared_exporters(str(yaml_path))
+        assert next(e for e in exporters if e.name == "opnsense").default is None
+
+        write_declared_exporters(str(yaml_path), exporters, expected_hash=original_hash)
+
+        rechargés = load_declared_exporters(str(yaml_path))
+        opnsense = next(e for e in rechargés if e.name == "opnsense")
+        assert opnsense.default is not None
+        assert opnsense.default.name == "unknown"
+
+
 # ---------------------------------------------------------------------------
 # config_writer.py — file d'attente
 # ---------------------------------------------------------------------------

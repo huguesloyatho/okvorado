@@ -2,7 +2,11 @@
   "uid": "okvorado-accueil-traffic-summary",
   "title": "Okvorado — Traffic Summary",
   "description": "Page d'accueil : porte d'entrée unique. Réplique la page 'Traffic Summary' de NetFlow Analyzer — liste paginée des exportateurs (Interfaces/Flows/IP), état des liens, Top N Protocol/Application/QoS, Top N Conversation. Chaque ligne d'exportateur pointe vers sa fiche détaillée (drill-down, dataLink var-exporter). Filtre $exporter (multi) : ExporterName IN (${exporter:singlequote}) — jamais IN ($exporter) ni comparaison à $__all (Code: 62 SYNTAX_ERROR mesuré).",
-  "tags": ["okvorado", "netflow", "accueil"],
+  "tags": [
+    "okvorado",
+    "netflow",
+    "accueil"
+  ],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,
@@ -14,8 +18,21 @@
     "to": "now"
   },
   "timepicker": {
-    "refresh_intervals": ["30s", "1m", "5m", "15m"],
-    "time_options": ["5m", "15m", "1h", "6h", "24h", "7d", "30d"]
+    "refresh_intervals": [
+      "30s",
+      "1m",
+      "5m",
+      "15m"
+    ],
+    "time_options": [
+      "5m",
+      "15m",
+      "1h",
+      "6h",
+      "24h",
+      "7d",
+      "30d"
+    ]
   },
   "templating": {
     "list": [
@@ -32,6 +49,66 @@
         "multi": true,
         "includeAll": true,
         "sort": 1
+      },
+      {
+        "name": "pays_dst",
+        "type": "query",
+        "label": "Pays de destination",
+        "description": "Code pays de la destination (DstCountry), peuplé dynamiquement depuis les flux. Alimenté par la géolocalisation Akvorado sur les flux dont la destination est routable ; les lignes non résolues (chaîne vide) sont écartées de la liste. Si la liste est vide, aucun flux de la période n'a de pays de destination résolu — c'est la source, pas le produit.",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "ClickHouse"
+        },
+        "query": "SELECT DISTINCT DstCountry FROM flows WHERE $__timeFilter(TimeReceived) AND DstCountry != '' ORDER BY DstCountry",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "sort": 1
+      },
+      {
+        "name": "protocole",
+        "type": "query",
+        "label": "Protocole",
+        "description": "Peuplée dynamiquement : les protocoles IP réellement vus sur la fenêtre courante (TCP/UDP/ICMP/GRE/OSPF/VRRP…). Sert au tri d'un lien saturé : isoler GRE ou OSPF d'un fond TCP est un geste de diagnostic courant.",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "ClickHouse"
+        },
+        "query": "SELECT DISTINCT multiIf(Proto=6,'TCP',Proto=17,'UDP',Proto=1,'ICMP',Proto=47,'GRE',Proto=89,'OSPF',Proto=112,'VRRP',concat('Proto ', toString(Proto))) AS protocole FROM flows WHERE $__timeFilter(TimeReceived) ORDER BY protocole",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "sort": 1
+      },
+      {
+        "name": "etat_lien",
+        "type": "query",
+        "label": "État du lien",
+        "description": "État calculé du lien (Link Up / Link Up & NoFlows / Link Down), peuplé dynamiquement depuis la même logique que le panneau donut et la grille d'interfaces : max(TimeReceived) comparé à 5 et 30 minutes. Sert à filtrer la grille d'interfaces sur un état précis depuis le donut de répartition — cliquer 'Link Down' n'affiche plus que les carrés en panne.",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "ClickHouse"
+        },
+        "query": "SELECT DISTINCT etat FROM (SELECT ExporterName, InIfName, multiIf(max(TimeReceived) < now() - INTERVAL 30 MINUTE, 'Link Down', max(TimeReceived) < now() - INTERVAL 5 MINUTE, 'Link Up & NoFlows', 'Link Up') AS etat FROM flows WHERE $__timeFilter(TimeReceived) AND InIfName != '' GROUP BY ExporterName, InIfName) ORDER BY etat",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "sort": 1
+      },
+      {
+        "name": "as_dst",
+        "type": "query",
+        "label": "AS de destination",
+        "description": "Peuplée dynamiquement : les AS de destination réellement vus, bornés au Top 40 par volume. Le Top AS est l'argument de négociation de transit — l'exploitant filtre dessus pour chiffrer un peering.",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "ClickHouse"
+        },
+        "query": "SELECT as_dst FROM (SELECT concat('AS', toString(DstAS)) AS as_dst, sum(Bytes*SamplingRate) AS volume FROM flows WHERE $__timeFilter(TimeReceived) AND DstAS != 0 GROUP BY as_dst ORDER BY volume DESC LIMIT 40) ORDER BY as_dst",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "sort": 1
       }
     ]
   },
@@ -39,7 +116,10 @@
     {
       "title": "Réseau — Network Snapshot",
       "type": "dashboards",
-      "tags": ["okvorado", "snapshot"],
+      "tags": [
+        "okvorado",
+        "snapshot"
+      ],
       "asDropdown": false,
       "icon": "external link",
       "targetBlank": false,
@@ -49,7 +129,10 @@
     {
       "title": "Anomalies",
       "type": "dashboards",
-      "tags": ["okvorado", "anomalies"],
+      "tags": [
+        "okvorado",
+        "anomalies"
+      ],
       "asDropdown": false,
       "icon": "external link",
       "targetBlank": false,
@@ -59,7 +142,10 @@
     {
       "title": "Vue d'ensemble du parc",
       "type": "dashboards",
-      "tags": ["okvorado", "vue-ensemble"],
+      "tags": [
+        "okvorado",
+        "vue-ensemble"
+      ],
       "asDropdown": false,
       "icon": "external link",
       "targetBlank": false,
@@ -69,7 +155,10 @@
     {
       "title": "Par exportateur",
       "type": "dashboards",
-      "tags": ["okvorado", "exportateur"],
+      "tags": [
+        "okvorado",
+        "exportateur"
+      ],
       "asDropdown": false,
       "icon": "external link",
       "targetBlank": false,
@@ -79,7 +168,10 @@
     {
       "title": "Applications & QoS",
       "type": "dashboards",
-      "tags": ["okvorado", "applications"],
+      "tags": [
+        "okvorado",
+        "applications"
+      ],
       "asDropdown": false,
       "icon": "external link",
       "targetBlank": false,
@@ -89,7 +181,10 @@
     {
       "title": "Diagnostic incidents",
       "type": "dashboards",
-      "tags": ["okvorado", "incident"],
+      "tags": [
+        "okvorado",
+        "incident"
+      ],
       "asDropdown": false,
       "icon": "external link",
       "targetBlank": false,
@@ -102,7 +197,12 @@
       "id": 1,
       "type": "row",
       "title": "Exportateurs du parc",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
       "collapsed": false,
       "panels": []
     },
@@ -111,7 +211,12 @@
       "type": "table",
       "title": "Liste des exportateurs — Interfaces | Flux | IP",
       "description": "Un exportateur par ligne, avec son nombre d'interfaces, son volume de flux observés et son IP. Cliquer une ligne (colonne 'exportateur') ouvre sa fiche détaillée (dataLink → dashboard 'Par exportateur', variable var-exporter transmise). Pagination native de la table Grafana (footer) — équivalent de la pagination 'Page 1 of 32' de NetFlow Analyzer sur un parc de 314 équipements.",
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 1 },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 1
+      },
       "datasource": {
         "type": "grafana-clickhouse-datasource",
         "uid": "ClickHouse"
@@ -125,11 +230,22 @@
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "volume" },
-            "properties": [{ "id": "unit", "value": "bytes" }]
+            "matcher": {
+              "id": "byName",
+              "options": "volume"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
           },
           {
-            "matcher": { "id": "byName", "options": "exportateur" },
+            "matcher": {
+              "id": "byName",
+              "options": "exportateur"
+            },
             "properties": [
               {
                 "id": "links",
@@ -144,7 +260,10 @@
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "ip" },
+            "matcher": {
+              "id": "byName",
+              "options": "ip"
+            },
             "properties": [
               {
                 "id": "links",
@@ -179,7 +298,12 @@
       "type": "alertlist",
       "title": "Alarmes récentes",
       "description": "Équivalent du widget « Recent Alarms » de NetFlow Analyzer : liste les alertes Grafana déclenchées (exportateur muet, saturation d'interface, chute de trafic — voir stack/grafana/provisioning/alerting/). Panneau natif Grafana (grafana-alertlist), pas de requête ClickHouse — lit directement le moteur d'alerte interne.",
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 11 },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 11
+      },
       "fieldConfig": {
         "defaults": {},
         "overrides": []
@@ -205,7 +329,12 @@
       "id": 3,
       "type": "row",
       "title": "État des liens (HeatMap)",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 21 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 21
+      },
       "collapsed": false,
       "panels": []
     },
@@ -214,13 +343,29 @@
       "type": "piechart",
       "title": "État des liens — répartition",
       "description": "Équivalent du donut HeatMap de NetFlow Analyzer : Link Up (flux vus < 5 min) / Link Up & NoFlows (vu récemment mais rien depuis 5-30 min) / Link Down (rien depuis 30 min) / Unknown. Un lien = couple (exportateur, interface).",
-      "gridPos": { "h": 9, "w": 8, "x": 0, "y": 22 },
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 0,
+        "y": 22
+      },
       "datasource": {
         "type": "grafana-clickhouse-datasource",
         "uid": "ClickHouse"
       },
       "fieldConfig": {
-        "defaults": { "unit": "short" },
+        "defaults": {
+          "unit": "short",
+          "links": [
+            {
+              "title": "Voir la grille des interfaces dans cet état",
+              "url": "/d/okvorado-accueil-traffic-summary/okvorado-accueil-traffic-summary?var-etat_lien=${__data.fields.etat}",
+              "targetBlank": false,
+              "keepTime": true,
+              "includeVars": true
+            }
+          ]
+        },
         "overrides": []
       },
       "options": {
@@ -228,13 +373,21 @@
         "legend": {
           "displayMode": "table",
           "placement": "right",
-          "values": ["value", "percent"]
+          "values": [
+            "value",
+            "percent"
+          ]
+        },
+        "reduceOptions": {
+          "values": true,
+          "calcs": [],
+          "fields": ""
         }
       },
       "targets": [
         {
           "refId": "A",
-          "rawSql": "SELECT etat, count() AS nb_liens\nFROM (\n    SELECT ExporterName, InIfName,\n        multiIf(\n            max(TimeReceived) < now() - INTERVAL 30 MINUTE, 'Link Down',\n            max(TimeReceived) < now() - INTERVAL 5 MINUTE, 'Link Up & NoFlows',\n            'Link Up'\n        ) AS etat\n    FROM flows\n    WHERE $__timeFilter(TimeReceived)\n        AND ExporterName IN (${exporter:singlequote})\n        AND InIfName != ''\n    GROUP BY ExporterName, InIfName\n)\nGROUP BY etat\nORDER BY nb_liens DESC\nLIMIT 10",
+          "rawSql": "SELECT etat, count() AS nb_liens\nFROM (\n    SELECT ExporterName, InIfName,\n        multiIf(\n            max(TimeReceived) < now() - INTERVAL 30 MINUTE, 'Link Down',\n            max(TimeReceived) < now() - INTERVAL 5 MINUTE, 'Link Up & NoFlows',\n            'Link Up'\n        ) AS etat\n    FROM flows\n    WHERE $__timeFilter(TimeReceived)\n        AND ExporterName IN (${exporter:singlequote})\n        AND InIfName != ''\n    GROUP BY ExporterName, InIfName\n)\nGROUP BY etat\nHAVING etat IN (${etat_lien:singlequote})\nORDER BY nb_liens DESC\nLIMIT 10",
           "format": 1
         }
       ]
@@ -244,7 +397,12 @@
       "type": "state-timeline",
       "title": "Grille des interfaces — un carré par lien",
       "description": "Équivalent de la grille de carrés colorés de NetFlow Analyzer (772 interfaces chez lui) : un carré par couple (exportateur, interface), coloré selon son état. Cliquer une interface pointe vers la fiche de l'exportateur (dataLink).",
-      "gridPos": { "h": 9, "w": 16, "x": 8, "y": 22 },
+      "gridPos": {
+        "h": 9,
+        "w": 16,
+        "x": 8,
+        "y": 22
+      },
       "datasource": {
         "type": "grafana-clickhouse-datasource",
         "uid": "ClickHouse"
@@ -274,7 +432,7 @@
       "targets": [
         {
           "refId": "A",
-          "rawSql": "SELECT\n    max(TimeReceived) AS time,\n    concat(ExporterName, ' / ', InIfName) AS lien,\n    multiIf(\n        max(TimeReceived) < now() - INTERVAL 30 MINUTE, 'Link Down',\n        max(TimeReceived) < now() - INTERVAL 5 MINUTE, 'Link Up & NoFlows',\n        'Link Up'\n    ) AS etat\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\n    AND InIfName != ''\nGROUP BY ExporterName, InIfName\nORDER BY lien\nLIMIT 800",
+          "rawSql": "SELECT\n    max(TimeReceived) AS time,\n    concat(ExporterName, ' / ', InIfName) AS lien,\n    multiIf(\n        max(TimeReceived) < now() - INTERVAL 30 MINUTE, 'Link Down',\n        max(TimeReceived) < now() - INTERVAL 5 MINUTE, 'Link Up & NoFlows',\n        'Link Up'\n    ) AS etat\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\n    AND InIfName != ''\nGROUP BY ExporterName, InIfName\nHAVING etat IN (${etat_lien:singlequote})\nORDER BY lien\nLIMIT 800",
           "format": 1
         }
       ]
@@ -283,7 +441,12 @@
       "id": 6,
       "type": "row",
       "title": "Top N — Protocole, Application, QoS",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 31 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 31
+      },
       "collapsed": false,
       "panels": []
     },
@@ -292,13 +455,27 @@
       "type": "piechart",
       "title": "Top N Protocol",
       "description": "sum(Bytes * SamplingRate) par protocole IP nommé (TCP/UDP/ICMP/GRE/OSPF...), LIMIT 10.",
-      "gridPos": { "h": 9, "w": 8, "x": 0, "y": 32 },
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 0,
+        "y": 32
+      },
       "datasource": {
         "type": "grafana-clickhouse-datasource",
         "uid": "ClickHouse"
       },
       "fieldConfig": {
-        "defaults": { "unit": "bytes" },
+        "defaults": {
+          "unit": "bytes",
+          "links": [
+            {
+              "title": "Filtrer cet écran sur ce protocole",
+              "url": "/d/okvorado-accueil-traffic-summary/okvorado-accueil-traffic-summary?var-protocole=${__data.fields.protocole}",
+              "targetBlank": false
+            }
+          ]
+        },
         "overrides": []
       },
       "options": {
@@ -306,13 +483,21 @@
         "legend": {
           "displayMode": "table",
           "placement": "right",
-          "values": ["value", "percent"]
+          "values": [
+            "value",
+            "percent"
+          ]
+        },
+        "reduceOptions": {
+          "values": true,
+          "calcs": [],
+          "fields": ""
         }
       },
       "targets": [
         {
           "refId": "A",
-          "rawSql": "SELECT\n    multiIf(\n        Proto = 6, 'TCP',\n        Proto = 17, 'UDP',\n        Proto = 1, 'ICMP',\n        Proto = 47, 'GRE',\n        Proto = 89, 'OSPF',\n        Proto = 112, 'VRRP',\n        concat('Proto ', toString(Proto))\n    ) AS protocole,\n    sum(Bytes * SamplingRate) AS volume\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\nGROUP BY protocole\nORDER BY volume DESC\nLIMIT 10",
+          "rawSql": "SELECT\n    multiIf(\n        Proto = 6, 'TCP',\n        Proto = 17, 'UDP',\n        Proto = 1, 'ICMP',\n        Proto = 47, 'GRE',\n        Proto = 89, 'OSPF',\n        Proto = 112, 'VRRP',\n        concat('Proto ', toString(Proto))\n    ) AS protocole,\n    sum(Bytes * SamplingRate) AS volume\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\nGROUP BY protocole\nHAVING protocole IN (${protocole:singlequote})\nORDER BY volume DESC\nLIMIT 10",
           "format": 1
         }
       ]
@@ -322,7 +507,12 @@
       "type": "piechart",
       "title": "Top N Application",
       "description": "sum(Bytes * SamplingRate) par application déduite du protocole/port, LIMIT 20 — légendes en table (nom + volume lisible), comme les captures ManageEngine ('https -- 56.448 GB').",
-      "gridPos": { "h": 9, "w": 8, "x": 8, "y": 32 },
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 8,
+        "y": 32
+      },
       "datasource": {
         "type": "grafana-clickhouse-datasource",
         "uid": "ClickHouse"
@@ -345,7 +535,15 @@
         "legend": {
           "displayMode": "table",
           "placement": "right",
-          "values": ["value", "percent"]
+          "values": [
+            "value",
+            "percent"
+          ]
+        },
+        "reduceOptions": {
+          "values": true,
+          "calcs": [],
+          "fields": ""
         }
       },
       "targets": [
@@ -361,7 +559,12 @@
       "type": "piechart",
       "title": "Top N QoS",
       "description": "Classes DSCP nommées avec leur volume — DSCP = bitShiftRight(IPTos, 2), jamais l'opérateur >> (Code: 62 SYNTAX_ERROR mesuré). Classes mesurées en production sur ce ClickHouse : BE, EF, CS6, CS1, CS5.",
-      "gridPos": { "h": 9, "w": 8, "x": 16, "y": 32 },
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 16,
+        "y": 32
+      },
       "datasource": {
         "type": "grafana-clickhouse-datasource",
         "uid": "ClickHouse"
@@ -384,7 +587,15 @@
         "legend": {
           "displayMode": "table",
           "placement": "right",
-          "values": ["value", "percent"]
+          "values": [
+            "value",
+            "percent"
+          ]
+        },
+        "reduceOptions": {
+          "values": true,
+          "calcs": [],
+          "fields": ""
         }
       },
       "targets": [
@@ -399,7 +610,12 @@
       "id": 10,
       "type": "row",
       "title": "Top N Conversation",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 41 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 41
+      },
       "collapsed": false,
       "panels": []
     },
@@ -408,22 +624,40 @@
       "type": "table",
       "title": "Top N Conversation — Source / Destination / Application / DSCP / Traffic",
       "description": "sum(Bytes * SamplingRate), LIMIT 25. Adresses démappées via IPv6NumToString (jamais cutIPv6 qui TRONQUE — mesuré).",
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 42 },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 42
+      },
       "datasource": {
         "type": "grafana-clickhouse-datasource",
         "uid": "ClickHouse"
       },
       "fieldConfig": {
         "defaults": {
-          "custom": { "filterable": true }
+          "custom": {
+            "filterable": true
+          }
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "traffic" },
-            "properties": [{ "id": "unit", "value": "bytes" }]
+            "matcher": {
+              "id": "byName",
+              "options": "traffic"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
           },
           {
-            "matcher": { "id": "byName", "options": "source" },
+            "matcher": {
+              "id": "byName",
+              "options": "source"
+            },
             "properties": [
               {
                 "id": "links",
@@ -438,7 +672,10 @@
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "destination" },
+            "matcher": {
+              "id": "byName",
+              "options": "destination"
+            },
             "properties": [
               {
                 "id": "links",
@@ -453,7 +690,10 @@
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "application" },
+            "matcher": {
+              "id": "byName",
+              "options": "application"
+            },
             "properties": [
               {
                 "id": "links",
@@ -470,12 +710,195 @@
         ]
       },
       "options": {
-        "footer": { "show": true, "enablePagination": true }
+        "footer": {
+          "show": true,
+          "enablePagination": true
+        }
       },
       "targets": [
         {
           "refId": "A",
           "rawSql": "SELECT\n    replaceOne(IPv6NumToString(SrcAddr), '::ffff:', '') AS source,\n    replaceOne(IPv6NumToString(DstAddr), '::ffff:', '') AS destination,\n    multiIf(\n        Proto = 6 AND (DstPort = 443 OR SrcPort = 443), 'HTTPS',\n        Proto = 6 AND (DstPort = 80 OR SrcPort = 80), 'HTTP',\n        Proto = 17 AND (DstPort = 53 OR SrcPort = 53), 'DNS',\n        Proto = 6, 'TCP autre',\n        Proto = 17, 'UDP autre',\n        Proto = 1, 'ICMP',\n        'Autre'\n    ) AS application,\n    multiIf(\n        bitShiftRight(IPTos, 2) = 0, 'BE',\n        bitShiftRight(IPTos, 2) = 46, 'EF',\n        bitShiftRight(IPTos, 2) = 48, 'CS6',\n        bitShiftRight(IPTos, 2) = 8, 'CS1',\n        bitShiftRight(IPTos, 2) = 40, 'CS5',\n        concat('DSCP ', toString(bitShiftRight(IPTos, 2)))\n    ) AS dscp,\n    sum(Bytes * SamplingRate) AS traffic\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\nGROUP BY source, destination, application, dscp\nORDER BY traffic DESC\nLIMIT 25",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "row",
+      "title": "Transit — AS et pays de destination (alimenté par les équipements réseau)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 52
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 14,
+      "type": "barchart",
+      "title": "Top N AS de destination par volume — argument de négociation de transit",
+      "description": "Volume sum(Bytes * SamplingRate) par numéro d'AS de destination (DstAS) : c'est la vue qui sert à négocier un transit ou un peering — savoir vers QUELS opérateurs part réellement le trafic, et dans quelles proportions. QUELLE SOURCE ALIMENTE CE PANNEAU : DstAS n'est renseigné que par les équipements réseau (pare-feu/routeur) qui disposent d'une table BGP ou d'un enrichissement AS — mesuré à 61% de remplissage sur le pare-feu branché ici, et à 0% sur les 11 exportateurs logiciels softflowd, qui n'émettent pas ce champ. Les lignes DstAS = 0 (champ non émis ou destination non routable) sont EXCLUES : elles ne sont pas 'l'AS numéro zéro' et formeraient une barre 'vide' majoritaire qui écraserait les vrais AS. Si ce panneau est vide, c'est la source, pas le produit. LIMIT 15.",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 53
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "links": [
+            {
+              "title": "Filtrer cet écran sur cet AS de destination",
+              "url": "/d/okvorado-accueil-traffic-summary/okvorado-accueil-traffic-summary?var-as_dst=${__data.fields.as_dst}",
+              "targetBlank": false
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT\n    concat('AS', toString(DstAS)) AS as_dst,\n    sum(Bytes * SamplingRate) AS volume\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\n    AND DstAS != 0\nGROUP BY as_dst\nHAVING as_dst IN (${as_dst:singlequote})\nORDER BY volume DESC\nLIMIT 15",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "piechart",
+      "title": "Trafic par pays de destination",
+      "description": "Répartition du volume sum(Bytes * SamplingRate) par pays de destination (DstCountry) — vue d'ensemble de la géographie du trafic sortant. QUELLE SOURCE ALIMENTE CE PANNEAU : DstCountry provient de la géolocalisation Akvorado appliquée aux destinations routables — mesuré à 52% de remplissage sur le pare-feu branché ici ; les exportateurs logiciels softflowd, qui ne parlent qu'à des destinations internes, ne produisent pas de pays résolu. Les lignes DstCountry vide (non résolu) sont EXCLUES pour ne pas afficher une part 'vide' majoritaire qui écraserait les pays réels — un donut vide signifie 'aucune destination géolocalisée sur la sélection', jamais 'aucun trafic'. Cliquer une part filtre l'accueil sur ce pays (variable $pays_dst). LIMIT 12.",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 53
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "links": [
+            {
+              "title": "Filtrer l'accueil sur ce pays de destination",
+              "url": "/d/okvorado-accueil-traffic-summary/okvorado-accueil-traffic-summary?var-pays_dst=${__data.fields.pays_arrivee}",
+              "targetBlank": false,
+              "keepTime": true,
+              "includeVars": true
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "pieType": "donut",
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "value",
+            "percent"
+          ]
+        },
+        "reduceOptions": {
+          "values": true,
+          "calcs": [],
+          "fields": ""
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT\n    DstCountry AS pays_arrivee,\n    sum(Bytes * SamplingRate) AS volume\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\n    AND DstCountry != ''\n    AND DstCountry IN (${pays_dst:singlequote})\nGROUP BY pays_arrivee\nORDER BY volume DESC\nLIMIT 12",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "type": "table",
+      "title": "Top N AS de destination — volume, pays et flux observés",
+      "description": "Le détail chiffré derrière le classement des AS : pour chaque couple (AS de destination, pays de destination), le volume sum(Bytes * SamplingRate) et le nombre de flux observés. count() n'est JAMAIS mis à l'échelle — il compte le travail du collecteur, pas du trafic. Sert d'argumentaire chiffré en négociation de transit : quel opérateur, dans quel pays, pour quel volume. QUELLE SOURCE ALIMENTE CE PANNEAU : DstAS et DstCountry ne sont renseignés que par un équipement réseau disposant d'une table BGP / d'un enrichissement (mesurés à 61% et 52% de remplissage sur le pare-feu branché ici) ; les 11 exportateurs logiciels softflowd n'émettent pas ces champs. Les lignes sans AS (DstAS = 0) ET sans pays résolu sont EXCLUES pour ne pas noyer le classement sous une ligne 'vide' — un tableau vide veut dire 'aucune source n'alimente ces champs', pas 'aucun trafic'. Cliquer un pays filtre l'accueil sur ce pays (variable $pays_dst). LIMIT 25.",
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 62
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "left",
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "volume"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "pays_arrivee"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Filtrer l'accueil sur ce pays de destination",
+                    "url": "/d/okvorado-accueil-traffic-summary/okvorado-accueil-traffic-summary?var-pays_dst=${__value.raw}",
+                    "targetBlank": false,
+                    "keepTime": true,
+                    "includeVars": true
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "footer": {
+          "show": true,
+          "enablePagination": true
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT\n    concat('AS', toString(DstAS)) AS as_dst,\n    DstCountry AS pays_arrivee,\n    sum(Bytes * SamplingRate) AS volume,\n    count() AS flux\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\n    AND (DstAS != 0 OR DstCountry != '')\n    AND DstCountry IN (${pays_dst:singlequote})\nGROUP BY as_dst, pays_arrivee\nORDER BY volume DESC\nLIMIT 25",
           "format": 1
         }
       ]

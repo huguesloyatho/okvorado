@@ -26,6 +26,9 @@ services:
       OKVORADO_CONSOLE_HOST: akvorado-console
       OKVORADO_CONSOLE_PORT: "8080"
       OKVORADO_AKVORADO_CONFIG_PATH: /etc/akvorado-config/outlet.yaml
+      # Dashboards Grafana montés en lecture seule (voir `volumes:`) — source du
+      # décompte « champs exploités » de l'écran Champs disponibles.
+      OKVORADO_GRAFANA_DASHBOARDS_PATH: /etc/grafana-dashboards
       # Collecte d inventaire SNMP. La valeur vient du .env, jamais en clair ici.
       # Sans elle, l ecran Inventaire affiche « SNMP non configure » et la
       # collecte reste desactivee — etat DISTINCT, pas un tableau vide trompeur.
@@ -79,6 +82,15 @@ services:
       # Base locale (correspondances port->application, audit) — bind mount pour
       # que les surcharges saisies par les utilisateurs survivent aux recréations.
       - /data/okvorado:/data
+      # Dashboards Grafana en LECTURE SEULE — l'écran « Champs disponibles »
+      # les parse pour compter quelles colonnes de `flows` sont réellement
+      # consommées. `:ro` assumé : Okvorado ne modifie jamais un dashboard,
+      # c'est Grafana qui les provisionne depuis ce même dossier.
+      #
+      # Sans ce montage l'écran reste fonctionnel mais affiche « décompte
+      # indisponible » (zéro silencieux évité) au lieu d'annoncer à tort que
+      # 100 % des champs sont inexploités.
+      - ./stack/grafana/dashboards:/etc/grafana-dashboards:ro
 
     mem_limit: 512m
 

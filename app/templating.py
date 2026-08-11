@@ -7,6 +7,8 @@ template rendu par un moteur dépourvu de ces filtres lèverait
 """
 
 import hashlib
+import logging
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -15,8 +17,11 @@ from fastapi.templating import Jinja2Templates
 from jinja2 import pass_context
 
 from app.config import settings
+from app.db import open_connection
 from app.services.diagnostics import resolve_protocol_label
 from app.services.flow_sample import format_display_address
+
+log = logging.getLogger(__name__)
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
@@ -44,6 +49,75 @@ def _auth_context(request: Request) -> dict[str, Any]:
         "auth_username": getattr(request.state, "auth_username", None),
         "auth_role": getattr(request.state, "auth_role", None),
     }
+
+
+def _pending_changes_context(_request: Request) -> dict[str, Any]:
+    """Publie le NOMBRE de changements de configuration en attente à TOUS les
+    templates, pour le bandeau global de `base.html`.
+
+    DÉFAUT MESURÉ EN PRODUCTION (2026-08-11) — demande explicite de
+    l'utilisateur : « il faut surtout soit mettre un bouton pour appliquer ce
+    qui est en attente, quelque chose du genre ».
+
+    Ce qui s'est passé : les écrans METTENT EN ATTENTE (`stage_change`) sans
+    rien écrire, et SEUL `/config` portait le bouton « Appliquer ». Ayant
+    déclaré son pare-feu depuis un écran dépourvu de ce bouton, l'utilisateur a
+    cru que l'opération échouait et l'a refaite — 21 changements se sont
+    accumulés dans `pending_config_changes` sans qu'aucun écran ne le signale.
+
+    POURQUOI ICI, ET PAS UN BOUTON AJOUTÉ AUX DEUX ÉCRANS MANQUANTS
+    (`exporters.py`, `config_sections.py`) : ce serait corriger les deux
+    occurrences du jour et laisser le défaut intact — le prochain écran qui
+    mettra en attente l'oubliera à son tour. Publié en context processor, le
+    compte est disponible pour `base.html` sur TOUTE page qui hérite du
+    gabarit, sans qu'aucun routeur n'ait à y penser. Même raisonnement que
+    `_auth_context` et que `static_version` (voir `build_templates`), et même
+    famille de défauts que celui corrigé pour `akvorado_url`.
+
+    OUVERTURE DIRECTE DE SQLITE, ET NON UNE DÉPENDANCE FASTAPI : un context
+    processor ne reçoit QUE le `Request`, il ne traverse pas le système
+    d'injection — `settings.sqlite_path` est donc lu ici. Le coût est
+    acceptable : c'est un `COUNT(*)` sur une table minuscule (la file est vidée
+    à chaque application), en lecture seule, sur un fichier local.
+
+    ZÉRO SILENCIEUX (CLAUDE.md, règle dure du projet) : un échec de lecture
+    (base verrouillée, fichier absent, table manquante) rend `None` — un état
+    DISTINCT signifiant « indéterminé » — et JAMAIS `0`. Un `0` serait
+    indiscernable d'une file réellement vide : le bandeau disparaîtrait en
+    affirmant faussement qu'il n'y a rien à appliquer, ce qui est exactement le
+    mensonge rassurant que ce projet proscrit. `base.html` n'affiche le bandeau
+    que sur un entier strictement positif, donc `None` n'affiche rien plutôt
+    que d'affirmer quoi que ce soit.
+    """
+    try:
+        # `open_connection` (app/db.py) plutôt qu'un `sqlite3.connect` nu :
+        # porte d'entrée UNIQUE vers SQLite depuis le 2026-08-11, qui garantit
+        # `row_factory = sqlite3.Row`. Cette lecture-ci n'indexe que par
+        # position, mais la règle est SANS EXCEPTION — c'est exactement le
+        # « ce site-là n'en a pas besoin » qui a laissé la boucle de collecte
+        # SNMP ouvrir une connexion nue et ne jamais fonctionner.
+        conn = open_connection()
+        try:
+            row = conn.execute("SELECT COUNT(*) FROM pending_config_changes").fetchone()
+        finally:
+            conn.close()
+    except (sqlite3.Error, OSError):
+        log.error(
+            "lecture du compte de changements en attente impossible, "
+            "bandeau masque (etat indetermine, jamais '0'): sqlite_path=%s",
+            settings.sqlite_path,
+            exc_info=True,
+        )
+        return {"pending_changes_count": None}
+
+    if row is None:
+        # Un COUNT(*) rend toujours une ligne : une absence de ligne signale une
+        # anomalie du pilote, pas une file vide. On ne l'interprète donc PAS
+        # comme 0 (même garde zéro silencieux que le bloc d'exception ci-dessus).
+        log.error("COUNT(*) sur pending_config_changes n'a rendu aucune ligne (anomalie)")
+        return {"pending_changes_count": None}
+
+    return {"pending_changes_count": int(row[0])}
 
 
 def humanize_bytes(value: int | float | None) -> str:
@@ -137,7 +211,14 @@ def prefixed(_context: object, path: str) -> str:
 
 def build_templates(directory: str | Path = TEMPLATES_DIR) -> Jinja2Templates:
     """Construit un moteur Jinja avec les filtres de présentation d'Okvorado."""
-    engine = Jinja2Templates(directory=str(directory), context_processors=[_auth_context])
+    # `_pending_changes_context` alimente le bandeau global « changements en
+    # attente » de `base.html`. Branché ICI, au même niveau que `_auth_context`
+    # : c'est ce qui garantit qu'AUCUN écran ne peut l'oublier (voir la
+    # docstring du processeur pour le défaut mesuré le 2026-08-11).
+    engine = Jinja2Templates(
+        directory=str(directory),
+        context_processors=[_auth_context, _pending_changes_context],
+    )
     engine.env.filters["humanize_bytes"] = humanize_bytes
     engine.env.filters["humanize_number"] = humanize_number
     # Adresse IPv4-mappée (`::ffff:x.x.x.x`) -> forme v4 lisible ; IPv6 native
@@ -170,6 +251,22 @@ def build_templates(directory: str | Path = TEMPLATES_DIR) -> Jinja2Templates:
     # reviendrait, silencieusement (aucune erreur, juste un lien mort).
     # Lu à chaque construction du moteur, comme le reste de la configuration.
     engine.env.globals["akvorado_url"] = settings.akvorado_console_url
+
+    # DÉFAUT PAR DÉFAUT du compte de changements en attente — `None`, jamais 0.
+    #
+    # `_pending_changes_context` ne s'exécute QUE via `TemplateResponse` (c'est
+    # le mécanisme des context processors de Starlette). Tout rendu qui court-
+    # circuite ce chemin — `env.get_template(...).render(...)`, utilisé par
+    # plusieurs tests de gabarit, et n'importe quel rendu direct futur —
+    # n'aurait donc PAS la variable et `base.html` lèverait `UndefinedError` :
+    # une page blanche, sur un écran qui fonctionnait, pour un bandeau qui
+    # n'est qu'un confort. Le global fournit le repli ; le processeur écrase ce
+    # repli par la vraie mesure sur le chemin normal.
+    #
+    # ZÉRO SILENCIEUX : le repli vaut `None` (« indéterminé »), PAS `0`. Un `0`
+    # affirmerait que la file est vide sur un chemin où on ne l'a jamais lue.
+    # `base.html` teste `is not none` avant `> 0` : `None` n'affiche rien.
+    engine.env.globals["pending_changes_count"] = None
     return engine
 
 

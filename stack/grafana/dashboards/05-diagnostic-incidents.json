@@ -50,6 +50,21 @@
         "multi": true,
         "includeAll": true,
         "sort": 1
+      },
+      {
+        "name": "pays_src",
+        "type": "query",
+        "label": "Pays source",
+        "description": "Code pays de la source (SrcCountry), peuplé dynamiquement depuis les flux. Alimenté par la géolocalisation Akvorado sur les flux venant d'une adresse routable — mesuré à 61% de remplissage sur l'équipement réseau (pare-feu) branché au collecteur, 0% sur les exportateurs logiciels softflowd. Liste vide = aucun flux de la période n'a de pays source résolu : c'est la source, pas le produit.",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "ClickHouse"
+        },
+        "query": "SELECT DISTINCT SrcCountry FROM flows WHERE $__timeFilter(TimeReceived) AND SrcCountry != '' ORDER BY SrcCountry",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "sort": 1
       }
     ]
   },
@@ -151,7 +166,16 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "bytes"
+          "unit": "bytes",
+          "links": [
+            {
+              "title": "Voir ce pays de destination sur l'accueil (trafic total)",
+              "url": "/d/okvorado-accueil-traffic-summary/okvorado-accueil-traffic-summary?var-pays_dst=${__data.fields.pays}",
+              "targetBlank": false,
+              "keepTime": true,
+              "includeVars": true
+            }
+          ]
         },
         "overrides": []
       },
@@ -164,7 +188,12 @@
             "percent"
           ]
         },
-        "pieType": "donut"
+        "pieType": "donut",
+        "reduceOptions": {
+          "values": true,
+          "calcs": [],
+          "fields": ""
+        }
       },
       "targets": [
         {
@@ -368,7 +397,8 @@
       "fieldConfig": {
         "defaults": {
           "custom": {
-            "align": "left"
+            "align": "left",
+            "filterable": true
           },
           "links": [
             {
@@ -378,11 +408,7 @@
               "keepTime": true,
               "includeVars": true
             }
-          ],
-          "custom": {
-            "align": "left",
-            "filterable": true
-          }
+          ]
         },
         "overrides": [
           {
@@ -674,6 +700,144 @@
           "refId": "A",
           "format": 1,
           "rawSql": "WITH\n    $__fromTime AS debut_courant,\n    $__toTime AS fin_courant,\n    debut_courant - toIntervalSecond(greatest(toUnixTimestamp($__toTime) - toUnixTimestamp($__fromTime), 1)) AS debut_precedent\nSELECT\n    application,\n    sum(volume) AS volume\nFROM (\n    SELECT\n        multiIf(\n            least(SrcPort,DstPort) = 443, 'HTTPS',\n            least(SrcPort,DstPort) = 80, 'HTTP',\n            least(SrcPort,DstPort) = 8080, 'HTTP-ALT',\n            least(SrcPort,DstPort) = 8443, 'HTTPS-ALT',\n            least(SrcPort,DstPort) = 22, 'SSH',\n            least(SrcPort,DstPort) = 3389, 'RDP',\n            least(SrcPort,DstPort) = 445, 'SMB (microsoft-ds)',\n            least(SrcPort,DstPort) = 139, 'NetBIOS-SSN',\n            least(SrcPort,DstPort) = 53, 'DNS',\n            least(SrcPort,DstPort) = 25, 'SMTP',\n            least(SrcPort,DstPort) = 389, 'LDAP',\n            least(SrcPort,DstPort) = 1433, 'MSSQL',\n            least(SrcPort,DstPort) = 3306, 'MySQL',\n            least(SrcPort,DstPort) = 5432, 'PostgreSQL',\n            concat(if(Proto = 6, 'tcp/', 'udp/'), toString(least(SrcPort,DstPort)))\n        ) AS application,\n        Bytes * SamplingRate AS volume,\n        TimeReceived\n    FROM flows\n    WHERE TimeReceived >= debut_precedent AND TimeReceived < fin_courant\n        AND ExporterName IN (${exporter:singlequote})\n        AND Proto IN (6, 17)\n) AS f\nWHERE f.TimeReceived >= debut_courant AND f.TimeReceived < fin_courant\nGROUP BY application\nHAVING application NOT IN (\n    SELECT\n        multiIf(\n            least(SrcPort,DstPort) = 443, 'HTTPS',\n            least(SrcPort,DstPort) = 80, 'HTTP',\n            least(SrcPort,DstPort) = 8080, 'HTTP-ALT',\n            least(SrcPort,DstPort) = 8443, 'HTTPS-ALT',\n            least(SrcPort,DstPort) = 22, 'SSH',\n            least(SrcPort,DstPort) = 3389, 'RDP',\n            least(SrcPort,DstPort) = 445, 'SMB (microsoft-ds)',\n            least(SrcPort,DstPort) = 139, 'NetBIOS-SSN',\n            least(SrcPort,DstPort) = 53, 'DNS',\n            least(SrcPort,DstPort) = 25, 'SMTP',\n            least(SrcPort,DstPort) = 389, 'LDAP',\n            least(SrcPort,DstPort) = 1433, 'MSSQL',\n            least(SrcPort,DstPort) = 3306, 'MySQL',\n            least(SrcPort,DstPort) = 5432, 'PostgreSQL',\n            concat(if(Proto = 6, 'tcp/', 'udp/'), toString(least(SrcPort,DstPort)))\n        ) AS application\n    FROM flows\n    WHERE TimeReceived >= debut_precedent AND TimeReceived < debut_courant\n        AND ExporterName IN (${exporter:singlequote})\n        AND Proto IN (6, 17)\n    GROUP BY application\n)\nORDER BY volume DESC\nLIMIT 20"
+        }
+      ]
+    },
+    {
+      "id": 41,
+      "type": "row",
+      "title": "I — Provenance géographique et AS (un pays source inattendu est un signal)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 80
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 42,
+      "type": "piechart",
+      "title": "Volume ENTRANT depuis l'extérieur, par pays source",
+      "description": "COMMENT LIRE : le pendant ENTRANT du panneau id=40 (qui, lui, ventile le volume SORTANT par pays de destination) — ici la source est EXTERNE et la destination INTERNE (RFC1918 + CGNAT), donc on lit d'où vient ce qui ENTRE. Un pays source inattendu (un pays où l'entreprise n'a ni site, ni client, ni fournisseur) sur un volume non négligeable est un signal d'incident à instruire — pas une preuve : un CDN ou un cloud peut légitimement répondre depuis n'importe où. QUELLE SOURCE ALIMENTE CE PANNEAU : SrcCountry provient de la géolocalisation Akvorado appliquée aux sources routables — mesuré à 61% de remplissage sur l'équipement réseau (pare-feu) branché ici, et à 0% sur les 11 exportateurs logiciels softflowd, qui ne voient que du trafic interne et n'émettent pas ce champ. Les lignes SrcCountry vide (non résolu) sont EXCLUES pour ne pas afficher une part 'vide' majoritaire qui écraserait les pays réels — un donut vide signifie 'aucune source géolocalisée sur la sélection', jamais 'aucun trafic'. Cliquer une part filtre ce dashboard sur ce pays source (variable $pays_src). LIMIT 12.",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 81
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "links": [
+            {
+              "title": "Filtrer le diagnostic sur ce pays source",
+              "url": "/d/okvorado-diagnostic-incidents/okvorado-diagnostic-incidents?var-pays_src=${__data.fields.pays_depart}",
+              "targetBlank": false,
+              "keepTime": true,
+              "includeVars": true
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "value",
+            "percent"
+          ]
+        },
+        "pieType": "donut",
+        "reduceOptions": {
+          "values": true,
+          "calcs": [],
+          "fields": ""
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "rawSql": "SELECT\n    SrcCountry AS pays_depart,\n    sum(Bytes * SamplingRate) AS volume_recu\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\n    AND SrcCountry != ''\n    AND SrcCountry IN (${pays_src:singlequote})\n    AND (\n        (DstAddr >= toIPv6('::ffff:10.0.0.0') AND DstAddr <= toIPv6('::ffff:10.255.255.255'))\n        OR (DstAddr >= toIPv6('::ffff:172.16.0.0') AND DstAddr <= toIPv6('::ffff:172.31.255.255'))\n        OR (DstAddr >= toIPv6('::ffff:192.168.0.0') AND DstAddr <= toIPv6('::ffff:192.168.255.255'))\n        OR (DstAddr >= toIPv6('::ffff:100.64.0.0') AND DstAddr <= toIPv6('::ffff:100.127.255.255'))\n    )\n    AND NOT (\n        (SrcAddr >= toIPv6('::ffff:10.0.0.0') AND SrcAddr <= toIPv6('::ffff:10.255.255.255'))\n        OR (SrcAddr >= toIPv6('::ffff:172.16.0.0') AND SrcAddr <= toIPv6('::ffff:172.31.255.255'))\n        OR (SrcAddr >= toIPv6('::ffff:192.168.0.0') AND SrcAddr <= toIPv6('::ffff:192.168.255.255'))\n        OR (SrcAddr >= toIPv6('::ffff:100.64.0.0') AND SrcAddr <= toIPv6('::ffff:100.127.255.255'))\n    )\nGROUP BY pays_depart\nORDER BY volume_recu DESC\nLIMIT 12"
+        }
+      ]
+    },
+    {
+      "id": 43,
+      "type": "table",
+      "title": "Pays et AS source du trafic entrant — cibles internes touchées",
+      "description": "COMMENT LIRE : le détail derrière le donut ci-dessus. Une ligne = un couple (pays source, AS source) venant de l'extérieur vers une destination interne, avec le volume reçu, le nombre de flux observés et le nombre de cibles internes distinctes touchées (uniqExact(DstAddr)). LE DISCRIMINANT : un pays/AS inattendu qui touche BEAUCOUP de cibles internes distinctes pour PEU de volume chacune ressemble à un balayage venu de l'extérieur (à croiser avec le motif C ci-dessus) ; un volume élevé concentré sur UNE seule cible interne ressemble plutôt à un usage légitime (sauvegarde, CDN, sync cloud) — ce dashboard ne tranche pas seul, il oriente. count() n'est JAMAIS mis à l'échelle (il compte des flux observés, pas du trafic). QUELLE SOURCE ALIMENTE CE PANNEAU : SrcCountry et SrcAS ne sont renseignés que par un équipement réseau (pare-feu/routeur) disposant d'un enrichissement géo/BGP — mesurés à 61% et 65% de remplissage sur le pare-feu branché ici, à 0% sur les 11 exportateurs logiciels softflowd. Les lignes sans pays résolu ET sans AS (SrcAS = 0) sont EXCLUES pour ne pas noyer le classement sous une ligne 'vide' — un tableau vide veut dire 'aucune source n'alimente ces champs', jamais 'aucun trafic'. Cliquer un pays filtre ce dashboard sur ce pays source (variable $pays_src). LIMIT 30.",
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 81
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "left",
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "volume_recu"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "pays_depart"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Filtrer le diagnostic sur ce pays source",
+                    "url": "/d/okvorado-diagnostic-incidents/okvorado-diagnostic-incidents?var-pays_src=${__value.raw}",
+                    "targetBlank": false,
+                    "keepTime": true,
+                    "includeVars": true
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "footer": {
+          "show": true,
+          "enablePagination": true
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "rawSql": "SELECT\n    SrcCountry AS pays_depart,\n    concat('AS', toString(SrcAS)) AS as_src,\n    sum(Bytes * SamplingRate) AS volume_recu,\n    count() AS flux,\n    uniqExact(DstAddr) AS cibles_internes\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\n    AND (SrcCountry != '' OR SrcAS != 0)\n    AND SrcCountry IN (${pays_src:singlequote})\n    AND (\n        (DstAddr >= toIPv6('::ffff:10.0.0.0') AND DstAddr <= toIPv6('::ffff:10.255.255.255'))\n        OR (DstAddr >= toIPv6('::ffff:172.16.0.0') AND DstAddr <= toIPv6('::ffff:172.31.255.255'))\n        OR (DstAddr >= toIPv6('::ffff:192.168.0.0') AND DstAddr <= toIPv6('::ffff:192.168.255.255'))\n        OR (DstAddr >= toIPv6('::ffff:100.64.0.0') AND DstAddr <= toIPv6('::ffff:100.127.255.255'))\n    )\n    AND NOT (\n        (SrcAddr >= toIPv6('::ffff:10.0.0.0') AND SrcAddr <= toIPv6('::ffff:10.255.255.255'))\n        OR (SrcAddr >= toIPv6('::ffff:172.16.0.0') AND SrcAddr <= toIPv6('::ffff:172.31.255.255'))\n        OR (SrcAddr >= toIPv6('::ffff:192.168.0.0') AND SrcAddr <= toIPv6('::ffff:192.168.255.255'))\n        OR (SrcAddr >= toIPv6('::ffff:100.64.0.0') AND SrcAddr <= toIPv6('::ffff:100.127.255.255'))\n    )\nGROUP BY pays_depart, as_src\nORDER BY volume_recu DESC\nLIMIT 30"
         }
       ]
     }

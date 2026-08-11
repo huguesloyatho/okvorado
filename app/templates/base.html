@@ -55,6 +55,8 @@
       <a href="{{ '/diagnostics/convergence' | prefixed }}" class="{{ 'active' if active_page == 'diagnostics_convergence' else '' }}">Convergence</a>
       <a href="{{ '/views' | prefixed }}" class="{{ 'active' if active_page == 'views' else '' }}">Vues métier</a>
       <a href="{{ '/app-catalog' | prefixed }}" class="{{ 'active' if active_page == 'app_catalog' else '' }}">Catalogue applicatif</a>
+      <a href="{{ '/field-catalog' | prefixed }}" class="{{ 'active' if active_page == 'field_catalog' else '' }}">Champs disponibles</a>
+      <a href="{{ '/flow-export' | prefixed }}" class="{{ 'active' if active_page == 'flow_export' else '' }}">Export de flux</a>
       <a href="{{ '/ingestion' | prefixed }}" class="{{ 'active' if active_page == 'ingestion' else '' }}">Ingestion</a>
       <a href="{{ '/retention' | prefixed }}" class="{{ 'active' if active_page == 'retention' else '' }}">Rétention</a>
       <a href="{{ '/db-health' | prefixed }}" class="{{ 'active' if active_page == 'db_health' else '' }}">Santé DB</a>
@@ -104,6 +106,65 @@
       <strong>Mot de passe par défaut toujours actif.</strong>
       <a href="{{ '/settings/security' | prefixed }}">Changez-le depuis l'écran Sécurité</a>.
     </p>
+  {% endif %}
+
+  {# Bandeau AFFICHÉ SUR TOUTES LES PAGES tant que des changements de
+     configuration attendent d'être appliqués.
+
+     DÉFAUT MESURÉ EN PRODUCTION (2026-08-11), demande explicite de
+     l'utilisateur : « il faut surtout soit mettre un bouton pour appliquer ce
+     qui est en attente, quelque chose du genre ». Les écrans METTENT EN
+     ATTENTE sans rien écrire, et SEUL /config portait le bouton
+     « Appliquer » : ayant déclaré son pare-feu depuis un écran qui n'en avait
+     pas, l'utilisateur a cru que ça échouait et a recommencé — 21 changements
+     accumulés, signalés NULLE PART.
+
+     Ici, dans le gabarit COMMUN, et alimenté par le context processor
+     `app.templating._pending_changes_context` : aucun routeur n'a rien à
+     passer, donc aucun écran ne peut l'oublier. Ajouter le bouton aux deux
+     écrans manquants aurait corrigé les deux occurrences du jour et laissé
+     entier le défaut — le prochain écran l'aurait oublié à son tour.
+
+     ZÉRO SILENCIEUX : la condition teste `is not none` AVANT le `> 0`. Un
+     échec de lecture rend `none` (état « indéterminé ») et n'affiche RIEN —
+     jamais « 0 en attente », qui affirmerait faussement que la file est vide.
+
+     Le compte est celui du RENDU de la page. Il n'est pas rafraîchi en fond :
+     la CSP `script-src 'self'` (sans `unsafe-eval`) interdit la condition htmx
+     `every Ns [ ... ]`, et un sondage inconditionnel sur toutes les pages
+     coûterait une requête permanente pour une file qui ne change qu'au geste
+     de l'exploitant — lequel provoque de toute façon un nouveau rendu. #}
+  {% if pending_changes_count is not none and pending_changes_count > 0 %}
+    <div class="notice notice-warn pending-global-banner">
+      <span class="pending-global-banner__text">
+        <strong>{{ pending_changes_count }} changement{{ "s" if pending_changes_count != 1 else "" }} de configuration en attente.</strong>
+        Rien n'est appliqué à Akvorado tant que vous n'avez pas cliqué sur « Appliquer ».
+      </span>
+      <span class="pending-global-banner__actions">
+        <a class="link-action" href="{{ '/config' | prefixed }}">Voir le détail</a>
+        {# Le POST part directement d'ici : signaler sans offrir le geste
+           n'aurait rien corrigé. `hx-target` vise le bandeau lui-même — le
+           rapport d'application REMPLACE le bandeau, ce qui rend le résultat
+           visible sur la page où l'exploitant se trouve, quelle qu'elle soit.
+           `hx-select="unset"` est OBLIGATOIRE : `hx-select` est HÉRITÉ en
+           htmx, et plusieurs écrans (exporters.html, db_health.html,
+           retention.html) portent un `hx-select` sur un conteneur parent —
+           sans ce `unset`, ce bouton insérerait un fragment VIDE en silence. #}
+        <button
+          type="button"
+          class="primary"
+          hx-post="{{ '/config/apply' | prefixed }}"
+          hx-target="closest .pending-global-banner"
+          hx-swap="outerHTML"
+          hx-select="unset"
+          hx-confirm="Appliquer les {{ pending_changes_count }} changement(s) en attente ? Ceci redémarre Akvorado et interrompt la collecte de flux pendant quelques secondes."
+          hx-sync="this:replace"
+          hx-disabled-elt="this"
+        >
+          Appliquer {{ pending_changes_count }} changement{{ "s" if pending_changes_count != 1 else "" }}
+        </button>
+      </span>
+    </div>
   {% endif %}
 
   <main class="content">

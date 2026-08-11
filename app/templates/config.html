@@ -121,10 +121,62 @@
         <input type="text" id="add-exporter-name" name="name" placeholder="nouveau-noeud" maxlength="128" required>
       </div>
 
+      {# INTERFACE PAR DÉFAUT — DÉFAUT MESURÉ EN PRODUCTION (2026-08-11).
+
+         Ce formulaire ne demandait que CIDR + nom. L'exportateur partait donc
+         en YAML avec le seul nom, sans aucune métadonnée d'interface, et
+         Akvorado rejetait 100 % de ses flux en « metadata missing ». Pire :
+         une déclaration nominative /32 PRIME sur le filet CIDR large, donc
+         déclarer l'équipement lui RETIRAIT les métadonnées que ce filet lui
+         donnait — l'ingestion CASSAIT alors qu'on croyait juste le nommer.
+
+         Les champs sont PRÉ-REMPLIS avec le repli qui fonctionne
+         (`unknown` / `unclassified` / 1000 / non classifiée) : le geste rapide
+         reste un geste rapide — on peut soumettre sans rien toucher — et
+         l'exploitant qui VEUT classifier son équipement le fait à la souris,
+         ici, sans jamais éditer de YAML (exigence n°2 du projet).
+
+         `.field` obligatoire autour de chaque paire label+champ : `.config-form`
+         est une grille `auto-fit` où, sans cette enveloppe, label et champ sont
+         des cellules INDÉPENDANTES et le retour à la ligne tombe au milieu
+         d'une paire (défaut signalé par capture le 2026-08-06). #}
+      <div class="field">
+        <label for="add-exporter-default-name">Interface par défaut</label>
+        <input type="text" id="add-exporter-default-name" name="default_name" value="unknown" maxlength="128" required>
+      </div>
+
+      <div class="field">
+        <label for="add-exporter-default-description">Description</label>
+        <input type="text" id="add-exporter-default-description" name="default_description" value="unclassified" maxlength="128">
+      </div>
+
+      <div class="field">
+        <label for="add-exporter-default-speed">Débit (Mb/s)</label>
+        <input type="number" id="add-exporter-default-speed" name="default_speed" value="1000" min="1" required>
+      </div>
+
+      <div class="field">
+        <label for="add-exporter-default-boundary">Périmètre</label>
+        <select id="add-exporter-default-boundary" name="default_boundary">
+          {# `undefined` sélectionné par défaut, et c'est DÉLIBÉRÉ : Okvorado ne
+             devine JAMAIS si une interface regarde Internet ou le réseau
+             interne. Un mauvais périmètre deviné fausserait toutes les vues de
+             répartition — « non classifiée » est l'état honnête tant que
+             l'exploitant n'a pas tranché. #}
+          {% for choice in boundary_choices %}
+            <option value="{{ choice.value }}" {{ 'selected' if choice.value == 'undefined' else '' }}>{{ choice.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
       <button type="submit" class="primary">Mettre en attente</button>
     </form>
     <p class="config-form__hint">
-      Les interfaces se déclarent ensuite, une fois l'exportateur ajouté et le changement appliqué.
+      L'interface par défaut s'applique à tout flux dont l'ifIndex n'est pas
+      déclaré individuellement. <strong>Elle est obligatoire</strong> : sans
+      elle, Akvorado rejette la totalité des flux de cet exportateur. Les
+      interfaces nominatives se déclarent ensuite, une fois l'exportateur
+      ajouté et le changement appliqué.
     </p>
   </section>
 

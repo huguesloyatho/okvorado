@@ -757,6 +757,19 @@ services:
       OKVORADO_OUTLET_PORT: "8080"
       OKVORADO_CONSOLE_PORT: "8080"
       OKVORADO_AKVORADO_CONFIG_PATH: /etc/akvorado-config/outlet.yaml
+      # Dossier des dashboards Grafana, monté en LECTURE SEULE plus bas.
+      # Source du décompte « champs exploités » de l'écran Champs disponibles
+      # (/field-catalog) : Okvorado parse le `rawSql` des dashboards pour savoir
+      # quelles colonnes de `flows` sont réellement consommées.
+      #
+      # Le chemin pointe vers le MÊME dossier que celui provisionné à Grafana
+      # (service `grafana`, plus bas) : un second dossier dériverait, et l'écran
+      # compterait des dashboards qui ne sont pas ceux affichés à l'exploitant.
+      #
+      # Sans ce montage, l'écran reste utilisable mais affiche « décompte
+      # indisponible » — un état DISTINCT, jamais « 0 champ exploité » qui
+      # annoncerait faussement 100 % de potentiel inexploité (zéro silencieux).
+      OKVORADO_GRAFANA_DASHBOARDS_PATH: /etc/grafana-dashboards
       OKVORADO_SQLITE_PATH: /data/okvorado.db
       OKVORADO_SILENT_THRESHOLD_HOURS: ${SILENT_THRESHOLD_HOURS:-1}
       # Plafond mémoire utilisé par l'écran Santé DB (/db-health) quand la
@@ -881,3 +894,8 @@ services:
     volumes:
       - ./config:/etc/akvorado-config:ro
       - ./data/okvorado:/data
+      # Dashboards Grafana en LECTURE SEULE — même dossier que celui
+      # provisionné au service `grafana`. L'écran « Champs disponibles » les
+      # parse pour compter les colonnes réellement exploitées ; il n'en écrit
+      # jamais aucun, d'où le `:ro` assumé.
+      - ./grafana/dashboards:/etc/grafana-dashboards:ro

@@ -32,6 +32,36 @@
         "multi": true,
         "includeAll": true,
         "sort": 1
+      },
+      {
+        "name": "version_ip",
+        "type": "query",
+        "label": "Version IP (EType)",
+        "description": "IPv4 / IPv6 déduits de l'EtherType (EType), peuplée dynamiquement depuis les flux. Sert à filtrer le trafic total dans le temps (panneau 'Trafic total dans le temps') sur une seule pile IP — utile pour juger l'avancement d'une migration IPv6 sur le parc. Les lignes EType = 0 (champ non émis par la source) sont exclues, comme dans le donut de répartition.",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "ClickHouse"
+        },
+        "query": "SELECT DISTINCT multiIf(EType = 2048, 'IPv4', EType = 34525, 'IPv6', concat('EtherType ', toString(EType))) AS version_ip FROM flows WHERE $__timeFilter(TimeReceived) AND EType != 0 ORDER BY version_ip",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "sort": 1
+      },
+      {
+        "name": "masque",
+        "type": "query",
+        "label": "Masque réseau source (/n)",
+        "description": "Longueur de préfixe de la source (SrcNetMask), peuplée dynamiquement depuis les flux. Alimentée UNIQUEMENT par les équipements réseau (pare-feu/routeur) qui exportent SrcNetMask ; les exportateurs logiciels softflowd n'émettent pas ce champ. Si la liste est vide, c'est la source qui ne le remplit pas, pas le produit.",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "ClickHouse"
+        },
+        "query": "SELECT DISTINCT toString(SrcNetMask) FROM flows WHERE $__timeFilter(TimeReceived) AND SrcNetMask != 0 ORDER BY toString(SrcNetMask)",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "sort": 1
       }
     ]
   },
@@ -39,7 +69,10 @@
     {
       "title": "Accueil — Traffic Summary",
       "type": "dashboards",
-      "tags": ["okvorado", "accueil"],
+      "tags": [
+        "okvorado",
+        "accueil"
+      ],
       "asDropdown": false,
       "icon": "external link",
       "targetBlank": false,
@@ -49,7 +82,10 @@
     {
       "title": "Réseau — Network Snapshot",
       "type": "dashboards",
-      "tags": ["okvorado", "snapshot"],
+      "tags": [
+        "okvorado",
+        "snapshot"
+      ],
       "asDropdown": false,
       "icon": "external link",
       "targetBlank": false,
@@ -59,7 +95,10 @@
     {
       "title": "Par exportateur",
       "type": "dashboards",
-      "tags": ["okvorado", "exportateur"],
+      "tags": [
+        "okvorado",
+        "exportateur"
+      ],
       "asDropdown": false,
       "icon": "external link",
       "targetBlank": false,
@@ -69,7 +108,10 @@
     {
       "title": "Applications & QoS",
       "type": "dashboards",
-      "tags": ["okvorado", "applications"],
+      "tags": [
+        "okvorado",
+        "applications"
+      ],
       "asDropdown": false,
       "icon": "external link",
       "targetBlank": false,
@@ -79,7 +121,10 @@
     {
       "title": "Anomalies",
       "type": "dashboards",
-      "tags": ["okvorado", "anomalies"],
+      "tags": [
+        "okvorado",
+        "anomalies"
+      ],
       "asDropdown": false,
       "icon": "external link",
       "targetBlank": false,
@@ -315,6 +360,11 @@
           "values": [
             "percent"
           ]
+        },
+        "reduceOptions": {
+          "values": true,
+          "calcs": [],
+          "fields": ""
         }
       },
       "targets": [
@@ -361,12 +411,199 @@
           "values": [
             "percent"
           ]
+        },
+        "reduceOptions": {
+          "values": true,
+          "calcs": [],
+          "fields": ""
         }
       },
       "targets": [
         {
           "refId": "A",
           "rawSql": "SELECT\n    multiIf(\n        bitShiftRight(IPTos, 2) = 0, 'BE',\n        bitShiftRight(IPTos, 2) = 8, 'CS1',\n        bitShiftRight(IPTos, 2) = 10, 'AF11',\n        bitShiftRight(IPTos, 2) = 16, 'CS2',\n        bitShiftRight(IPTos, 2) = 18, 'AF21',\n        bitShiftRight(IPTos, 2) = 24, 'CS3',\n        bitShiftRight(IPTos, 2) = 26, 'AF31',\n        bitShiftRight(IPTos, 2) = 32, 'CS4',\n        bitShiftRight(IPTos, 2) = 34, 'AF41',\n        bitShiftRight(IPTos, 2) = 40, 'CS5',\n        bitShiftRight(IPTos, 2) = 46, 'EF',\n        bitShiftRight(IPTos, 2) = 48, 'CS6',\n        bitShiftRight(IPTos, 2) = 56, 'CS7',\n        concat('DSCP ', toString(bitShiftRight(IPTos, 2)))\n    ) AS classe_dscp,\n    sum(Bytes * SamplingRate) AS volume\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\nGROUP BY classe_dscp\nORDER BY volume DESC\nLIMIT 20",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "row",
+      "title": "Plan d'adressage — IPv4/IPv6 et finesse des préfixes (alimenté par les équipements réseau)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 23
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 10,
+      "type": "piechart",
+      "title": "Répartition IPv4 vs IPv6 (EType)",
+      "description": "Part du volume transporté en IPv4 (EtherType 0x0800 = 2048) et en IPv6 (0x86DD = 34525) — sum(Bytes * SamplingRate). QUELLE SOURCE ALIMENTE CE PANNEAU : EType est renseigné par tout exportateur conforme, et mesuré à 100% de remplissage sur l'équipement réseau (pare-feu) branché au collecteur. Les EtherType hors IPv4/IPv6 restent visibles sous 'EtherType <n>' plutôt que d'être fondus dans un 'autre' muet ; les lignes à EType = 0 (champ non émis par la source) sont EXCLUES pour ne pas créer une catégorie 'vide' majoritaire qui écraserait le graphe — si ce donut est vide, c'est que la source n'émet pas EType, pas que le trafic est nul. LIMIT 10.",
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 0,
+        "y": 24
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "links": [
+            {
+              "title": "Voir le trafic de cette pile IP dans le temps",
+              "url": "/d/okvorado-vue-ensemble-parc/okvorado-vue-ensemble-parc?var-version_ip=${__data.fields.version_ip}",
+              "targetBlank": false,
+              "keepTime": true,
+              "includeVars": true
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "pieType": "donut",
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "value",
+            "percent"
+          ]
+        },
+        "reduceOptions": {
+          "values": true,
+          "calcs": [],
+          "fields": ""
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT\n    multiIf(\n        EType = 2048, 'IPv4',\n        EType = 34525, 'IPv6',\n        concat('EtherType ', toString(EType))\n    ) AS version_ip,\n    sum(Bytes * SamplingRate) AS volume\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\n    AND EType != 0\nGROUP BY version_ip\nHAVING version_ip IN (${version_ip:singlequote})\nORDER BY volume DESC\nLIMIT 10",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "barchart",
+      "title": "Volume par masque réseau source (/n)",
+      "description": "Volume sum(Bytes * SamplingRate) ventilé par longueur de préfixe de la source (SrcNetMask) : un /32 est un hôte isolé, un /24 un réseau d'agence, un /8 un bloc opérateur. Sert à juger la finesse du plan d'adressage vu depuis les flux. QUELLE SOURCE ALIMENTE CE PANNEAU : SrcNetMask n'est renseigné que par les équipements réseau (pare-feu/routeur) qui connaissent leur table de routage — mesuré à 72% de remplissage sur le pare-feu branché ici, et à 0% sur les exportateurs logiciels softflowd, qui n'émettent pas ce champ. Les lignes SrcNetMask = 0 sont EXCLUES : elles signifient 'champ non émis', pas '/0', et formeraient sinon une barre 'vide' majoritaire qui écraserait les autres. Si ce panneau est vide, c'est la source, pas le produit. Cliquer une barre filtre le dashboard sur ce masque (variable $masque). LIMIT 33 (les 33 longueurs de préfixe IPv4 possibles).",
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 8,
+        "y": 24
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "links": [
+            {
+              "title": "Filtrer le parc sur ce masque réseau",
+              "url": "/d/okvorado-vue-ensemble-parc/okvorado-vue-ensemble-parc?var-masque=${__data.fields.masque_src}",
+              "targetBlank": false,
+              "keepTime": true,
+              "includeVars": true
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT\n    concat('/', toString(SrcNetMask)) AS masque_src,\n    sum(Bytes * SamplingRate) AS volume\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\n    AND SrcNetMask != 0\n    AND toString(SrcNetMask) IN (${masque:singlequote})\nGROUP BY masque_src\nORDER BY volume DESC\nLIMIT 33",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "table",
+      "title": "Masques réseau source et destination — préfixes annoncés de part et d'autre",
+      "description": "Croisement des longueurs de préfixe SOURCE (SrcNetMask) et DESTINATION (DstNetMask) avec le volume et le nombre de flux. Lit le plan d'adressage des deux côtés d'un flux : un /24 vers un /32 est un réseau d'agence qui parle à un serveur précis. QUELLE SOURCE ALIMENTE CE PANNEAU : SrcNetMask et DstNetMask ne sont renseignés que par les équipements réseau (pare-feu/routeur) disposant d'une table de routage — mesurés respectivement à 72% et 33% de remplissage sur le pare-feu branché ici, à 0% sur les exportateurs logiciels softflowd. Les lignes où les DEUX masques sont à 0 (champ non émis) sont EXCLUES pour ne pas afficher une ligne 'vide' majoritaire. Un tableau vide ici veut dire 'aucun équipement réseau ne remplit ces champs sur la sélection', pas 'aucun trafic'. count() n'est jamais mis à l'échelle (il compte des flux observés, pas du trafic). Cliquer un masque source filtre le dashboard sur ce masque (variable $masque). LIMIT 30.",
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 16,
+        "y": 24
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "left",
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "volume"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "masque_src"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Filtrer le parc sur ce masque réseau",
+                    "url": "/d/okvorado-vue-ensemble-parc/okvorado-vue-ensemble-parc?var-masque=${__value.raw}",
+                    "targetBlank": false,
+                    "keepTime": true,
+                    "includeVars": true
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "footer": {
+          "show": true,
+          "enablePagination": true
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT\n    toString(SrcNetMask) AS masque_src,\n    concat('/', toString(DstNetMask)) AS masque_dst,\n    sum(Bytes * SamplingRate) AS volume,\n    count() AS flux\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\n    AND (SrcNetMask != 0 OR DstNetMask != 0)\n    AND toString(SrcNetMask) IN (${masque:singlequote})\nGROUP BY masque_src, masque_dst\nORDER BY volume DESC\nLIMIT 30",
           "format": 1
         }
       ]

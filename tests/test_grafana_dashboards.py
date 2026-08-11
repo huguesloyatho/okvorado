@@ -34,6 +34,7 @@ commentaires SQL (`--` et `/* */`) avant de chercher.
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 from pathlib import Path
@@ -2176,37 +2177,46 @@ class TestPaginationSurLesTableauxVolumineux:
 # serait hors périmètre (ce lot ne touche pas app/, pas de nouveau
 # dashboard). Chaque entrée est commentée individuellement, une par une :
 EXEMPTIONS_PANNEAUX_SANS_LIEN: set[tuple[str, int]] = {
-    # "État des liens — répartition" (00, piechart) : group-by sur 'etat'
-    # (Link Up / Link Up & NoFlows / Link Down) — aucun dashboard ni
-    # variable Grafana ne filtre par état de lien dans ce lot ; rebondir
-    # vers 02-par-exportateur exigerait de connaître l'exportateur, pas
-    # présent en colonne affichée ici.
-    ("00-accueil-traffic-summary.json", 4),
-    # "Top N Protocol" (00, piechart) : group-by sur le protocole IP
-    # (TCP/UDP/ICMP/GRE/OSPF...) — pas une entité identifiante au sens du
-    # prompt (pas de "fiche protocole"), aucun dashboard "par protocole".
-    ("00-accueil-traffic-summary.json", 7),
-    # "Top QoS par classe DSCP" (03, piechart) : aucune variable DSCP
-    # dédiée n'existe dans AUCUN des 7 dashboards du lot (contrairement à
-    # exporter/application/categorie/adresse) — inventer une variable DSCP
-    # est hors périmètre de ce lot (édition JSON + tests uniquement).
-    ("03-applications-qos.json", 3),
-    # "Classes DSCP — Trafic et pourcentage" (03, table) : même raison que
-    # ci-dessus, table équivalente au panneau piechart id=3.
-    ("03-applications-qos.json", 4),
-    # "Volume sortant vers l'extérieur, par pays de destination" (05,
-    # piechart) : group-by sur DstCountry — aucune variable pays/AS
-    # n'existe dans le lot ; le panneau table voisin (id=31, même
-    # dashboard) qui porte AUSSI pays/AS a bien un lien car il affiche EN
-    # PLUS la colonne source (IP), qui elle a une cible (anomalies). Ce
-    # panneau-ci n'affiche QUE pays + volume, rien d'autre à cliquer.
-    ("05-diagnostic-incidents.json", 40),
+    # RETRAIT 2026-08-11 — ("00-accueil-traffic-summary.json", 7) "Top N
+    # Protocol", ("03-applications-qos.json", 3) "Top QoS par classe DSCP" et
+    # ("03-applications-qos.json", 4) "Classes DSCP — Trafic et pourcentage".
+    # Ces trois exemptions disaient « aucune variable cible n'existe » : c'était
+    # vrai, et c'était précisément le problème à régler, pas une fatalité. Les
+    # variables `protocole` (dashboard 00) et `classe_dscp` (dashboard 03) ont
+    # été CRÉÉES et CÂBLÉES dans le WHERE/HAVING des panneaux concernés, les
+    # trois panneaux portent maintenant un vrai data link. Les laisser ici
+    # ferait échouer `test_chaque_exemption_explicite_ne_couvre_que_des_
+    # panneaux_reellement_sans_lien` — une exemption qui n'exempte plus rien
+    # est un reliquat mort.
+    # RETRAIT 2026-08-11 (audit liens piechart) — trois nouvelles entrées
+    # avaient été acceptées ici SANS jamais forcer le fix : ("00-accueil-
+    # traffic-summary.json", 4) "État des liens — répartition",
+    # ("01-vue-ensemble-parc.json", 10) "Répartition IPv4 vs IPv6 (EType)" et
+    # ("05-diagnostic-incidents.json", 40) "Volume sortant vers l'extérieur,
+    # par pays de destination". Root cause de leur passage inaperçu : le
+    # critère structurel (e) ci-dessous ne forçait la règle « GROUP BY sur
+    # clé non temporelle => lien obligatoire » que pour `type_panel in
+    # {"table", "timeseries"}` — un `piechart`/`barchart` avec exactement le
+    # même GROUP BY tombait dans la branche alias regex, qui elle-même
+    # laissait passer un alias reconnu (`etat`, `version_ip`, `pays`) via
+    # cette liste plutôt que d'exiger le lien. Fix à la source : la règle
+    # GROUP BY couvre maintenant piechart/barchart (cf. commentaire sur la
+    # branche e), donc ces trois panneaux ne peuvent plus être exemptés — ils
+    # portent chacun un vrai data link (etat_lien créée+câblée dans 00 sur le
+    # panneau lui-même ET la grille d'interfaces id=5 ; version_ip créée+
+    # câblée dans 01 en self-filter sur le donut id=10 ; le donut 05 id=40
+    # rebondit sur la variable pays_dst déjà câblée dans 00 id=15/id=16).
     # "Flux au-dessus du seuil, par heure — et score p95 de l'heure" (06,
     # timeseries NON stacké — donc non couvert par le critère d) : c'est un
     # agrégat temporel PUR (compte de flux au-dessus du seuil, quantile du
     # score), sans dimension de group-by identifiable (l'axe X est le
     # temps, pas une entité) — rien à cliquer par point de la courbe.
     ("06-anomalies.json", 63),
+    # RETRAIT 2026-08-11 : quatre exemptions visaient les dashboards
+    # « [Équipement réseau] » (08 / 10), supprimés du dépôt car non alimentés
+    # par la maquette. Les laisser aurait fait échouer
+    # `test_chaque_exemption_explicite_cible_bien_un_panneau_existant` — une
+    # exemption qui ne cible plus rien est un reliquat mort, pas une décision.
 }
 
 
@@ -2227,6 +2237,18 @@ def _est_exempte_de_lien(panel: dict[str, Any]) -> bool:
     #    ou équivalent), documenté ici explicitement pour que la fonction
     #    reste correcte même appelée sur une liste de panneaux non filtrée.
     if type_panel == "row":
+        return True
+
+    # b bis) panneau 'text' — bandeau markdown explicatif, SANS aucune requête
+    #    ni donnée : il n'y a structurellement rien à cliquer. Introduit avec
+    #    les dashboards « [Équipement réseau] », retirés du dépôt le
+    #    2026-08-11 : AUCUN panneau du lot n'exerce donc cette branche
+    #    aujourd'hui. Elle est conservée parce que le critère est générique et
+    #    intemporel — tout bandeau d'explication à venir (c'est l'application
+    #    de la règle « zéro silencieux » à Grafana : un panneau vide sans
+    #    explication est interdit) doit être exempté sans retoucher ce fichier.
+    #    Exempté par TYPE et non par id, pour la même raison.
+    if type_panel == "text":
         return True
 
     requetes_sql = [
@@ -2251,10 +2273,87 @@ def _est_exempte_de_lien(panel: dict[str, Any]) -> bool:
         if mode and mode != "none":
             return True
 
+    # d bis) panneau de MÉTA-MESURE : il ne ventile aucune entité réseau, il
+    #    mesure le REMPLISSAGE des colonnes elles-mêmes. Signature structurelle
+    #    dérivée du SQL : une succession de `countIf(...)` sur des noms de
+    #    colonnes, sans `GROUP BY` sur une dimension métier — chaque ligne du
+    #    résultat est un NOM DE CHAMP (`DstAS`, `SrcNetMask`…), pas un
+    #    exportateur ni une adresse.
+    #
+    #    Introduit avec les dashboards « [Équipement réseau] », retirés du dépôt
+    #    le 2026-08-11 : AUCUN panneau du lot n'exerce cette branche
+    #    aujourd'hui. Chacun de ces écrans se clôturait par un panneau
+    #    « couverture des champs — état de la source », application de la règle
+    #    « zéro silencieux » à Grafana (il distinguait « la source n'alimente
+    #    pas ce champ » de « il n'y a pas de trafic »). Il n'existe aucune
+    #    « fiche champ » vers laquelle rebondir dans Grafana — c'est l'écran
+    #    Okvorado « Champs disponibles » qui joue ce rôle, hors de Grafana.
+    #
+    #    Critère STRUCTUREL et non liste d'ids : la branche est conservée pour
+    #    que tout futur panneau de couverture soit exempté de la même façon,
+    #    sans retoucher ce fichier.
+    if sql_concatene.count("countIf(") >= 3 and not re.search(
+        r"(?i)group\s+by", sql_concatene
+    ):
+        return True
+
     # e) aucune colonne du SELECT ne correspond à une entité identifiable
     #    connue (alias métier reconnaissable) : rien de cliquable à faire
     #    pointer vers un dashboard tiers. Dérivé du contenu SQL observable,
     #    pas d'un titre de panneau figé.
+    #
+    #    DURCISSEMENT 2026-08-11 — cette branche était le TROU du garde-fou.
+    #    Elle reposait sur une regex de noms d'alias CODÉS EN DUR : tout
+    #    panneau dont la dimension s'appelait autrement (`classe_dscp` non
+    #    listé à l'époque, `as_dst`, `version_ip`, `protocole`…) était exempté
+    #    d'office, alors qu'il ventilait bel et bien une dimension cliquable.
+    #    Le garde-fou passait au vert en ne regardant pas là où ça saignait.
+    #
+    #    Désormais : un panneau `table` ou `timeseries` NON empilé qui porte un
+    #    `GROUP BY` ventile par construction une dimension — quel que soit le
+    #    nom de l'alias, connu de la regex ou non. Il ne peut PLUS être exempté
+    #    par (e) ; il lui faut un vrai lien, ou une entrée explicite et
+    #    commentée dans EXEMPTIONS_PANNEAUX_SANS_LIEN. Restent exemptables par
+    #    les branches précédentes : `stat` sans GROUP BY (c), gauge/alertlist/
+    #    text (a, b, b bis), timeseries empilé (d), méta-mesure `countIf` (d
+    #    bis) — aucun de ces cas n'atteint cette ligne.
+    #    NUANCE (mesurée le 2026-08-11 en faisant tomber le test sur 07 id=9 et
+    #    id=10) : un `GROUP BY` ne prouve une dimension CLIQUABLE que s'il porte
+    #    sur autre chose que le TEMPS. Une courbe groupée par seul bucket
+    #    temporel (`GROUP BY temps`, `GROUP BY time`) n'a rien à filtrer : son
+    #    axe X est le temps, déjà piloté par le sélecteur de période de Grafana.
+    #    On ne retient donc que les GROUP BY portant au moins une clé
+    #    non-temporelle.
+    #
+    #    DURCISSEMENT 2026-08-11 bis (audit liens piechart) — CAUSE RÉELLE du
+    #    trou qui a laissé passer 3 donuts sans lien (00 id=4, 01 id=10, 05
+    #    id=40) : cette règle GROUP BY ne s'appliquait qu'à `type_panel in
+    #    {"table", "timeseries"}`. Un `piechart`/`barchart` portant EXACTEMENT
+    #    le même GROUP BY sur une clé non temporelle retombait dans la vieille
+    #    branche alias regex ci-dessous, qui pouvait matcher (`etat`, `pays`,
+    #    `version_ip` matchent tous la regex) mais laissait quand même le
+    #    panneau filer via une entrée dans EXEMPTIONS_PANNEAUX_SANS_LIEN écrite
+    #    à la main — le garde-fou avait la bonne détection structurelle pour
+    #    table/timeseries mais ne la faisait PAS mordre sur les deux types de
+    #    panneau où le prompt de la tâche insiste le plus (« un donut est
+    #    précisément ce sur quoi l'utilisateur clique en démo client »). Un
+    #    piechart/barchart avec GROUP BY sur clé non temporelle ne peut donc
+    #    plus être exempté par (e) : mêmes issues que table/timeseries — vrai
+    #    lien ou exemption explicite et commentée.
+    cles_group_by: list[str] = []
+    for bloc in re.findall(
+        r"(?is)group\s+by\s+(.*?)(?:\border\s+by\b|\bhaving\b|\blimit\b|\)|$)",
+        sql_concatene,
+    ):
+        cles_group_by += [cle.strip() for cle in bloc.split(",") if cle.strip()]
+    cles_non_temporelles = [
+        cle
+        for cle in cles_group_by
+        if not re.fullmatch(r"(?i)(temps|time|heure|jour|date|bucket|t)", cle)
+    ]
+    if type_panel in {"table", "timeseries", "piechart", "barchart"} and cles_non_temporelles:
+        return False
+
     alias_entite = re.search(
         r"(?i)\b(exportateur|application|classe_dscp|categorie|source|destination|"
         r"pays|as_destination|protocole|etat)\b",
@@ -2318,6 +2417,102 @@ class TestExemptionsDeLienExplicitesEtCourtes:
             "le sabotage aurait dû rester détectable : un panneau table "
             "avec une dimension identifiable ('exportateur') ne doit PAS "
             "être couvert par une exemption structurelle"
+        )
+
+    def test_le_garde_fou_mord_si_on_retire_un_lien_dun_vrai_panneau_table(self) -> None:
+        """MUTATION sur un VRAI dashboard du dépôt (jamais sur disque).
+
+        Le sabotage précédent portait sur un panneau FABRIQUÉ à la main : il
+        prouvait que la fonction sait dire non, pas que le garde-fou mordrait
+        sur les fichiers réellement livrés. Ici on charge un vrai dashboard,
+        on prend un panneau `table`/`timeseries` qui porte VRAIMENT un lien,
+        on lui retire ses liens EN MÉMOIRE, et on exige que le garde-fou le
+        signale comme offender. Si un jour l'exemption structurelle
+        redevenait permissive (c'est exactement ce qui s'était produit avec la
+        branche `e` avant le 2026-08-11), ce test tomberait.
+        """
+        # La cible doit être un panneau dont l'alias de dimension N'EST PAS dans
+        # la regex historique de la branche (e) — sinon la mutation passerait au
+        # vert grâce à cette regex, sans jamais exercer le durcissement, et le
+        # test « prouverait » un garde-fou qui ne mord pas (piège mesuré le
+        # 2026-08-11 : la première cible trouvée était 00 id=2, qui contient
+        # l'alias `exportateur`, donc couvert par l'ancienne branche).
+        ALIAS_HISTORIQUES = (
+            r"(?i)\b(exportateur|application|classe_dscp|categorie|source|"
+            r"destination|pays|as_destination|protocole|etat)\b"
+        )
+        cible: tuple[str, dict[str, Any]] | None = None
+        for chemin in _fichiers_dashboards():
+            dashboard = _charger_dashboard(chemin)
+            for panel in _tous_les_panneaux_non_row(dashboard):
+                if panel.get("type") not in {"table", "timeseries"}:
+                    continue
+                if not _liens_dun_panneau(panel):
+                    continue
+                if (chemin.name, panel.get("id")) in EXEMPTIONS_PANNEAUX_SANS_LIEN:
+                    continue
+                sql_panneau = "\n".join(
+                    _sans_commentaires_sql(t.get("rawSql", ""))
+                    for t in (panel.get("targets", []) or [])
+                    if isinstance(t, dict) and isinstance(t.get("rawSql"), str)
+                )
+                if re.search(ALIAS_HISTORIQUES, sql_panneau):
+                    continue
+                cible = (chemin.name, panel)
+                break
+            if cible:
+                break
+
+        assert cible is not None, (
+            "aucun panneau table/timeseries porteur d'un lien trouvé dans les "
+            "dashboards livrés — la mutation ne prouverait rien (zéro "
+            "silencieux : on échoue au lieu de passer au vert sans avoir testé)"
+        )
+        nom_fichier, panneau = cible
+
+        # Copie profonde : on ne touche NI le disque, NI l'objet parcouru.
+        panneau_mute = copy.deepcopy(panneau)
+        panneau_mute.pop("links", None)
+        defaults = panneau_mute.get("fieldConfig", {}).get("defaults", {})
+        defaults.pop("links", None)
+        for override in panneau_mute.get("fieldConfig", {}).get("overrides", []):
+            override["properties"] = [
+                propriete
+                for propriete in override.get("properties", [])
+                if propriete.get("id") != "links"
+            ]
+
+        assert not _liens_dun_panneau(panneau_mute), (
+            f"la mutation de {nom_fichier}:{panneau.get('id')} aurait dû "
+            "supprimer TOUS les liens du panneau"
+        )
+        assert _est_exempte_de_lien(panneau_mute) is False, (
+            f"GARDE-FOU MUET : {nom_fichier} panneau {panneau.get('title')!r} "
+            f"(id={panneau.get('id')!r}), privé de ses liens, serait exempté "
+            "structurellement — le garde-fou ne mord pas, un vrai trou "
+            "passerait au vert"
+        )
+        assert (nom_fichier, panneau_mute.get("id")) not in EXEMPTIONS_PANNEAUX_SANS_LIEN
+
+    def test_chaque_exemption_explicite_ne_couvre_que_des_panneaux_reellement_sans_lien(
+        self,
+    ) -> None:
+        """Une exemption qui vise un panneau portant DÉSORMAIS un lien est un
+        reliquat mort : le lien a été posé depuis, l'exemption ne sert plus
+        rien et masquerait une régression future (si le lien disparaissait,
+        l'exemption le couvrirait en silence). Elle doit être retirée."""
+        offenders: list[str] = []
+        for chemin in _fichiers_dashboards():
+            dashboard = _charger_dashboard(chemin)
+            for panel in _tous_les_panneaux_non_row(dashboard):
+                cle = (chemin.name, panel.get("id"))
+                if cle in EXEMPTIONS_PANNEAUX_SANS_LIEN and _liens_dun_panneau(panel):
+                    offenders.append(
+                        f"{chemin.name}:{panel.get('id')} ({panel.get('title')!r})"
+                    )
+        assert not offenders, (
+            "exemption(s) devenue(s) inutile(s) — le panneau porte maintenant "
+            f"un lien, l'entrée est un reliquat mort à retirer : {offenders}"
         )
 
     def test_la_liste_dexemptions_explicites_reste_courte_pas_un_fourre_tout(self) -> None:
@@ -2743,4 +2938,324 @@ class TestCoherenceLienParColonne:
             f"override(s) par colonne utilisant ${{__data.fields.X}} au lieu de "
             f"${{__value.raw}} — la colonne resterait fixée sur une valeur, pas "
             f"celle de la cellule cliquée : {offenders}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 12. GARDE-FOU CRITIQUE — ForwardingStatus toujours à 0 en prod (mesuré,
+#     2026-08-11) : les 3 panneaux "flux rejetés" ne doivent JAMAIS rendre un
+#     0 indiscernable d'une vraie mesure.
+# ---------------------------------------------------------------------------
+#
+# MESURE EN PROD (ClickHouse, 3 dernières heures, 12 exportateurs) :
+#   countIf(ForwardingStatus != 0) = 0        count() = 1 097 349
+# AUCUN exportateur du parc (serveurs Linux softflowd + une OPNsense) ne
+# renseigne ForwardingStatus. Les panneaux id=30/31/32 de
+# `02-par-exportateur.json` affichaient donc en permanence "0 flux rejeté",
+# lisible comme "tout va bien" — alors que la vérité est "cette source ne
+# fournit pas l'information". C'est le motif interdit par CLAUDE.md, section
+# « Zéro silencieux » (cas fondateur : « RAS, 0 paquet sécurité » avec 56 MAJ
+# en attente).
+#
+# Ce garde-fou porte sur la CONDITION réelle (le SQL qui produit l'état
+# distinct), pas sur la présence d'un mot dans une description : un panneau
+# qui redeviendrait `countIf(intDiv(ForwardingStatus, 64) = 2)` nu (sans le
+# `if(countIf(ForwardingStatus != 0) = 0, NULL, ...)` qui rend NULL quand
+# rien ne renseigne le champ) le ferait échouer.
+
+
+class TestForwardingStatusZeroSilencieux:
+    """Panneaux id=30 (timeseries), 31 et 32 (stat) de
+    `02-par-exportateur.json` — bascule Received/Dropped Flows."""
+
+    FICHIER = "02-par-exportateur.json"
+    IDS_CONCERNES = {30, 31, 32}
+
+    def _panneaux(self) -> dict[int, dict[str, Any]]:
+        chemin = DASHBOARDS_DIR / self.FICHIER
+        dashboard = _charger_dashboard(chemin)
+        return {
+            p["id"]: p for p in dashboard.get("panels", []) if p.get("id") in self.IDS_CONCERNES
+        }
+
+    def test_le_fichier_cible_existe_avec_les_trois_panneaux(self) -> None:
+        panneaux = self._panneaux()
+        assert set(panneaux) == self.IDS_CONCERNES, (
+            f"panneaux attendus {self.IDS_CONCERNES}, trouvés {set(panneaux)} "
+            f"dans {self.FICHIER}"
+        )
+
+    def test_stat_moyenne_flux_rejetes_rend_null_quand_forwardingstatus_jamais_renseigne(
+        self,
+    ) -> None:
+        """id=31 : le SQL doit conditionner le résultat par
+        `countIf(ForwardingStatus != 0) = 0` et rendre NULL dans ce cas —
+        pas juste `countIf(intDiv(ForwardingStatus, 64) = 2)` nu, qui rend 0
+        de façon indiscernable d'une vraie mesure de zéro rejet."""
+        panel = self._panneaux()[31]
+        sql = _sans_commentaires_sql(panel["targets"][0]["rawSql"])
+        assert re.search(r"countIf\(\s*ForwardingStatus\s*!=\s*0\s*\)\s*=\s*0", sql), (
+            f"id=31 ({panel['title']!r}): le SQL ne teste pas explicitement "
+            f"l'absence totale d'information (countIf(ForwardingStatus != 0) "
+            f"= 0) : {sql!r}"
+        )
+        assert re.search(r"(?i)\bnull\b", sql), (
+            f"id=31 ({panel['title']!r}): le SQL ne rend jamais NULL — sans "
+            f"cela countIf(...) = 2) nu rendrait 0, indiscernable d'une "
+            f"vraie mesure de zéro flux rejeté : {sql!r}"
+        )
+
+    def test_stat_dernier_flux_rejete_rend_null_quand_forwardingstatus_jamais_renseigne(
+        self,
+    ) -> None:
+        """id=32 : même garde que id=31, sur maxIf(TimeReceived, ...)."""
+        panel = self._panneaux()[32]
+        sql = _sans_commentaires_sql(panel["targets"][0]["rawSql"])
+        assert re.search(r"countIf\(\s*ForwardingStatus\s*!=\s*0\s*\)\s*=\s*0", sql), (
+            f"id=32 ({panel['title']!r}): le SQL ne teste pas explicitement "
+            f"l'absence totale d'information : {sql!r}"
+        )
+        assert re.search(r"(?i)\bnull\b", sql), (
+            f"id=32 ({panel['title']!r}): le SQL ne rend jamais NULL pour "
+            f"'dernier flux rejeté' — un vide/epoch serait indiscernable "
+            f"d'une absence de rejet réelle : {sql!r}"
+        )
+
+    def test_les_stats_31_et_32_nont_pas_de_novalue_egal_a_zero(self) -> None:
+        """Le NULL produit par le SQL ne doit pas être retransformé en '0'
+        par `fieldConfig.defaults.noValue` — sinon le fix SQL est annulé à
+        l'affichage. `noValue` doit être absent, ou porter un texte distinct
+        (jamais '0', jamais vide)."""
+        panneaux = self._panneaux()
+        for pid in (31, 32):
+            no_value = panneaux[pid].get("fieldConfig", {}).get("defaults", {}).get("noValue")
+            assert no_value != "0" and no_value != 0, (
+                f"id={pid} ({panneaux[pid]['title']!r}): noValue={no_value!r} "
+                f"retransforme le NULL en un zéro indiscernable d'une vraie "
+                f"mesure — le SQL rend NULL exprès pour éviter ça"
+            )
+
+    def test_timeseries_flux_recus_vs_rejetes_produit_un_statut_distinct_quand_source_muette(
+        self,
+    ) -> None:
+        """id=30 : le SQL doit porter un troisième statut (ni 'Reçus' ni
+        'Rejetés') quand ForwardingStatus n'est jamais renseigné sur la
+        fenêtre/l'exportateur courant — sinon toute la série serait
+        classée 'Reçus' (rejets masqués) ou produirait un faux 'Rejetés=0'
+        indiscernable d'une vraie mesure."""
+        panel = self._panneaux()[30]
+        sql = _sans_commentaires_sql(panel["targets"][0]["rawSql"])
+        assert re.search(r"countIf\(\s*ForwardingStatus\s*!=\s*0\s*\)", sql), (
+            f"id=30 ({panel['title']!r}): le SQL ne compte nulle part les "
+            f"flux où ForwardingStatus est réellement renseigné : {sql!r}"
+        )
+        assert re.search(r"countIf\(\s*ForwardingStatus\s*!=\s*0\s*\)[\s\S]{0,120}\)\s*=\s*0\b", sql), (
+            f"id=30 ({panel['title']!r}): le SQL ne teste pas l'absence "
+            f"totale d'information par exportateur/fenêtre : {sql!r}"
+        )
+        # Le statut de repli doit être un libellé distinct de 'Reçus' et de
+        # 'Rejetés' — pas une réutilisation de l'un des deux.
+        assert re.search(r"(?i)non renseign", sql), (
+            f"id=30 ({panel['title']!r}): aucun libellé de statut distinct "
+            f"('non renseigné' ou équivalent) trouvé dans le SQL — le "
+            f"panneau retomberait sur 'Reçus'/'Rejetés' même quand la "
+            f"source ne fournit rien : {sql!r}"
+        )
+
+    def test_le_garde_fou_mord_si_le_sql_redevient_un_countif_nu_sabote(self) -> None:
+        """PREUVE que le garde-fou mord : réinjecte en mémoire la forme
+        TROMPEUSE d'avant fix (countIf nu, sans le test d'absence
+        d'information ni le NULL de repli) et prouve qu'elle échouerait aux
+        assertions ci-dessus."""
+        sql_avant_fix = (
+            "SELECT countIf(intDiv(ForwardingStatus, 64) = 2) AS flux_rejetes\n"
+            "FROM flows\n"
+            "WHERE $__timeFilter(TimeReceived) AND ExporterName = '$exporter'"
+        )
+        nettoyee = _sans_commentaires_sql(sql_avant_fix)
+        assert not re.search(r"countIf\(\s*ForwardingStatus\s*!=\s*0\s*\)\s*=\s*0", nettoyee), (
+            "le SQL sans le fix ne devrait PAS porter le test d'absence "
+            "d'information — sinon ce sabotage ne prouve rien"
+        )
+        assert not re.search(r"(?i)\bnull\b", nettoyee), (
+            "le SQL sans le fix ne devrait rendre NULL nulle part — sinon ce "
+            "sabotage ne prouve rien"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 12. GARDE-FOU CRITIQUE — les donuts (piechart) rendent UNE PART PAR LIGNE,
+#     pas une valeur unique agrégée à 100 %
+# ---------------------------------------------------------------------------
+#
+# DÉFAUT MESURÉ À L'ÉCRAN, EN PRODUCTION (capture Grafana v13.1.3) : les 16
+# panneaux `piechart` des 8 dashboards affichaient une part UNIQUE à 100 %,
+# alors que leur requête SQL rend bien plusieurs lignes mesurées (ex.
+# `01-vue-ensemble-parc.json` id=10 « Répartition IPv4 vs IPv6 » : deux
+# lignes IPv4/IPv6 en base, un seul secteur à l'écran).
+#
+# CAUSE CONFIRMÉE (pas supposée — vérifiée par grep sur les 8 fichiers) :
+# `options.reduceOptions` était ABSENT (pas même `{}`) sur les 16 panneaux
+# piechart. Le panel piechart de Grafana partage le même socle d'options que
+# les panneaux "single stat" (`SingleStatBaseOptions.reduceOptions`) : sans
+# cette clé, Grafana retombe sur son défaut `values: false` + `calcs:
+# ["lastNotNull"]`, qui RÉDUIT tout le jeu de résultats à une valeur unique
+# par champ avant de dessiner le donut — d'où la part unique à 100 %.
+# Comparé aux panneaux voisins qui MARCHENT (barchart/table/timeseries dans
+# ces mêmes dashboards) : ceux-là n'ont *aucune* clé `reduceOptions` non
+# plus, ce qui est cohérent — ils ne consomment pas cette option, ils
+# rendent nativement une ligne par entrée du jeu de résultats. Seul le
+# piechart (et les single-stat) ont besoin de `values: true` pour désactiver
+# la réduction et traiter chaque ligne comme une part.
+#
+# FIX appliqué (script one-shot sur `stack/grafana/dashboards/*.json`,
+# modification CIBLÉE de la seule clé `options.reduceOptions`, aucune autre
+# clé touchée) :
+#
+#     "reduceOptions": {"values": true, "calcs": [], "fields": ""}
+#
+# `fields: ""` laisse Grafana prendre tous les champs numériques du
+# résultat (ici la seule colonne de volume/compteur) ; `values: true` fait
+# que CHAQUE ligne devient une part au lieu d'être réduite par `calcs`.
+
+
+PANNEAUX_PIECHART_ATTENDUS: dict[str, list[int]] = {
+    "00-accueil-traffic-summary.json": [4, 7, 8, 9, 15],
+    "01-vue-ensemble-parc.json": [7, 8, 10],
+    "02-par-exportateur.json": [3, 4],
+    "03-applications-qos.json": [1, 3],
+    "04-network-snapshot.json": [4],
+    "05-diagnostic-incidents.json": [40, 42],
+    "06-anomalies.json": [65],
+}
+
+
+def _panneau_par_id(dashboard: dict[str, Any], panel_id: int) -> dict[str, Any] | None:
+    for panel in dashboard.get("panels", []) or []:
+        if panel.get("id") == panel_id:
+            return panel
+    return None
+
+
+def _reduce_options_rend_une_part_par_ligne(reduce_options: Any) -> bool:
+    """La condition RÉELLE qui fait qu'un donut rend une part par ligne :
+    `values` doit être strictement `True` (pas absent, pas falsy). Sans ça,
+    Grafana réduit le jeu de résultats via `calcs` avant de dessiner —
+    exactement le défaut mesuré, qu'il vienne d'une clé absente, d'un objet
+    `{}` vide, ou d'un `values: false` explicite."""
+    if not isinstance(reduce_options, dict):
+        return False
+    return reduce_options.get("values") is True
+
+
+class TestDonutsRendentUnePartParLigne:
+    """Garde-fou du défaut mesuré en production (capture Grafana v13.1.3,
+    voir bloc 12 ci-dessus) : un piechart alimenté par une requête GROUP BY
+    à plusieurs lignes doit afficher plusieurs parts, jamais une part unique
+    à 100 % issue d'une réduction implicite."""
+
+    @pytest.mark.parametrize(
+        "nom_fichier,ids_attendus", sorted(PANNEAUX_PIECHART_ATTENDUS.items())
+    )
+    def test_chaque_piechart_connu_a_reduceoptions_values_true(
+        self, nom_fichier: str, ids_attendus: list[int]
+    ) -> None:
+        """Contrôle NOMINATIF sur les 16 panneaux du défaut mesuré — ne se
+        contente pas de vérifier qu'une clé existe (ça ne mord pas), vérifie
+        la VALEUR qui conditionne le rendu multi-parts."""
+        chemin = DASHBOARDS_DIR / nom_fichier
+        dashboard = _charger_dashboard(chemin)
+        fautifs: list[str] = []
+        for panel_id in ids_attendus:
+            panel = _panneau_par_id(dashboard, panel_id)
+            assert panel is not None, (
+                f"{nom_fichier}: panneau id={panel_id} introuvable — la liste "
+                "des piecharts attendus a changé, mettre à jour ce test"
+            )
+            assert panel.get("type") == "piechart", (
+                f"{nom_fichier}: panneau id={panel_id} n'est plus un piechart "
+                f"(type={panel.get('type')!r}) — mettre à jour ce test"
+            )
+            reduce_options = panel.get("options", {}).get("reduceOptions")
+            if not _reduce_options_rend_une_part_par_ligne(reduce_options):
+                fautifs.append(
+                    f"{nom_fichier} id={panel_id} ({panel.get('title')!r}): "
+                    f"reduceOptions={reduce_options!r}"
+                )
+        assert not fautifs, (
+            "ces piecharts n'ont pas 'reduceOptions.values: true' — ils "
+            "afficheront une part UNIQUE à 100 % au lieu d'une part par "
+            "ligne du résultat SQL (défaut mesuré en production) :\n  "
+            + "\n  ".join(fautifs)
+        )
+
+    def test_tous_les_piecharts_du_stack_sont_couverts_par_la_liste_attendue(self) -> None:
+        """Miroir de couverture : si un piechart est ajouté ailleurs sans
+        être répertorié dans PANNEAUX_PIECHART_ATTENDUS, le test nominatif
+        ci-dessus ne le verrait jamais passer au rouge. On vérifie donc que
+        la liste des piecharts RÉELLEMENT présents dans les 8 dashboards
+        correspond exactement à celle déclarée ici."""
+        trouves: dict[str, list[int]] = {}
+        for chemin in _fichiers_dashboards():
+            dashboard = _charger_dashboard(chemin)
+            ids = sorted(
+                p.get("id")
+                for p in dashboard.get("panels", []) or []
+                if p.get("type") == "piechart"
+            )
+            if ids:
+                trouves[chemin.name] = ids
+
+        attendus_tries = {k: sorted(v) for k, v in PANNEAUX_PIECHART_ATTENDUS.items()}
+        assert trouves == attendus_tries, (
+            "la liste réelle des piecharts diverge de PANNEAUX_PIECHART_ATTENDUS "
+            f"— trouvés: {trouves} / attendus: {attendus_tries}. Si un piechart "
+            "a été ajouté ou retiré légitimement, mettre à jour la liste ET "
+            "vérifier son reduceOptions."
+        )
+
+    def test_aucun_piechart_ne_revient_a_un_reduceoptions_vide_ou_absent(self) -> None:
+        """Garde-fou générique, au-delà des 16 connus : balaie TOUS les
+        piecharts des 8 dashboards (pas seulement la liste nominative
+        ci-dessus) — protège aussi un piechart créé plus tard."""
+        fautifs: list[str] = []
+        for chemin in _fichiers_dashboards():
+            dashboard = _charger_dashboard(chemin)
+            for panel in dashboard.get("panels", []) or []:
+                if panel.get("type") != "piechart":
+                    continue
+                reduce_options = panel.get("options", {}).get("reduceOptions")
+                if not _reduce_options_rend_une_part_par_ligne(reduce_options):
+                    fautifs.append(
+                        f"{chemin.name} id={panel.get('id')} "
+                        f"({panel.get('title')!r}): reduceOptions={reduce_options!r}"
+                    )
+        assert not fautifs, (
+            "piechart(s) sans 'reduceOptions.values: true' détecté(s) — "
+            "rendront une part unique à 100 % :\n  " + "\n  ".join(fautifs)
+        )
+
+    def test_le_garde_fou_mord_si_reduceoptions_redevient_vide_sabote(self) -> None:
+        """PREUVE que le garde-fou mord : réinjecte en mémoire la forme
+        EXACTE du défaut mesuré (`reduceOptions: {}`, l'état constaté sur
+        les 16 panneaux avant fix) et prouve qu'elle échouerait à la
+        condition de rendu multi-parts, sans toucher au disque."""
+        assert not _reduce_options_rend_une_part_par_ligne({}), (
+            "reduceOptions={} aurait dû être détecté comme fautif — sinon "
+            "ce garde-fou ne prouve rien"
+        )
+        assert not _reduce_options_rend_une_part_par_ligne(None), (
+            "reduceOptions absent (None) aurait dû être détecté comme "
+            "fautif — sinon ce garde-fou ne prouve rien"
+        )
+        assert not _reduce_options_rend_une_part_par_ligne({"values": False}), (
+            "reduceOptions avec values: False explicite aurait dû être "
+            "détecté comme fautif — sinon ce garde-fou ne prouve rien"
+        )
+        assert _reduce_options_rend_une_part_par_ligne(
+            {"values": True, "calcs": [], "fields": ""}
+        ), (
+            "la configuration appliquée par le fix (values: true) aurait dû "
+            "être reconnue comme correcte — sinon ce garde-fou a un faux "
+            "positif sur sa propre solution"
         )

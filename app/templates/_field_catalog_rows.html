@@ -1,0 +1,87 @@
+{# Fragment HTMX : le tableau des champs SEUL.
+
+   Séparé de la page pour que les filtres (à la souris) ne rechargent que les
+   lignes. Le `<tbody>` porte les `<tr>` que les tests comptent pour vérifier
+   qu'un filtre est réellement DISCRIMINANT — un filtre qui rend autant de
+   lignes que « tout » est un défaut mesuré sur ce projet. #}
+
+{% if not catalog.schema_available %}
+  <p class="notice notice-warn">
+    <strong>Catalogue indisponible</strong>
+    {{ catalog.error_message }}
+  </p>
+{% elif not entries %}
+  <p class="notice notice-info">
+    <strong>Aucun champ ne correspond à ce filtre</strong>
+    Le catalogue contient {{ catalog.total_count }} champs : retirez un filtre
+    pour les revoir. Ceci est bien un résultat de filtrage, pas une absence de
+    mesure.
+  </p>
+{% else %}
+<table class="field-catalog-table">
+  <thead>
+    <tr>
+      <th>Champ</th>
+      <th>Type</th>
+      <th>Origine de la donnée</th>
+      <th class="num">Rempli</th>
+      <th>À quoi ça sert</th>
+      <th>Statut</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for entry in entries %}
+    <tr class="{% if entry.used %}field-used{% elif entry.prepared %}field-prepared{% else %}field-unused{% endif %}">
+      <td>
+        <span class="mono field-name">{{ entry.name }}</span>
+        <span class="field-label">{{ entry.label }}</span>
+      </td>
+      <td class="mono field-type">{{ entry.clickhouse_type }}</td>
+      <td>
+        <span class="badge badge-origin-{{ entry.origin }}">{{ entry.origin_label }}</span>
+      </td>
+      {# Le taux ILLUSTRE l'origine, il ne la détermine pas. « indisponible »
+         quand la mesure a échoué — jamais 0 %, qui se lirait « champ vide ». #}
+      <td class="num field-fill {{ 'field-fill-unknown' if entry.fill_rate is none else '' }}">
+        {{ entry.fill_rate_display }}
+      </td>
+      <td class="field-usage">
+        {{ entry.potential_usage }}
+        {% if entry.required_action %}
+          <span class="field-action">{{ entry.required_action }}</span>
+        {% endif %}
+      </td>
+      <td>
+        {% if entry.used %}
+          <span class="badge badge-used">Exploité</span>
+          <span class="field-dashboards">{{ entry.dashboards | join(', ') }}</span>
+        {% elif entry.prepared %}
+          {# Ni exploité, ni à développer : le dashboard EXISTE déjà. Reste à
+             savoir s'il AFFICHERA quelque chose — et c'est le taux de
+             remplissage RÉEL qui tranche, pas la seule existence du fichier.
+             Le compter comme « exploité » ferait chuter le potentiel annoncé
+             sans qu'aucune donnée ne s'affiche.
+
+             DÉFAUT MESURÉ À L'ÉCRAN (2026-08-11) : `SrcNetPrefix` (rempli à
+             100 %), `InIfBoundary` (100 %) et `SrcNetRole` (83 %) affichaient
+             « en attente de la source » alors que leur donnée est DÉJÀ là. En
+             présentation, cela revenait à annoncer « il nous manque un
+             équipement » pour des champs immédiatement exploitables — un
+             argument affaibli par une étiquette fausse.
+
+             Deux libellés distincts, donc, selon ce que la mesure dit. #}
+          {% if entry.fill_rate is not none and entry.fill_rate > 0 %}
+            <span class="badge badge-ready-now">Dashboard prêt — donnée déjà présente</span>
+          {% else %}
+            <span class="badge badge-prepared">Prêt — en attente de la source</span>
+          {% endif %}
+          <span class="field-dashboards">{{ entry.pending_dashboards | join(', ') }}</span>
+        {% else %}
+          <span class="badge badge-unused">Inexploité</span>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}

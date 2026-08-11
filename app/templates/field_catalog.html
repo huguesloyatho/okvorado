@@ -1,0 +1,177 @@
+{% extends "base.html" %}
+
+{% block title %}Champs disponibles{% endblock %}
+
+{# ÉCRAN DE NÉGOCIATION (demande utilisateur 2026-08-11), pas une documentation.
+   Il répond à « vos dashboards sont légers » par un chiffre calculé, et à
+   « pourquoi ces champs sont vides ? » par l'origine de la donnée.
+
+   CSP STRICTE (`script-src 'self'`, sans `unsafe-inline` ni `unsafe-eval`) :
+   aucun gestionnaire d'événement en attribut, aucun script inline, et aucune
+   condition htmx de la forme « every Ns [ ... ] » — cette dernière est évaluée
+   en JS dynamique et lève un `EvalError` (défaut mesuré le 2026-08-10). Les
+   filtres sont de simples `hx-get`.
+
+   Les libellés fautifs ne sont pas écrits littéralement ici : un garde-fou de
+   test cherche ces chaînes dans le template, et les citer même en commentaire
+   le ferait mordre à côté. #}
+
+{% block content %}
+<h1>Champs disponibles</h1>
+
+{% if not catalog.schema_available %}
+  {# ZÉRO SILENCIEUX : sans schéma, aucun chiffre n'est affichable. On dit
+     « indisponible » plutôt que de rendre un catalogue vide ou un « 0 champ »
+     qu'on confondrait avec une mesure. #}
+  <p class="notice notice-warn">
+    <strong>Catalogue indisponible</strong>
+    {{ catalog.error_message }}
+  </p>
+{% else %}
+
+  {# EN-TÊTE À FORT IMPACT — tous les chiffres sont CALCULÉS à l'affichage
+     (schéma réel + dashboards présents), jamais écrits en dur : le schéma
+     évolue (activer la géo ou le BGP ajoute des colonnes) et un dashboard
+     livré change le compte. #}
+  <section class="panel field-catalog-headline">
+    {% if catalog.used_count is none %}
+      <p class="notice notice-warn">
+        <strong>Décompte d'exploitation indisponible</strong>
+        {{ catalog.error_message }}
+        Les {{ catalog.total_count }} champs du schéma restent listés ci-dessous.
+      </p>
+    {% else %}
+      <p class="field-catalog-ratio">
+        <strong class="field-catalog-ratio-main">{{ catalog.used_count }} champs exploités sur {{ catalog.total_count }}</strong>
+        <span class="field-catalog-ratio-sub">
+          {{ catalog.unused_count }} inexploités, soit {{ catalog.unused_percent }} % du potentiel
+        </span>
+      </p>
+      <div class="stat-row">
+        <div class="stat">
+          <span class="stat-label">Champs du schéma</span>
+          <span class="stat-value">{{ catalog.total_count }}</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Exploités par un dashboard</span>
+          <span class="stat-value ok">{{ catalog.used_count }}</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Inexploités</span>
+          <span class="stat-value warn">{{ catalog.unused_count }}</span>
+        </div>
+        {# Sous-ensemble le plus vendable des inexploités : le dashboard existe
+           déjà, seule la source manque. « Rien à développer ».
+
+           AFFICHÉ UNIQUEMENT S'IL Y EN A (2026-08-11) : depuis le retrait des
+           dashboards livrés en avance de phase, ce compte vaut 0. Une tuile
+           « Dont dashboard déjà prêt : 0 » serait une catégorie vide et muette,
+           que le lecteur confondrait avec une mesure indisponible — exactement
+           ce que la règle « zéro silencieux » interdit. Le mécanisme, lui,
+           reste en place : la tuile réapparaîtra d'elle-même dès qu'un
+           dashboard en avance de phase sera livré. #}
+        {% if catalog.prepared_count %}
+        <div class="stat">
+          <span class="stat-label">Dont dashboard déjà prêt</span>
+          <span class="stat-value info">{{ catalog.prepared_count }}</span>
+        </div>
+        {% endif %}
+        <div class="stat">
+          <span class="stat-label">Potentiel restant</span>
+          <span class="stat-value warn">{{ catalog.unused_percent }} %</span>
+        </div>
+      </div>
+    {% endif %}
+
+    {% if catalog.error_message and catalog.used_count is not none %}
+      <p class="notice notice-warn">{{ catalog.error_message }}</p>
+    {% endif %}
+  </section>
+
+  {# LA CLÉ DE LECTURE. Sans elle, un lecteur voit « 0 % » sur tout le bloc
+     routage et conclut « le produit ne sait pas faire » — alors que la maquette
+     n'a simplement aucun routeur ni pare-feu. #}
+  <section class="panel field-catalog-origins">
+    <div class="panel-head"><h2>D'où vient la donnée</h2></div>
+    <p class="hint">
+      Un champ vide sur cette maquette n'est pas un champ inutilisable : les
+      exportateurs sont ici des serveurs Linux (softflowd), pas des routeurs.
+      La question utile est donc « quelle source le remplit ? ».
+    </p>
+    <dl class="origin-legend">
+      {% for origin in origin_order %}
+      <div class="origin-legend-item origin-{{ origin }}">
+        <dt><span class="badge badge-origin-{{ origin }}">{{ origin_labels[origin] }}</span></dt>
+        <dd>{{ origin_descriptions[origin] }}</dd>
+      </div>
+      {% endfor %}
+    </dl>
+  </section>
+
+  {# FILTRES À LA SOURIS — jamais par URL tapée.
+
+     ⚠️ `hx-select="unset"` : cet attribut est HÉRITÉ. Sans lui, un conteneur
+     parent porteur d'un `hx-select` ferait insérer un fragment VIDE par ces
+     boutons, en silence. Piège mesuré 3 fois sur ce projet (db_health.html,
+     retention.html, exporters.html). #}
+  <section class="panel field-catalog-filters"
+           hx-select="unset"
+           hx-target="#field-catalog-rows"
+           hx-swap="innerHTML">
+    <div class="panel-head"><h2>Filtrer</h2></div>
+
+    <div class="filter-group">
+      <span class="filter-group-label">Exploitation</span>
+      <a class="btn {{ 'primary' if usage == 'all' else '' }}"
+         hx-get="{{ '/field-catalog/rows' | prefixed }}?usage=all&origin={{ origin }}&category={{ category }}"
+         href="{{ '/field-catalog' | prefixed }}?usage=all&origin={{ origin }}&category={{ category }}">Tout</a>
+      <a class="btn {{ 'primary' if usage == 'used' else '' }}"
+         hx-get="{{ '/field-catalog/rows' | prefixed }}?usage=used&origin={{ origin }}&category={{ category }}"
+         href="{{ '/field-catalog' | prefixed }}?usage=used&origin={{ origin }}&category={{ category }}">Exploités</a>
+      <a class="btn {{ 'primary' if usage == 'unused' else '' }}"
+         hx-get="{{ '/field-catalog/rows' | prefixed }}?usage=unused&origin={{ origin }}&category={{ category }}"
+         href="{{ '/field-catalog' | prefixed }}?usage=unused&origin={{ origin }}&category={{ category }}">Inexploités</a>
+    </div>
+
+    <div class="filter-group">
+      <span class="filter-group-label">Origine</span>
+      <a class="btn {{ 'primary' if not origin else '' }}"
+         hx-get="{{ '/field-catalog/rows' | prefixed }}?usage={{ usage }}&origin=&category={{ category }}"
+         href="{{ '/field-catalog' | prefixed }}?usage={{ usage }}&origin=&category={{ category }}">Toutes</a>
+      {% for value in origin_order %}
+      <a class="btn {{ 'primary' if origin == value else '' }}"
+         hx-get="{{ '/field-catalog/rows' | prefixed }}?usage={{ usage }}&origin={{ value }}&category={{ category }}"
+         href="{{ '/field-catalog' | prefixed }}?usage={{ usage }}&origin={{ value }}&category={{ category }}">{{ origin_labels[value] }}</a>
+      {% endfor %}
+    </div>
+
+    <div class="filter-group">
+      <span class="filter-group-label">Catégorie</span>
+      <a class="btn {{ 'primary' if not category else '' }}"
+         hx-get="{{ '/field-catalog/rows' | prefixed }}?usage={{ usage }}&origin={{ origin }}&category="
+         href="{{ '/field-catalog' | prefixed }}?usage={{ usage }}&origin={{ origin }}&category=">Toutes</a>
+      {% for value in categories %}
+      <a class="btn {{ 'primary' if category == value else '' }}"
+         hx-get="{{ '/field-catalog/rows' | prefixed }}?usage={{ usage }}&origin={{ origin }}&category={{ value }}"
+         href="{{ '/field-catalog' | prefixed }}?usage={{ usage }}&origin={{ origin }}&category={{ value }}">{{ value }}</a>
+      {% endfor %}
+    </div>
+
+    {# Export demandé explicitement : un fichier à ouvrir dans un tableur et
+       annoter pendant la réunion. Toujours COMPLET, jamais filtré. #}
+    <div class="filter-group">
+      <span class="filter-group-label">Export</span>
+      <a class="btn" href="{{ '/field-catalog/export.csv' | prefixed }}"
+         hx-boost="false" download>Télécharger le catalogue (CSV)</a>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><h2>Les {{ catalog.total_count }} champs</h2></div>
+    <div id="field-catalog-rows">
+      {% include "_field_catalog_rows.html" %}
+    </div>
+  </section>
+
+{% endif %}
+{% endblock %}

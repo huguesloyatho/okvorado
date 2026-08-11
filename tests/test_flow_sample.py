@@ -544,7 +544,11 @@ class TestSummarizeFields:
 
         fields = {f.name: f for f in summarize_fields(rows)}
 
-        assert fields["ExporterName"].sample_values == ["serveur-fichiers", "proxy-frontal", "poste-collecte"]
+        assert fields["ExporterName"].sample_values == [
+            "serveur-fichiers",
+            "proxy-frontal",
+            "poste-collecte",
+        ]
 
     def test_distinct_count_counts_all_values_not_only_the_exposed_ones(self) -> None:
         """Tronquer les valeurs sans exposer le compte ferait croire à 12 ports en tout."""

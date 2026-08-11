@@ -49,6 +49,21 @@
         "multi": false,
         "includeAll": false,
         "sort": 1
+      },
+      {
+        "name": "interface",
+        "type": "query",
+        "label": "Interface",
+        "description": "Peuplée dynamiquement : les interfaces (IN et OUT) réellement vues sur l'exportateur $exporter pour la fenêtre courante. Filtrer sur une interface est le geste de tri d'un lien saturé.",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "ClickHouse"
+        },
+        "query": "SELECT DISTINCT interface FROM (SELECT InIfName AS interface FROM flows WHERE $__timeFilter(TimeReceived) AND ExporterName = '$exporter' AND InIfName != '' UNION ALL SELECT OutIfName AS interface FROM flows WHERE $__timeFilter(TimeReceived) AND ExporterName = '$exporter' AND OutIfName != '') ORDER BY interface",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "sort": 1
       }
     ]
   },
@@ -532,6 +547,24 @@
                 "value": "percent"
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "interface"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Filtrer cet écran sur cette interface",
+                    "url": "/d/okvorado-par-exportateur/okvorado-par-exportateur?var-exporter=$exporter&var-interface=${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
           }
         ]
       },
@@ -544,7 +577,7 @@
       "targets": [
         {
           "refId": "A",
-          "rawSql": "SELECT\n    interface,\n    sum(vol_in) AS volume_in,\n    sum(vol_out) AS volume_out,\n    sum(vol_in) * 8 / greatest(toUnixTimestamp($__toTime) - toUnixTimestamp($__fromTime), 1) AS debit_in,\n    sum(vol_out) * 8 / greatest(toUnixTimestamp($__toTime) - toUnixTimestamp($__fromTime), 1) AS debit_out,\n    least(100, (sum(vol_in) * 8 / greatest(toUnixTimestamp($__toTime) - toUnixTimestamp($__fromTime), 1)) / (greatest(max(vitesse_in_if), 1) * 1000000) * 100) AS utilisation_in,\n    least(100, (sum(vol_out) * 8 / greatest(toUnixTimestamp($__toTime) - toUnixTimestamp($__fromTime), 1)) / (greatest(max(vitesse_out_if), 1) * 1000000) * 100) AS utilisation_out\nFROM (\n    SELECT\n        InIfName AS interface,\n        sum(Bytes * SamplingRate) AS vol_in,\n        0 AS vol_out,\n        any(InIfSpeed) AS vitesse_in_if,\n        0 AS vitesse_out_if\n    FROM flows\n    WHERE $__timeFilter(TimeReceived) AND ExporterName = '$exporter' AND InIfName != ''\n    GROUP BY interface\n    UNION ALL\n    SELECT\n        OutIfName AS interface,\n        0 AS vol_in,\n        sum(Bytes * SamplingRate) AS vol_out,\n        0 AS vitesse_in_if,\n        any(OutIfSpeed) AS vitesse_out_if\n    FROM flows\n    WHERE $__timeFilter(TimeReceived) AND ExporterName = '$exporter' AND OutIfName != ''\n    GROUP BY interface\n)\nGROUP BY interface\nORDER BY volume_in DESC\nLIMIT 20",
+          "rawSql": "SELECT\n    interface,\n    sum(vol_in) AS volume_in,\n    sum(vol_out) AS volume_out,\n    sum(vol_in) * 8 / greatest(toUnixTimestamp($__toTime) - toUnixTimestamp($__fromTime), 1) AS debit_in,\n    sum(vol_out) * 8 / greatest(toUnixTimestamp($__toTime) - toUnixTimestamp($__fromTime), 1) AS debit_out,\n    least(100, (sum(vol_in) * 8 / greatest(toUnixTimestamp($__toTime) - toUnixTimestamp($__fromTime), 1)) / (greatest(max(vitesse_in_if), 1) * 1000000) * 100) AS utilisation_in,\n    least(100, (sum(vol_out) * 8 / greatest(toUnixTimestamp($__toTime) - toUnixTimestamp($__fromTime), 1)) / (greatest(max(vitesse_out_if), 1) * 1000000) * 100) AS utilisation_out\nFROM (\n    SELECT\n        InIfName AS interface,\n        sum(Bytes * SamplingRate) AS vol_in,\n        0 AS vol_out,\n        any(InIfSpeed) AS vitesse_in_if,\n        0 AS vitesse_out_if\n    FROM flows\n    WHERE $__timeFilter(TimeReceived) AND ExporterName = '$exporter' AND InIfName != ''\n    GROUP BY interface\n    UNION ALL\n    SELECT\n        OutIfName AS interface,\n        0 AS vol_in,\n        sum(Bytes * SamplingRate) AS vol_out,\n        0 AS vitesse_in_if,\n        any(OutIfSpeed) AS vitesse_out_if\n    FROM flows\n    WHERE $__timeFilter(TimeReceived) AND ExporterName = '$exporter' AND OutIfName != ''\n    GROUP BY interface\n)\nGROUP BY interface\nHAVING interface IN (${interface:singlequote})\nORDER BY volume_in DESC\nLIMIT 20",
           "format": 1
         }
       ]
@@ -566,7 +599,7 @@
       "id": 30,
       "type": "timeseries",
       "title": "Flux reçus vs rejetés dans le temps",
-      "description": "Équivalent de la bascule 'Received Flows | Dropped Flows' de NetFlow Analyzer. ForwardingStatus encodé en classes IPFIX (RFC 7270) : classe = intDiv(ForwardingStatus, 64), 2 = 'Dropped/Rejetés', sinon 'Reçus'. count() jamais mis à l'échelle — c'est un comptage de flux observés, pas un volume.",
+      "description": "Équivalent de la bascule 'Received Flows | Dropped Flows' de NetFlow Analyzer. ForwardingStatus encodé en classes IPFIX (RFC 7270) : classe = intDiv(ForwardingStatus, 64), 2 = 'Dropped/Rejetés', sinon 'Reçus'. count() jamais mis à l'échelle — c'est un comptage de flux observés, pas un volume. ForwardingStatus n'est renseigné que par l'ÉQUIPEMENT exportateur lui-même (pare-feu/routeur émettant l'IPFIX RFC 7270 avec ce champ) — les serveurs Linux sous softflowd ne l'écrivent jamais. ZÉRO SILENCIEUX : quand AUCUN flux de la fenêtre ne porte l'information (ForwardingStatus toujours à 0), ce panneau n'affiche ni 'Rejetés' ni 'Reçus' scindés — il rend un troisième statut explicite 'Statut non renseigné (source ne l'émet pas)', pour ne jamais laisser lire '0 rejeté' comme 'aucun rejet mesuré'. L'écran restera dans cet état tant qu'aucune source (ex. l'OPNsense) n'exportera ce champ.",
       "gridPos": {
         "h": 9,
         "w": 24,
@@ -594,7 +627,7 @@
       "targets": [
         {
           "refId": "A",
-          "rawSql": "SELECT\n    $__timeInterval(TimeReceived) AS time,\n    multiIf(intDiv(ForwardingStatus, 64) = 2, 'Rejetés', 'Reçus') AS statut,\n    count() AS flux\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName = '$exporter'\nGROUP BY time, statut\nORDER BY time ASC",
+          "rawSql": "SELECT\n    $__timeInterval(TimeReceived) AS time,\n    multiIf(\n        (SELECT countIf(ForwardingStatus != 0) FROM flows WHERE $__timeFilter(TimeReceived) AND ExporterName = '$exporter') = 0, 'Statut non renseigné (source ne l''émet pas)',\n        intDiv(ForwardingStatus, 64) = 2, 'Rejetés',\n        'Reçus'\n    ) AS statut,\n    count() AS flux\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName = '$exporter'\nGROUP BY time, statut\nORDER BY time ASC",
           "format": 0
         }
       ]
@@ -603,7 +636,7 @@
       "id": 31,
       "type": "stat",
       "title": "Moyenne des flux rejetés",
-      "description": "Average Dropped Flows — moyenne par intervalle de la série ci-dessus.",
+      "description": "Average Dropped Flows — moyenne par intervalle de la série ci-dessus. ForwardingStatus n'est renseigné que par l'équipement réseau/pare-feu exportant l'IPFIX RFC 7270 (ex. l'OPNsense du parc) ; les serveurs Linux sous softflowd ne l'émettent jamais. ZÉRO SILENCIEUX : si AUCUN flux de la fenêtre ne porte l'information (ForwardingStatus toujours à 0), ce panneau rend NULL — Grafana affiche alors 'No data', jamais '0', pour ne pas laisser lire 'aucun rejet' là où c'est 'source muette sur ce champ'. Se remplira automatiquement dès qu'une source l'émettra.",
       "gridPos": {
         "h": 5,
         "w": 12,
@@ -616,14 +649,15 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "short"
+          "unit": "short",
+          "noValue": "Non renseigné (source muette)"
         },
         "overrides": []
       },
       "targets": [
         {
           "refId": "A",
-          "rawSql": "SELECT countIf(intDiv(ForwardingStatus, 64) = 2) AS flux_rejetes\nFROM flows\nWHERE $__timeFilter(TimeReceived) AND ExporterName = '$exporter'",
+          "rawSql": "SELECT if(countIf(ForwardingStatus != 0) = 0, NULL, countIf(intDiv(ForwardingStatus, 64) = 2)) AS flux_rejetes\nFROM flows\nWHERE $__timeFilter(TimeReceived) AND ExporterName = '$exporter'",
           "format": 1
         }
       ]
@@ -632,7 +666,7 @@
       "id": 32,
       "type": "stat",
       "title": "Dernier flux rejeté",
-      "description": "Last Dropped Flow — horodatage du plus récent flux au statut rejeté.",
+      "description": "Last Dropped Flow — horodatage du plus récent flux au statut rejeté. ForwardingStatus n'est renseigné que par l'équipement réseau/pare-feu exportant l'IPFIX RFC 7270 (ex. l'OPNsense du parc) ; les serveurs Linux sous softflowd ne l'émettent jamais. ZÉRO SILENCIEUX : si AUCUN flux de la fenêtre ne porte l'information, ce panneau rend NULL — Grafana affiche 'No data', jamais une date epoch ou un vide qu'on confondrait avec 'rien de rejeté'. Se remplira automatiquement dès qu'une source l'émettra.",
       "gridPos": {
         "h": 5,
         "w": 12,
@@ -645,14 +679,15 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "dateTimeAsIso"
+          "unit": "dateTimeAsIso",
+          "noValue": "Non renseigné (source muette)"
         },
         "overrides": []
       },
       "targets": [
         {
           "refId": "A",
-          "rawSql": "SELECT maxIf(TimeReceived, intDiv(ForwardingStatus, 64) = 2) AS dernier_flux_rejete\nFROM flows\nWHERE $__timeFilter(TimeReceived) AND ExporterName = '$exporter'",
+          "rawSql": "SELECT if(countIf(ForwardingStatus != 0) = 0, NULL, maxIf(TimeReceived, intDiv(ForwardingStatus, 64) = 2)) AS dernier_flux_rejete\nFROM flows\nWHERE $__timeFilter(TimeReceived) AND ExporterName = '$exporter'",
           "format": 1
         }
       ]
@@ -706,6 +741,11 @@
           "values": [
             "percent"
           ]
+        },
+        "reduceOptions": {
+          "values": true,
+          "calcs": [],
+          "fields": ""
         }
       },
       "targets": [
@@ -752,6 +792,11 @@
           "values": [
             "percent"
           ]
+        },
+        "reduceOptions": {
+          "values": true,
+          "calcs": [],
+          "fields": ""
         }
       },
       "targets": [

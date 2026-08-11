@@ -343,12 +343,64 @@ def init_database(path: str | None = None) -> None:
         raise
 
 
+def open_connection(
+    path: str | None = None, *, check_same_thread: bool = True
+) -> sqlite3.Connection:
+    """PORTE D'ENTRÉE UNIQUE vers SQLite. Pose TOUJOURS `row_factory = sqlite3.Row`.
+
+    POURQUOI CETTE FONCTION EXISTE (2026-08-11)
+    -------------------------------------------
+    Défaut mesuré en production : la boucle de collecte SNMP automatique
+    (`app/main.py::_snmp_inventory_periodic_loop`) ouvrait sa connexion avec un
+    `sqlite3.connect(...)` NU. Les lignes arrivaient donc en `tuple`, et
+    `app/services/snmp_inventory.py::_row_to_item` — qui appelle `row.keys()`
+    puis indexe par nom — plantait à CHAQUE cycle sur
+
+        'tuple' object has no attribute 'keys'
+
+    Conséquence : **la collecte SNMP automatique n'a JAMAIS fonctionné** depuis
+    sa mise en place. Pas un seul cycle abouti. Le `except Exception` qui
+    protège la boucle avalait l'échec en log ERROR et repartait pour un tour
+    identique : la tâche de fond survivait, la fonctionnalité était morte.
+
+    POURQUOI UNE PORTE UNIQUE ET PAS UNE CORRECTION PONCTUELLE
+    ----------------------------------------------------------
+    Un helper `get_connection()` existait DÉJÀ ici, avec le bon `row_factory`
+    — et n'était utilisé par PERSONNE. L'inventaire du 2026-08-11 l'a chiffré :
+    `app/` contenait 11 `sqlite3.connect` directs, dont 2 seulement posaient
+    `row_factory`. Neuf connexions étaient donc armées du même défaut, chacune
+    n'attendant qu'un appelant lisant par nom.
+
+    La raison RACINE du contournement est identifiée : `get_connection` est un
+    `contextmanager` qui n'exposait pas `check_same_thread`. Or les tâches de
+    fond `asyncio` en ont besoin (elles déportent leur travail via
+    `asyncio.to_thread`, donc la connexion est créée dans un thread et utilisée
+    dans un autre), et certaines ouvrent/ferment la connexion dans un `try` /
+    `finally` explicite plutôt qu'avec un `with`. Le helper ne couvrait pas
+    leur besoin — elles l'ont contourné. Un helper contournable EST contourné :
+    `open_connection` couvre donc le cas complet, et
+    `tests/test_sqlite_row_factory.py` interdit mécaniquement toute autre porte.
+
+    `check_same_thread=False` est sans risque dans les usages du projet : la
+    connexion est ouverte PAR CYCLE (ou PAR REQUÊTE) puis refermée, jamais
+    partagée entre deux traitements concurrents.
+    """
+    target = str(path or settings.sqlite_path)
+    conn = sqlite3.connect(target, check_same_thread=check_same_thread)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
 @contextmanager
 def get_connection(path: str | None = None) -> Generator[sqlite3.Connection]:
-    """Ouvre une connexion SQLite avec row_factory nommée."""
-    target = str(path or settings.sqlite_path)
-    conn = sqlite3.connect(target)
-    conn.row_factory = sqlite3.Row
+    """Ouvre une connexion SQLite avec row_factory nommée, refermée à la sortie.
+
+    Enveloppe `open_connection` : une seule implémentation de l'ouverture, donc
+    une seule garantie de `row_factory` à maintenir (cf. la docstring
+    ci-dessus pour le défaut de production du 2026-08-11 qui a motivé cette
+    centralisation).
+    """
+    conn = open_connection(path)
     try:
         yield conn
     finally:

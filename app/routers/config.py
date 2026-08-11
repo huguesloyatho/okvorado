@@ -38,7 +38,11 @@ from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
-from app.clients.akvorado_yaml import ConcurrentModificationError, load_declared_exporters
+from app.clients.akvorado_yaml import (
+    ConcurrentModificationError,
+    build_fallback_interface_spec,
+    load_declared_exporters,
+)
 from app.clients.restart import AkvoradoStatus, fetch_akvorado_status
 from app.config import settings as default_settings
 from app.models import Boundary
@@ -362,20 +366,83 @@ def create_pending_exporter(
     conn: DbConnection,
     cidr: Annotated[str, Form()],
     name: Annotated[str, Form()],
+    default_name: Annotated[str, Form()] = "",
+    default_description: Annotated[str, Form()] = "",
+    default_speed: Annotated[int, Form()] = 1000,
+    default_boundary: Annotated[str, Form()] = Boundary.UNDEFINED.value,
 ) -> HTMLResponse:
-    """Ajoute un exportateur à la file d'attente (formulaire HTML)."""
+    """Ajoute un exportateur à la file d'attente (formulaire HTML).
+
+    ⚠️ LE PAYLOAD PORTE TOUJOURS UN `default` — DÉFAUT MESURÉ EN PRODUCTION
+    (2026-08-11) : cette route envoyait `"default": None`, le formulaire ne
+    demandant que CIDR + nom. L'exportateur était alors écrit dans
+    `outlet.yaml` avec le seul nom, sans aucune métadonnée d'interface, et
+    Akvorado rejetait 100 % de ses flux en « metadata missing ». Aggravant :
+    une déclaration nominative `/32` PRIME sur le filet CIDR large, donc
+    déclarer l'équipement lui RETIRAIT les métadonnées que ce filet lui
+    fournissait — on cassait une ingestion qui marchait en croyant seulement
+    nommer la machine.
+
+    DEUX GARDE-FOUS, DÉLIBÉRÉMENT REDONDANTS, à deux niveaux différents :
+      1. ici, le payload mis en file porte des métadonnées explicites — sans
+         quoi la file afficherait `default: null` à l'exploitant, qui ne
+         saurait pas ce qui sera réellement écrit ;
+      2. à l'écriture, `akvorado_yaml._exporter_to_yaml_entry` repose le repli
+         pour TOUT appelant (SNMP, rejeu de file, appelant futur).
+    Le niveau 2 seul suffirait à protéger l'ingestion ; le niveau 1 rend la
+    file d'attente HONNÊTE, ce qui est une exigence distincte.
+
+    Les champs `default_*` sont OPTIONNELS : « je veux juste nommer mon
+    équipement » reste un geste à deux champs, et retombe alors sur le repli.
+    """
+    saisie_default = bool(default_name.strip())
     errors = [err for err in (_validate_cidr(cidr), _validate_name(name)) if err is not None]
+    if saisie_default:
+        # Validé ICI, à la saisie, plutôt que laissé à `validate_exporters` au
+        # moment d'appliquer : une erreur doit se voir là où le geste est fait,
+        # pas plusieurs écrans plus loin sur un lot de changements groupés.
+        errors.extend(
+            err
+            for err in (
+                _validate_name(default_name),
+                _validate_speed(default_speed),
+                _validate_boundary(default_boundary),
+            )
+            if err is not None
+        )
     if errors:
         log.error("create_pending_exporter: validation echouee: cidr=%s erreurs=%s", cidr, errors)
         return _error_response(errors)
 
+    if saisie_default:
+        default_payload = {
+            "name": default_name.strip(),
+            "description": default_description.strip(),
+            "speed": default_speed,
+            "boundary": default_boundary,
+        }
+    else:
+        fallback = build_fallback_interface_spec()
+        default_payload = {
+            "name": fallback.name,
+            "description": fallback.description,
+            "speed": fallback.speed,
+            "boundary": fallback.boundary.value,
+        }
+
     change_id = stage_change(
         conn,
         "add_exporter",
-        {"cidr": cidr, "name": name.strip(), "if_indexes": {}, "default": None},
+        {"cidr": cidr, "name": name.strip(), "if_indexes": {}, "default": default_payload},
         _DEFAULT_AUTHOR,
     )
-    log.info("create_pending_exporter: change_id=%d cidr=%s name=%s", change_id, cidr, name)
+    log.info(
+        "create_pending_exporter: change_id=%d cidr=%s name=%s default=%s",
+        change_id,
+        cidr,
+        name,
+        default_payload["name"],
+    )
     return HTMLResponse(
         f'<li class="pending-item">Ajout en attente : {escape(cidr)} ({escape(name)})</li>',
         status_code=201,

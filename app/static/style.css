@@ -2055,6 +2055,33 @@ label { color: var(--text-dim); font-size: 12.5px; }
 .default-password-banner { margin: 0 24px 0; border-radius: 0; }
 .default-password-banner a { color: inherit; font-weight: 600; }
 
+/* Bandeau GLOBAL « changements de configuration en attente » — rendu par
+   base.html sur TOUTES les pages (défaut mesuré le 2026-08-11 : 21 changements
+   accumulés sans qu'aucun écran ne le signale, cf. le commentaire du gabarit).
+
+   `flex-wrap: wrap` + `gap` : le texte et le bloc d'actions passent l'un sous
+   l'autre sur écran étroit plutôt que de se chevaucher. Le bandeau mot de passe
+   a coûté ce défaut exact (chevauchement mesuré le 2026-08-09, cause racine :
+   une hauteur figée sur un conteneur qui déborde) — on ne fige donc AUCUNE
+   hauteur ici, la boîte grandit avec son contenu réel. */
+.pending-global-banner {
+  margin: 0 24px 0;
+  border-radius: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.pending-global-banner__text { flex: 1 1 320px; }
+.pending-global-banner__actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+.pending-global-banner a { color: inherit; font-weight: 600; }
+
 .login-body {
   background: var(--bg);
   color: var(--text);
@@ -2174,3 +2201,153 @@ label { color: var(--text-dim); font-size: 12.5px; }
   font-family: var(--mono);
   word-break: break-word;
 }
+
+/* --------------------------------------------------------------------------
+   Écran « Champs disponibles » — catalogue des champs de flux.
+
+   ÉCRAN DE NÉGOCIATION (2026-08-11) : il sert à retourner l'objection « vos
+   dashboards sont légers ». L'impact visuel compte donc autant que
+   l'exactitude — d'où le ratio en très grand.
+
+   VERT = EXPLOITÉ (demande explicite de l'utilisateur). Le vert vient des
+   variables existantes --ok / --ok-bg, jamais d'une palette réinventée.
+   -------------------------------------------------------------------------- */
+
+.field-catalog-headline { text-align: center; }
+
+.field-catalog-ratio { margin: 0 0 14px; }
+
+.field-catalog-ratio-main {
+  display: block;
+  font-size: 30px;
+  line-height: 1.2;
+  color: var(--text);
+}
+
+/* Le nombre d'inexploités est l'argument : il doit ressortir, sans crier
+   « erreur » (le --crit se lirait comme une panne, pas comme un potentiel). */
+.field-catalog-ratio-sub {
+  display: block;
+  margin-top: 6px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--warn);
+}
+
+/* Légende des origines — la clé de lecture de tout l'écran. */
+.origin-legend { margin: 10px 0 0; }
+
+.origin-legend-item {
+  display: grid;
+  grid-template-columns: 230px 1fr;
+  gap: 12px;
+  align-items: start;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+.origin-legend-item dd { margin: 0; color: var(--text-dim); font-size: 13px; }
+
+.badge-origin-protocol {
+  background: var(--ok-bg); color: var(--ok); border-color: rgba(63,185,80,0.3);
+}
+/* Catégorie « équipement réseau » : mise en avant en --info et non en --warn.
+   C'est le message clé de la présentation (« un routeur SFR l'émet
+   nativement »), pas une alerte. */
+.badge-origin-network_equipment {
+  background: var(--info-bg); color: var(--info); border-color: rgba(88,166,255,0.3);
+}
+.badge-origin-collector_enrichment {
+  background: var(--warn-bg); color: var(--warn); border-color: rgba(210,153,34,0.3);
+}
+
+/* Filtres à la souris. */
+.field-catalog-filters .filter-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding: 6px 0;
+}
+.filter-group-label {
+  min-width: 100px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Tableau du catalogue. */
+.field-catalog-table { width: 100%; border-collapse: collapse; }
+.field-catalog-table th,
+.field-catalog-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+  text-align: left;
+}
+.field-catalog-table th {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+.field-catalog-table td.num { text-align: right; font-family: var(--mono); }
+
+/* VERT = exploité : liseré vert en bord de ligne, lisible d'un coup d'œil
+   depuis le fond de la salle. */
+.field-catalog-table tr.field-used { background: var(--ok-bg); }
+.field-catalog-table tr.field-used td:first-child { box-shadow: inset 3px 0 0 var(--ok); }
+.field-catalog-table tr.field-unused td:first-child { box-shadow: inset 3px 0 0 var(--border); }
+
+.field-name { display: block; font-weight: 600; }
+.field-label { display: block; font-size: 12px; color: var(--text-dim); }
+.field-type { font-size: 12px; color: var(--text-faint); }
+
+.field-usage { max-width: 460px; font-size: 13px; }
+/* L'action requise est une consigne, pas un argument : elle reste secondaire
+   visuellement pour ne pas concurrencer le cas d'usage. */
+.field-action {
+  display: block;
+  margin-top: 5px;
+  font-size: 12px;
+  color: var(--text-dim);
+  border-left: 2px solid var(--border);
+  padding-left: 8px;
+}
+
+.badge-used   { background: var(--ok-bg);   color: var(--ok);   border-color: rgba(63,185,80,0.3); }
+.badge-unused { background: var(--warn-bg); color: var(--warn); border-color: rgba(210,153,34,0.3); }
+
+.field-dashboards {
+  display: block;
+  margin-top: 4px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+/* « indisponible » ne doit JAMAIS ressembler à un 0 % : couleur distincte et
+   italique, pour que l'absence de mesure se voie comme telle. */
+.field-fill-unknown { color: var(--info); font-style: italic; }
+
+/* « Prêt — en attente de la source » : ni exploité (vert), ni inexploité
+   (orange). Un troisième état, en --info, pour l'argument « le dashboard existe
+   déjà, il ne manque que l'équipement ». Sans ce troisième état, ces champs
+   auraient été comptés comme exploités et le potentiel annoncé serait passé de
+   69 % à 32 % sans qu'aucune donnée ne s'affiche (défaut mesuré 2026-08-11). */
+.badge-prepared {
+  background: var(--info-bg); color: var(--info); border-color: rgba(88,166,255,0.3);
+}
+
+/* « Dashboard prêt — donnée déjà présente » : QUATRIÈME état, distinct du
+   précédent. DÉFAUT MESURÉ À L'ÉCRAN (2026-08-11) : `SrcNetPrefix` (rempli à
+   100 %), `InIfBoundary` (100 %) et `SrcNetRole` (83 %) portaient l'étiquette
+   « en attente de la source » alors que leur donnée EXISTE DÉJÀ. En réunion,
+   cela revenait à réclamer un équipement pour des champs immédiatement
+   exploitables — l'argument le plus fort (« il suffit d'ajouter le panneau »)
+   était perdu. Teinte `--ok` : c'est une bonne nouvelle, pas une attente. */
+.badge-ready-now {
+  background: var(--ok-bg); color: var(--ok); border-color: rgba(63,185,80,0.3);
+}
+.field-catalog-table tr.field-prepared td:first-child { box-shadow: inset 3px 0 0 var(--info); }
+.stat-value.info { color: var(--info); }

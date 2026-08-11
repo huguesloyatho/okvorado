@@ -456,7 +456,12 @@
             "percent"
           ]
         },
-        "pieType": "donut"
+        "pieType": "donut",
+        "reduceOptions": {
+          "values": true,
+          "calcs": [],
+          "fields": ""
+        }
       },
       "targets": [
         {

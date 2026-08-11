@@ -1,0 +1,138 @@
+{# Fragment d'aperçu — ce qu'on voit AVANT de télécharger.
+
+   Il porte l'essentiel de la valeur de qualification : le tableau des taux de
+   remplissage dit, champ par champ, ce que CET équipement renseigne vraiment.
+   C'est l'information qui manque aujourd'hui pour affiner l'intégration
+   automatique des interfaces et ajuster les dashboards.
+
+   ZÉRO SILENCIEUX : trois rendus DISTINCTS ci-dessous — mesure impossible,
+   mesure à zéro flux, mesure aboutie. Jamais un tableau vide qu'on
+   confondrait avec « rien à signaler ».
+
+   CSP STRICTE : aucun gestionnaire inline, aucun script, aucune condition
+   htmx évaluée en JS. #}
+
+{% if export_error %}
+  {# 1. LA MESURE N'A PAS ABOUTI — surtout pas « 0 flux ». #}
+  <p class="notice notice-crit">
+    <strong>Aperçu indisponible.</strong>
+    {{ export_error }}
+    <br>
+    Aucun fichier ne doit être produit dans cet état : un export vide issu d'une
+    panne se lirait comme « cet équipement n'émet rien ».
+  </p>
+
+{% elif export %}
+
+  {% if export.is_empty %}
+    {# 2. LA MESURE A ABOUTI ET VAUT ZÉRO — c'est une mesure, elle est ÉNONCÉE. #}
+    <p class="notice notice-warn">
+      <strong>Aucun flux sur ce périmètre.</strong>
+      {{ export.metadata.empty_reason }}
+    </p>
+  {% endif %}
+
+  <div class="stat-row">
+    <div class="stat">
+      <div class="stat-label">Équipement</div>
+      <div class="stat-value" style="font-size: 15px;">{{ export.metadata.exporter_display }}</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Période</div>
+      <div class="stat-value">{{ export.metadata.window }}</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Flux prélevés</div>
+      <div class="stat-value {{ 'warn' if export.is_empty else 'ok' }}">{{ export.metadata.flow_count }}</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Champs renseignés</div>
+      {% if export.fill_rates_available %}
+        <div class="stat-value">{{ export.metadata.filled_field_count }} / {{ export.metadata.field_count }}</div>
+      {% else %}
+        {# Ne JAMAIS afficher « 0 / 62 » ici : ce serait une mesure inventée. #}
+        <div class="stat-value warn" style="font-size: 15px;">non mesuré</div>
+      {% endif %}
+    </div>
+  </div>
+
+  {# LE TABLEAU QUI PORTE LA VALEUR — tous les champs, y compris les VIDES.
+     Omettre les champs à 0 % supprimerait précisément ce qu'on cherche à
+     savoir : ce que l'équipement ne renseigne pas. #}
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Remplissage par champ ({{ export.metadata.field_count }})</h2>
+      <span class="muted">mesuré sur le même équipement et la même période que l'export</span>
+    </div>
+
+    {% if not export.fill_rates_available %}
+      <p class="notice notice-warn">
+        <strong>Taux non mesurables.</strong>
+        Aucun flux à mesurer sur ce périmètre — à ne pas lire comme « 0 % ».
+        Les champs restent listés ci-dessous avec leur type et leur origine.
+      </p>
+    {% endif %}
+
+    <table>
+      <thead>
+        <tr>
+          <th>Champ</th>
+          <th>Libellé</th>
+          <th>Type</th>
+          <th>Origine</th>
+          <th>Remplissage</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for field in export.fields %}
+        <tr>
+          <td><code>{{ field.name }}</code></td>
+          <td>{{ field.label }}</td>
+          <td class="muted">{{ field.clickhouse_type }}</td>
+          <td>{{ field.origin_label }}</td>
+          <td>
+            {% if field.fill_rate is none %}
+              <span class="badge badge-unknown_interface">non mesuré</span>
+            {% elif field.fill_rate == 0 %}
+              {# Un champ VIDE est une information de qualification, pas un
+                 défaut : il dit ce qu'il faudra activer sur l'équipement. #}
+              <span class="badge badge-silent">vide (0 %)</span>
+            {% else %}
+              <span class="badge badge-healthy">{{ field.fill_rate_display }}</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  {# 3. LES PREMIÈRES LIGNES — pour juger de la FORME des valeurs. #}
+  {% if preview_rows %}
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Premières lignes ({{ preview_rows | length }} sur {{ export.metadata.flow_count }})</h2>
+      <span class="muted">{{ preview_columns | length }} premières colonnes — le fichier téléchargé les porte toutes</span>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          {% for name in preview_columns %}<th>{{ name }}</th>{% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in preview_rows %}
+        <tr>
+          {% for name in preview_columns %}
+          <td>{{ row.get(name) if row.get(name) is not none else '' }}</td>
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+
+{% else %}
+  <p class="muted">Choisissez un équipement et une période, puis lancez l'aperçu.</p>
+{% endif %}

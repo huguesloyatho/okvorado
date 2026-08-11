@@ -400,6 +400,11 @@
             "value",
             "percent"
           ]
+        },
+        "reduceOptions": {
+          "values": true,
+          "calcs": [],
+          "fields": ""
         }
       },
       "targets": [

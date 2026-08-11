@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+
+{% block title %}Export de flux{% endblock %}
+
+{# ÉCRAN DE QUALIFICATION D'ÉQUIPEMENT (demande utilisateur 2026-08-11), pas un
+   export de reporting.
+
+   Le geste servi : en environnement client, isoler UN équipement (un pare-feu
+   Palo Alto, un routeur SFR), voir ce qu'il remplit VRAIMENT, puis emporter le
+   fichier pour affiner l'intégration automatique des interfaces et ajuster les
+   dashboards.
+
+   SÉLECTION À LA SOURIS, jamais une adresse tapée : la liste déroulante ne
+   propose que les exportateurs RÉELLEMENT observés dans les flux. C'est aussi
+   la garantie qu'un équipement qu'on vient de brancher apparaît tout seul,
+   sans avoir été déclaré nulle part — l'objectif même du projet.
+
+   CSP STRICTE (`script-src 'self'`, sans `unsafe-inline` ni `unsafe-eval`) :
+   aucun gestionnaire d'événement en attribut, aucun script inline, et aucune
+   condition htmx de la forme « every Ns [ ... ] » — cette dernière est évaluée
+   en JS dynamique et lève un `EvalError` (défaut mesuré le 2026-08-10). #}
+
+{% block content %}
+<h1>Export de flux</h1>
+
+<p class="muted">
+  Prélever un échantillon de flux d'un équipement pour qualifier ce qu'il
+  renseigne réellement. L'aperçu montre le taux de remplissage de chaque champ,
+  <strong>y compris ceux qui restent vides</strong> — c'est cette information qui
+  permet d'affiner l'intégration des interfaces et d'ajuster les dashboards.
+</p>
+
+{% if schema_error %}
+  {# ZÉRO SILENCIEUX — DÉFAUT MESURÉ AVANT LIVRAISON (2026-08-11) : sans ce
+     bandeau, la page s'affichait normalement, sélecteur peuplé, alors que le
+     schéma était illisible. L'utilisateur ne découvrait la panne qu'après avoir
+     choisi son équipement et cliqué sur « Aperçu » — sur site client, le pire
+     moment. L'écran doit être honnête dès son ouverture. #}
+  <p class="notice notice-crit">
+    <strong>Schéma des champs indisponible</strong> — {{ schema_error }}
+    <br>
+    L'aperçu et le téléchargement échoueront tant que ce point n'est pas réglé :
+    aucun export ne sera produit dans cet état.
+  </p>
+{% endif %}
+
+{% if not devices_available %}
+  {# ZÉRO SILENCIEUX : un sélecteur vide sans explication ferait croire qu'aucun
+     équipement n'est branché, alors que c'est la base qui est muette. #}
+  <p class="notice notice-crit">
+    <strong>Liste des équipements indisponible</strong> — {{ devices_error }}
+    <br>
+    Ce n'est pas « aucun exportateur » : la mesure elle-même n'a pas abouti.
+  </p>
+{% elif not devices %}
+  <p class="notice notice-warn">
+    <strong>Aucun exportateur observé</strong> sur les dernières {{ device_list_window }}.
+    La requête a abouti — c'est une mesure : aucun équipement n'a émis de flux.
+    Vérifiez que l'équipement à qualifier pointe bien vers le collecteur.
+  </p>
+{% endif %}
+
+{# ⚠️ `hx-select="unset"` : cet attribut est HÉRITÉ. Sans lui, un conteneur
+   parent porteur d'un `hx-select` ferait insérer un fragment VIDE par ce
+   formulaire, en silence. Piège mesuré 3 fois sur ce projet (db_health.html,
+   retention.html, exporters.html). #}
+<section class="panel"
+         hx-select="unset"
+         hx-target="#flow-export-preview"
+         hx-swap="innerHTML">
+  <div class="panel-head"><h2>Composer le prélèvement</h2></div>
+
+  <form hx-get="{{ '/flow-export/preview' | prefixed }}"
+        hx-target="#flow-export-preview"
+        hx-swap="innerHTML"
+        hx-select="unset"
+        method="get"
+        action="{{ '/flow-export' | prefixed }}"
+        class="filter-group">
+
+    <label for="flow-export-exporter">Équipement</label>
+    <select id="flow-export-exporter" name="exporter">
+      {# « Tous » est proposé, mais l'usage de qualification est d'isoler UN
+         équipement : un dump global noyé ne dit rien de ce que le pare-feu
+         remplit. #}
+      <option value="" {{ 'selected' if not exporter else '' }}>Tous les exportateurs</option>
+      {% for device in devices %}
+      <option value="{{ device.address }}" {{ 'selected' if exporter == device.address else '' }}>
+        {{ device.label }} — {{ device.flow_count }} flux
+      </option>
+      {% endfor %}
+    </select>
+
+    <label for="flow-export-window">Période</label>
+    <select id="flow-export-window" name="window">
+      {% for choice in window_choices %}
+      <option value="{{ choice }}" {{ 'selected' if window == choice else '' }}>{{ choice }}</option>
+      {% endfor %}
+    </select>
+
+    <label for="flow-export-limit">Nombre de flux</label>
+    <select id="flow-export-limit" name="limit">
+      {% for choice in limit_choices %}
+      <option value="{{ choice }}" {{ 'selected' if limit == choice else '' }}>{{ choice }}</option>
+      {% endfor %}
+    </select>
+
+    <label for="flow-export-format">Format</label>
+    <select id="flow-export-format" name="fmt">
+      {% for choice in format_choices %}
+      <option value="{{ choice }}" {{ 'selected' if fmt == choice else '' }}>{{ choice | upper }}</option>
+      {% endfor %}
+    </select>
+
+    <button type="submit" class="primary">Aperçu</button>
+    <span class="htmx-indicator">mesure en cours…</span>
+  </form>
+
+  {# TÉLÉCHARGEMENT — volontairement SÉPARÉ du formulaire d'aperçu.
+
+     `hx-boost="false"` : un téléchargement ne doit pas passer par htmx, qui
+     tenterait d'injecter le fichier dans la page. Les paramètres sont ceux
+     actuellement sélectionnés, c'est-à-dire ceux du dernier aperçu affiché —
+     on télécharge donc ce qu'on vient de VOIR, jamais un périmètre différent
+     de celui qui a été jugé à l'écran. #}
+  <div class="filter-group">
+    <span class="filter-group-label">Télécharger</span>
+    <a class="btn"
+       href="{{ '/flow-export/download' | prefixed }}?exporter={{ exporter }}&window={{ window }}&limit={{ limit }}&fmt=csv"
+       hx-boost="false" download>CSV (tableur)</a>
+    <a class="btn"
+       href="{{ '/flow-export/download' | prefixed }}?exporter={{ exporter }}&window={{ window }}&limit={{ limit }}&fmt=json"
+       hx-boost="false" download>JSON (analyse)</a>
+  </div>
+
+  <p class="muted">
+    Le fichier est auto-portant : son en-tête porte l'équipement, la période, le
+    nombre de flux, le taux de remplissage de chaque champ et la version du
+    schéma. Limite plafonnée à {{ max_limit }} flux.
+  </p>
+</section>
+
+<div id="flow-export-preview">
+  {% include "_flow_export_preview.html" %}
+</div>
+
+{% endblock %}

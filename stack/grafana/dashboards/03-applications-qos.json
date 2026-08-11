@@ -20,8 +20,21 @@
     "to": "now"
   },
   "timepicker": {
-    "refresh_intervals": ["30s", "1m", "5m", "15m"],
-    "time_options": ["5m", "15m", "1h", "6h", "24h", "7d", "30d"]
+    "refresh_intervals": [
+      "30s",
+      "1m",
+      "5m",
+      "15m"
+    ],
+    "time_options": [
+      "5m",
+      "15m",
+      "1h",
+      "6h",
+      "24h",
+      "7d",
+      "30d"
+    ]
   },
   "templating": {
     "list": [
@@ -53,6 +66,21 @@
         "multi": true,
         "includeAll": true,
         "sort": 1
+      },
+      {
+        "name": "classe_dscp",
+        "type": "query",
+        "label": "Classe DSCP",
+        "description": "Peuplée dynamiquement depuis les flux de la fenêtre courante : les classes DSCP réellement observées (EF, AF41, CS6, BE…). 'Tous' développe la vraie liste des valeurs, jamais une chaîne spéciale.",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "ClickHouse"
+        },
+        "query": "SELECT DISTINCT multiIf(bitShiftRight(IPTos,2)=0,'BE',bitShiftRight(IPTos,2)=8,'CS1',bitShiftRight(IPTos,2)=10,'AF11',bitShiftRight(IPTos,2)=16,'CS2',bitShiftRight(IPTos,2)=18,'AF21',bitShiftRight(IPTos,2)=24,'CS3',bitShiftRight(IPTos,2)=26,'AF31',bitShiftRight(IPTos,2)=32,'CS4',bitShiftRight(IPTos,2)=34,'AF41',bitShiftRight(IPTos,2)=40,'CS5',bitShiftRight(IPTos,2)=46,'EF',bitShiftRight(IPTos,2)=48,'CS6',bitShiftRight(IPTos,2)=56,'CS7',concat('DSCP ', toString(bitShiftRight(IPTos,2)))) AS classe_dscp FROM flows WHERE $__timeFilter(TimeReceived) ORDER BY classe_dscp",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "sort": 1
       }
     ]
   },
@@ -60,7 +88,10 @@
     {
       "title": "Accueil — Traffic Summary",
       "type": "dashboards",
-      "tags": ["okvorado", "accueil"],
+      "tags": [
+        "okvorado",
+        "accueil"
+      ],
       "asDropdown": false,
       "icon": "external link",
       "targetBlank": false,
@@ -70,7 +101,10 @@
     {
       "title": "Par exportateur",
       "type": "dashboards",
-      "tags": ["okvorado", "exportateur"],
+      "tags": [
+        "okvorado",
+        "exportateur"
+      ],
       "asDropdown": false,
       "icon": "external link",
       "targetBlank": false,
@@ -80,7 +114,10 @@
     {
       "title": "Diagnostic incidents",
       "type": "dashboards",
-      "tags": ["okvorado", "incident"],
+      "tags": [
+        "okvorado",
+        "incident"
+      ],
       "asDropdown": false,
       "icon": "external link",
       "targetBlank": false,
@@ -90,7 +127,10 @@
     {
       "title": "Anomalies",
       "type": "dashboards",
-      "tags": ["okvorado", "anomalies"],
+      "tags": [
+        "okvorado",
+        "anomalies"
+      ],
       "asDropdown": false,
       "icon": "external link",
       "targetBlank": false,
@@ -103,7 +143,12 @@
       "id": 20,
       "type": "row",
       "title": "Répartition applicative",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
       "collapsed": false,
       "panels": []
     },
@@ -112,8 +157,16 @@
       "type": "piechart",
       "title": "Top applications par volume",
       "description": "Camembert de répartition — équivalent 'Top N Application' des captures ManageEngine. sum(Bytes * SamplingRate), Top 12.",
-      "gridPos": { "h": 9, "w": 10, "x": 0, "y": 1 },
-      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "gridPos": {
+        "h": 9,
+        "w": 10,
+        "x": 0,
+        "y": 1
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "bytes",
@@ -130,8 +183,20 @@
         "overrides": []
       },
       "options": {
-        "legend": { "displayMode": "table", "placement": "right", "values": ["value", "percent"] },
-        "pieType": "donut"
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "value",
+            "percent"
+          ]
+        },
+        "pieType": "donut",
+        "reduceOptions": {
+          "values": true,
+          "calcs": [],
+          "fields": ""
+        }
       },
       "targets": [
         {
@@ -146,11 +211,22 @@
       "type": "table",
       "title": "Applications — Trafic et utilisation (%)",
       "description": "Réplique la capture 'Inventory > Apps' de NetFlow Analyzer : Traffic + Utilization en %. Pourcentage calculé par fonction fenêtre sur le volume total de la période (round(volume*100.0/sum(volume) OVER (),2)) — vérifié contre ClickHouse : HTTPS à 33.59% type. Barre de progression rendue via cellule 'gauge' Grafana. LIMIT 40.",
-      "gridPos": { "h": 9, "w": 14, "x": 10, "y": 1 },
-      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "gridPos": {
+        "h": 9,
+        "w": 14,
+        "x": 10,
+        "y": 1
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
       "fieldConfig": {
         "defaults": {
-          "custom": { "align": "left", "filterable": true },
+          "custom": {
+            "align": "left",
+            "filterable": true
+          },
           "unit": "bytes",
           "links": [
             {
@@ -164,18 +240,39 @@
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "pourcentage" },
+            "matcher": {
+              "id": "byName",
+              "options": "pourcentage"
+            },
             "properties": [
-              { "id": "unit", "value": "percent" },
-              { "id": "custom.cellOptions", "value": { "type": "gauge", "mode": "gradient" } },
-              { "id": "max", "value": 100 },
-              { "id": "min", "value": 0 }
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "gradient"
+                }
+              },
+              {
+                "id": "max",
+                "value": 100
+              },
+              {
+                "id": "min",
+                "value": 0
+              }
             ]
           }
         ]
       },
       "options": {
-        "footer": { "show": true, "enablePagination": true }
+        "footer": {
+          "show": true,
+          "enablePagination": true
+        }
       },
       "targets": [
         {
@@ -189,7 +286,12 @@
       "id": 21,
       "type": "row",
       "title": "QoS / Classes DSCP",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 10 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 10
+      },
       "collapsed": false,
       "panels": []
     },
@@ -198,21 +300,50 @@
       "type": "piechart",
       "title": "Top QoS par classe DSCP",
       "description": "Camembert de répartition QoS — équivalent 'Top N QoS' des captures ManageEngine. bitShiftRight(IPTos,2), jamais >> (Code: 62 SYNTAX_ERROR mesuré).",
-      "gridPos": { "h": 9, "w": 10, "x": 0, "y": 11 },
-      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "gridPos": {
+        "h": 9,
+        "w": 10,
+        "x": 0,
+        "y": 11
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
       "fieldConfig": {
-        "defaults": { "unit": "bytes" },
+        "defaults": {
+          "unit": "bytes",
+          "links": [
+            {
+              "title": "Filtrer cet écran sur cette classe DSCP",
+              "url": "/d/okvorado-applications-qos/okvorado-applications-qos?var-classe_dscp=${__data.fields.classe_dscp}",
+              "targetBlank": false
+            }
+          ]
+        },
         "overrides": []
       },
       "options": {
-        "legend": { "displayMode": "table", "placement": "right", "values": ["value", "percent"] },
-        "pieType": "donut"
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "value",
+            "percent"
+          ]
+        },
+        "pieType": "donut",
+        "reduceOptions": {
+          "values": true,
+          "calcs": [],
+          "fields": ""
+        }
       },
       "targets": [
         {
           "refId": "A",
           "format": 1,
-          "rawSql": "SELECT\n    multiIf(\n        bitShiftRight(IPTos, 2) = 0, 'BE',\n        bitShiftRight(IPTos, 2) = 8, 'CS1',\n        bitShiftRight(IPTos, 2) = 10, 'AF11',\n        bitShiftRight(IPTos, 2) = 16, 'CS2',\n        bitShiftRight(IPTos, 2) = 18, 'AF21',\n        bitShiftRight(IPTos, 2) = 24, 'CS3',\n        bitShiftRight(IPTos, 2) = 26, 'AF31',\n        bitShiftRight(IPTos, 2) = 32, 'CS4',\n        bitShiftRight(IPTos, 2) = 34, 'AF41',\n        bitShiftRight(IPTos, 2) = 40, 'CS5',\n        bitShiftRight(IPTos, 2) = 46, 'EF',\n        bitShiftRight(IPTos, 2) = 48, 'CS6',\n        bitShiftRight(IPTos, 2) = 56, 'CS7',\n        concat('DSCP ', toString(bitShiftRight(IPTos, 2)))\n    ) AS classe_dscp,\n    sum(Bytes * SamplingRate) AS volume\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\nGROUP BY classe_dscp\nORDER BY volume DESC\nLIMIT 15"
+          "rawSql": "SELECT\n    multiIf(\n        bitShiftRight(IPTos, 2) = 0, 'BE',\n        bitShiftRight(IPTos, 2) = 8, 'CS1',\n        bitShiftRight(IPTos, 2) = 10, 'AF11',\n        bitShiftRight(IPTos, 2) = 16, 'CS2',\n        bitShiftRight(IPTos, 2) = 18, 'AF21',\n        bitShiftRight(IPTos, 2) = 24, 'CS3',\n        bitShiftRight(IPTos, 2) = 26, 'AF31',\n        bitShiftRight(IPTos, 2) = 32, 'CS4',\n        bitShiftRight(IPTos, 2) = 34, 'AF41',\n        bitShiftRight(IPTos, 2) = 40, 'CS5',\n        bitShiftRight(IPTos, 2) = 46, 'EF',\n        bitShiftRight(IPTos, 2) = 48, 'CS6',\n        bitShiftRight(IPTos, 2) = 56, 'CS7',\n        concat('DSCP ', toString(bitShiftRight(IPTos, 2)))\n    ) AS classe_dscp,\n    sum(Bytes * SamplingRate) AS volume\nFROM flows\nWHERE $__timeFilter(TimeReceived)\n    AND ExporterName IN (${exporter:singlequote})\nGROUP BY classe_dscp\nHAVING classe_dscp IN (${classe_dscp:singlequote})\nORDER BY volume DESC\nLIMIT 15"
         }
       ]
     },
@@ -221,33 +352,83 @@
       "type": "table",
       "title": "Classes DSCP — Trafic et pourcentage",
       "description": "Réplique la capture 'Inventory > QoS' : Traffic + Percentage (Default/BE à ~99%, CS1, AF11, CS3, AF21, CS6, EF…). Barre de progression via cellule gauge. LIMIT 20.",
-      "gridPos": { "h": 9, "w": 14, "x": 10, "y": 11 },
-      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "gridPos": {
+        "h": 9,
+        "w": 14,
+        "x": 10,
+        "y": 11
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
       "fieldConfig": {
         "defaults": {
-          "custom": { "align": "left", "filterable": true },
+          "custom": {
+            "align": "left",
+            "filterable": true
+          },
           "unit": "bytes"
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "pourcentage" },
+            "matcher": {
+              "id": "byName",
+              "options": "pourcentage"
+            },
             "properties": [
-              { "id": "unit", "value": "percent" },
-              { "id": "custom.cellOptions", "value": { "type": "gauge", "mode": "gradient" } },
-              { "id": "max", "value": 100 },
-              { "id": "min", "value": 0 }
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "gradient"
+                }
+              },
+              {
+                "id": "max",
+                "value": 100
+              },
+              {
+                "id": "min",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "classe_dscp"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Filtrer cet écran sur cette classe DSCP",
+                    "url": "/d/okvorado-applications-qos/okvorado-applications-qos?var-classe_dscp=${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
             ]
           }
         ]
       },
       "options": {
-        "footer": { "show": true, "enablePagination": true }
+        "footer": {
+          "show": true,
+          "enablePagination": true
+        }
       },
       "targets": [
         {
           "refId": "A",
           "format": 1,
-          "rawSql": "SELECT\n    classe_dscp,\n    volume,\n    round(volume * 100.0 / sum(volume) OVER (), 2) AS pourcentage\nFROM (\n    SELECT\n        multiIf(\n            bitShiftRight(IPTos, 2) = 0, 'BE',\n            bitShiftRight(IPTos, 2) = 8, 'CS1',\n            bitShiftRight(IPTos, 2) = 10, 'AF11',\n            bitShiftRight(IPTos, 2) = 16, 'CS2',\n            bitShiftRight(IPTos, 2) = 18, 'AF21',\n            bitShiftRight(IPTos, 2) = 24, 'CS3',\n            bitShiftRight(IPTos, 2) = 26, 'AF31',\n            bitShiftRight(IPTos, 2) = 32, 'CS4',\n            bitShiftRight(IPTos, 2) = 34, 'AF41',\n            bitShiftRight(IPTos, 2) = 40, 'CS5',\n            bitShiftRight(IPTos, 2) = 46, 'EF',\n            bitShiftRight(IPTos, 2) = 48, 'CS6',\n            bitShiftRight(IPTos, 2) = 56, 'CS7',\n            concat('DSCP ', toString(bitShiftRight(IPTos, 2)))\n        ) AS classe_dscp,\n        sum(Bytes * SamplingRate) AS volume\n    FROM flows\n    WHERE $__timeFilter(TimeReceived)\n        AND ExporterName IN (${exporter:singlequote})\n    GROUP BY classe_dscp\n    ORDER BY volume DESC\n    LIMIT 20\n)\nORDER BY volume DESC"
+          "rawSql": "SELECT\n    classe_dscp,\n    volume,\n    round(volume * 100.0 / sum(volume) OVER (), 2) AS pourcentage\nFROM (\n    SELECT\n        multiIf(\n            bitShiftRight(IPTos, 2) = 0, 'BE',\n            bitShiftRight(IPTos, 2) = 8, 'CS1',\n            bitShiftRight(IPTos, 2) = 10, 'AF11',\n            bitShiftRight(IPTos, 2) = 16, 'CS2',\n            bitShiftRight(IPTos, 2) = 18, 'AF21',\n            bitShiftRight(IPTos, 2) = 24, 'CS3',\n            bitShiftRight(IPTos, 2) = 26, 'AF31',\n            bitShiftRight(IPTos, 2) = 32, 'CS4',\n            bitShiftRight(IPTos, 2) = 34, 'AF41',\n            bitShiftRight(IPTos, 2) = 40, 'CS5',\n            bitShiftRight(IPTos, 2) = 46, 'EF',\n            bitShiftRight(IPTos, 2) = 48, 'CS6',\n            bitShiftRight(IPTos, 2) = 56, 'CS7',\n            concat('DSCP ', toString(bitShiftRight(IPTos, 2)))\n        ) AS classe_dscp,\n        sum(Bytes * SamplingRate) AS volume\n    FROM flows\n    WHERE $__timeFilter(TimeReceived)\n        AND ExporterName IN (${exporter:singlequote})\n    GROUP BY classe_dscp\n    HAVING classe_dscp IN (${classe_dscp:singlequote})\n    ORDER BY volume DESC\n    LIMIT 20\n)\nORDER BY volume DESC"
         }
       ]
     },
@@ -255,7 +436,12 @@
       "id": 22,
       "type": "row",
       "title": "Croisement Application × QoS — diagnostic SCCM",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 20 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 20
+      },
       "collapsed": false,
       "panels": []
     },
@@ -264,15 +450,26 @@
       "type": "barchart",
       "title": "Application × classe DSCP (volume)",
       "description": "LE croisement qui manque à ManageEngine côté utilisateur : quelle application consomme quelle classe de service. Barres empilées par application, une couleur par classe DSCP. Répond à « SCCM sature la QoS » : filtrer $application sur l'application SCCM (ex. SMB/microsoft-ds pendant le déploiement GPO) et lire la classe DSCP dominante. Bornée aux 15 applications de plus gros volume x 8 classes DSCP.",
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 21 },
-      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 21
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "bytes"
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "application" },
+            "matcher": {
+              "id": "byName",
+              "options": "application"
+            },
             "properties": [
               {
                 "id": "links",
@@ -293,13 +490,16 @@
       "options": {
         "orientation": "horizontal",
         "stacking": "normal",
-        "legend": { "displayMode": "table", "placement": "right" }
+        "legend": {
+          "displayMode": "table",
+          "placement": "right"
+        }
       },
       "targets": [
         {
           "refId": "A",
           "format": 1,
-          "rawSql": "WITH top_applications AS (\n    SELECT\n        multiIf(\n            least(SrcPort,DstPort) = 443, 'HTTPS',\n            least(SrcPort,DstPort) = 80, 'HTTP',\n            least(SrcPort,DstPort) = 8080, 'HTTP-ALT',\n            least(SrcPort,DstPort) = 8443, 'HTTPS-ALT',\n            least(SrcPort,DstPort) = 22, 'SSH',\n            least(SrcPort,DstPort) = 3389, 'RDP',\n            least(SrcPort,DstPort) = 445, 'SMB (microsoft-ds)',\n            least(SrcPort,DstPort) = 139, 'NetBIOS-SSN',\n            least(SrcPort,DstPort) = 53, 'DNS',\n            least(SrcPort,DstPort) = 25, 'SMTP',\n            least(SrcPort,DstPort) = 389, 'LDAP',\n            least(SrcPort,DstPort) = 1433, 'MSSQL',\n            least(SrcPort,DstPort) = 3306, 'MySQL',\n            least(SrcPort,DstPort) = 5432, 'PostgreSQL',\n            concat(if(Proto = 6, 'tcp/', 'udp/'), toString(least(SrcPort,DstPort)))\n        ) AS application,\n        sum(Bytes * SamplingRate) AS volume_total\n    FROM flows\n    WHERE $__timeFilter(TimeReceived)\n        AND ExporterName IN (${exporter:singlequote})\n        AND Proto IN (6, 17)\n    GROUP BY application\n    ORDER BY volume_total DESC\n    LIMIT 15\n)\nSELECT\n    f.application AS application,\n    f.classe_dscp AS classe_dscp,\n    sum(f.volume) AS volume\nFROM (\n    SELECT\n        multiIf(\n            least(SrcPort,DstPort) = 443, 'HTTPS',\n            least(SrcPort,DstPort) = 80, 'HTTP',\n            least(SrcPort,DstPort) = 8080, 'HTTP-ALT',\n            least(SrcPort,DstPort) = 8443, 'HTTPS-ALT',\n            least(SrcPort,DstPort) = 22, 'SSH',\n            least(SrcPort,DstPort) = 3389, 'RDP',\n            least(SrcPort,DstPort) = 445, 'SMB (microsoft-ds)',\n            least(SrcPort,DstPort) = 139, 'NetBIOS-SSN',\n            least(SrcPort,DstPort) = 53, 'DNS',\n            least(SrcPort,DstPort) = 25, 'SMTP',\n            least(SrcPort,DstPort) = 389, 'LDAP',\n            least(SrcPort,DstPort) = 1433, 'MSSQL',\n            least(SrcPort,DstPort) = 3306, 'MySQL',\n            least(SrcPort,DstPort) = 5432, 'PostgreSQL',\n            concat(if(Proto = 6, 'tcp/', 'udp/'), toString(least(SrcPort,DstPort)))\n        ) AS application,\n        multiIf(\n            bitShiftRight(IPTos, 2) = 0, 'BE',\n            bitShiftRight(IPTos, 2) = 8, 'CS1',\n            bitShiftRight(IPTos, 2) = 10, 'AF11',\n            bitShiftRight(IPTos, 2) = 18, 'AF21',\n            bitShiftRight(IPTos, 2) = 24, 'CS3',\n            bitShiftRight(IPTos, 2) = 40, 'CS5',\n            bitShiftRight(IPTos, 2) = 46, 'EF',\n            bitShiftRight(IPTos, 2) = 48, 'CS6',\n            concat('DSCP ', toString(bitShiftRight(IPTos, 2)))\n        ) AS classe_dscp,\n        Bytes * SamplingRate AS volume\n    FROM flows\n    WHERE $__timeFilter(TimeReceived)\n        AND ExporterName IN (${exporter:singlequote})\n        AND Proto IN (6, 17)\n) AS f\nWHERE f.application IN (SELECT application FROM top_applications)\nGROUP BY application, classe_dscp\nORDER BY volume DESC\nLIMIT 120"
+          "rawSql": "WITH top_applications AS (\n    SELECT\n        multiIf(\n            least(SrcPort,DstPort) = 443, 'HTTPS',\n            least(SrcPort,DstPort) = 80, 'HTTP',\n            least(SrcPort,DstPort) = 8080, 'HTTP-ALT',\n            least(SrcPort,DstPort) = 8443, 'HTTPS-ALT',\n            least(SrcPort,DstPort) = 22, 'SSH',\n            least(SrcPort,DstPort) = 3389, 'RDP',\n            least(SrcPort,DstPort) = 445, 'SMB (microsoft-ds)',\n            least(SrcPort,DstPort) = 139, 'NetBIOS-SSN',\n            least(SrcPort,DstPort) = 53, 'DNS',\n            least(SrcPort,DstPort) = 25, 'SMTP',\n            least(SrcPort,DstPort) = 389, 'LDAP',\n            least(SrcPort,DstPort) = 1433, 'MSSQL',\n            least(SrcPort,DstPort) = 3306, 'MySQL',\n            least(SrcPort,DstPort) = 5432, 'PostgreSQL',\n            concat(if(Proto = 6, 'tcp/', 'udp/'), toString(least(SrcPort,DstPort)))\n        ) AS application,\n        sum(Bytes * SamplingRate) AS volume_total\n    FROM flows\n    WHERE $__timeFilter(TimeReceived)\n        AND ExporterName IN (${exporter:singlequote})\n        AND Proto IN (6, 17)\n    GROUP BY application\n    ORDER BY volume_total DESC\n    LIMIT 15\n)\nSELECT\n    f.application AS application,\n    f.classe_dscp AS classe_dscp,\n    sum(f.volume) AS volume\nFROM (\n    SELECT\n        multiIf(\n            least(SrcPort,DstPort) = 443, 'HTTPS',\n            least(SrcPort,DstPort) = 80, 'HTTP',\n            least(SrcPort,DstPort) = 8080, 'HTTP-ALT',\n            least(SrcPort,DstPort) = 8443, 'HTTPS-ALT',\n            least(SrcPort,DstPort) = 22, 'SSH',\n            least(SrcPort,DstPort) = 3389, 'RDP',\n            least(SrcPort,DstPort) = 445, 'SMB (microsoft-ds)',\n            least(SrcPort,DstPort) = 139, 'NetBIOS-SSN',\n            least(SrcPort,DstPort) = 53, 'DNS',\n            least(SrcPort,DstPort) = 25, 'SMTP',\n            least(SrcPort,DstPort) = 389, 'LDAP',\n            least(SrcPort,DstPort) = 1433, 'MSSQL',\n            least(SrcPort,DstPort) = 3306, 'MySQL',\n            least(SrcPort,DstPort) = 5432, 'PostgreSQL',\n            concat(if(Proto = 6, 'tcp/', 'udp/'), toString(least(SrcPort,DstPort)))\n        ) AS application,\n        multiIf(\n            bitShiftRight(IPTos, 2) = 0, 'BE',\n            bitShiftRight(IPTos, 2) = 8, 'CS1',\n            bitShiftRight(IPTos, 2) = 10, 'AF11',\n            bitShiftRight(IPTos, 2) = 18, 'AF21',\n            bitShiftRight(IPTos, 2) = 24, 'CS3',\n            bitShiftRight(IPTos, 2) = 40, 'CS5',\n            bitShiftRight(IPTos, 2) = 46, 'EF',\n            bitShiftRight(IPTos, 2) = 48, 'CS6',\n            concat('DSCP ', toString(bitShiftRight(IPTos, 2)))\n        ) AS classe_dscp,\n        Bytes * SamplingRate AS volume\n    FROM flows\n    WHERE $__timeFilter(TimeReceived)\n        AND ExporterName IN (${exporter:singlequote})\n        AND Proto IN (6, 17)\n) AS f\nWHERE f.application IN (SELECT application FROM top_applications)\nGROUP BY application, classe_dscp\nHAVING classe_dscp IN (${classe_dscp:singlequote})\nORDER BY volume DESC\nLIMIT 120"
         }
       ]
     },
@@ -308,8 +508,16 @@
       "type": "timeseries",
       "title": "Application dans le temps (Top 8 + Autre)",
       "description": "Série empilée par application — voir un déploiement DÉMARRER (ex. GPO SCCM). Bornée au Top 8 + 'Autre' agrégé, sinon des centaines de séries (une par port éphémère de retour de connexion) noient le graphe — mesuré contre ClickHouse sans cette borne.",
-      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 31 },
-      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 31
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "Bps",
@@ -317,7 +525,10 @@
             "drawStyle": "line",
             "lineWidth": 1,
             "fillOpacity": 25,
-            "stacking": { "mode": "normal", "group": "A" },
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
             "spanNulls": true
           }
         },
@@ -335,7 +546,12 @@
       "id": 23,
       "type": "row",
       "title": "Motif de convergence (déploiement de masse) — sources -> destinations",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 40 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 40
+      },
       "collapsed": false,
       "panels": []
     },
@@ -344,11 +560,22 @@
       "type": "table",
       "title": "Convergence par application — N sources internes -> destinations",
       "description": "Signature du cas d'usage GPO/SCCM : « l'équipe windows envoie l'installer depuis 160 sites vers un datacenter, on s'attend à des flux SMB avec source = PC des sites, destination = serveur SCCM central ». Pour chaque application, compte les SOURCES distinctes et les DESTINATIONS distinctes — une valeur haute de sources_distinctes / faible de destinations_distinctes = motif N->1 (déploiement de masse). Filtre $application pour isoler une application précise (ex. SMB). Réutilise le filtre 'source interne' de app/services/diagnostics.py (RFC1918 + CGNAT 100.64/10) : sans lui, le scan de ports Internet et le maillage P2P dominent le classement (mesure décisive n°1 du module diagnostics). LIMIT 25.",
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 41 },
-      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 41
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
       "fieldConfig": {
         "defaults": {
-          "custom": { "align": "left", "filterable": true },
+          "custom": {
+            "align": "left",
+            "filterable": true
+          },
           "links": [
             {
               "title": "Voir cette application",
@@ -361,13 +588,24 @@
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "volume" },
-            "properties": [{ "id": "unit", "value": "bytes" }]
+            "matcher": {
+              "id": "byName",
+              "options": "volume"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
           }
         ]
       },
       "options": {
-        "footer": { "show": true, "enablePagination": true }
+        "footer": {
+          "show": true,
+          "enablePagination": true
+        }
       },
       "targets": [
         {
@@ -382,11 +620,22 @@
       "type": "table",
       "title": "Détail convergence — destinations de l'application $application",
       "description": "Drill-down du panneau précédent : pour l'application sélectionnée via $application, liste chaque destination avec son nombre de sources distinctes — la ligne à sources_distinctes élevé ET destinations_distinctes = 1 EST le serveur SCCM central saturé. Sans sélection (Tous), rend le classement toutes applications confondues. LIMIT 30.",
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 51 },
-      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 51
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
       "fieldConfig": {
         "defaults": {
-          "custom": { "align": "left", "filterable": true },
+          "custom": {
+            "align": "left",
+            "filterable": true
+          },
           "links": [
             {
               "title": "Voir tout ce que fait cette destination",
@@ -399,13 +648,24 @@
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "volume" },
-            "properties": [{ "id": "unit", "value": "bytes" }]
+            "matcher": {
+              "id": "byName",
+              "options": "volume"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
           }
         ]
       },
       "options": {
-        "footer": { "show": true, "enablePagination": true }
+        "footer": {
+          "show": true,
+          "enablePagination": true
+        }
       },
       "targets": [
         {
@@ -419,7 +679,12 @@
       "id": 24,
       "type": "row",
       "title": "Top talkers",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 61 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 61
+      },
       "collapsed": false,
       "panels": []
     },
@@ -428,19 +693,41 @@
       "type": "table",
       "title": "Top talkers par application (source, destination, DSCP)",
       "description": "Équivalent 'Top N Conversation' des captures ManageEngine (Source/Destination/Application/DSCP/Traffic). Adresses démappées (IPv6NumToString, jamais cutIPv6 qui TRONQUE). Filtrable par $application. LIMIT 30.",
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 62 },
-      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 62
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "ClickHouse"
+      },
       "fieldConfig": {
         "defaults": {
-          "custom": { "align": "left", "filterable": true }
+          "custom": {
+            "align": "left",
+            "filterable": true
+          }
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "volume" },
-            "properties": [{ "id": "unit", "value": "bytes" }]
+            "matcher": {
+              "id": "byName",
+              "options": "volume"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
           },
           {
-            "matcher": { "id": "byName", "options": "source" },
+            "matcher": {
+              "id": "byName",
+              "options": "source"
+            },
             "properties": [
               {
                 "id": "links",
@@ -457,7 +744,10 @@
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "destination" },
+            "matcher": {
+              "id": "byName",
+              "options": "destination"
+            },
             "properties": [
               {
                 "id": "links",
@@ -474,7 +764,10 @@
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "application" },
+            "matcher": {
+              "id": "byName",
+              "options": "application"
+            },
             "properties": [
               {
                 "id": "links",
@@ -493,7 +786,10 @@
         ]
       },
       "options": {
-        "footer": { "show": true, "enablePagination": true }
+        "footer": {
+          "show": true,
+          "enablePagination": true
+        }
       },
       "targets": [
         {
