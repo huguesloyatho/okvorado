@@ -120,16 +120,24 @@
            hx-swap="innerHTML">
     <div class="panel-head"><h2>Filtrer</h2></div>
 
+    {# `hx-push-url` pointe vers la PAGE COMPLÈTE (`/field-catalog?...`),
+       jamais vers `/field-catalog/rows?...` : htmx pousse ici l'URL EXPLICITE
+       donnée en valeur, pas l'URL du `hx-get`. Une URL de fragment collée
+       dans la barre d'adresse rendrait un tableau nu, sans mise en page ni
+       CSS — c'est ce que ce choix évite. #}
     <div class="filter-group">
       <span class="filter-group-label">Exploitation</span>
       <a class="btn {{ 'primary' if usage == 'all' else '' }}"
          hx-get="{{ '/field-catalog/rows' | prefixed }}?usage=all&origin={{ origin }}&category={{ category }}"
+         hx-push-url="{{ '/field-catalog' | prefixed }}?usage=all&origin={{ origin }}&category={{ category }}"
          href="{{ '/field-catalog' | prefixed }}?usage=all&origin={{ origin }}&category={{ category }}">Tout</a>
       <a class="btn {{ 'primary' if usage == 'used' else '' }}"
          hx-get="{{ '/field-catalog/rows' | prefixed }}?usage=used&origin={{ origin }}&category={{ category }}"
+         hx-push-url="{{ '/field-catalog' | prefixed }}?usage=used&origin={{ origin }}&category={{ category }}"
          href="{{ '/field-catalog' | prefixed }}?usage=used&origin={{ origin }}&category={{ category }}">Exploités</a>
       <a class="btn {{ 'primary' if usage == 'unused' else '' }}"
          hx-get="{{ '/field-catalog/rows' | prefixed }}?usage=unused&origin={{ origin }}&category={{ category }}"
+         hx-push-url="{{ '/field-catalog' | prefixed }}?usage=unused&origin={{ origin }}&category={{ category }}"
          href="{{ '/field-catalog' | prefixed }}?usage=unused&origin={{ origin }}&category={{ category }}">Inexploités</a>
     </div>
 
@@ -137,10 +145,12 @@
       <span class="filter-group-label">Origine</span>
       <a class="btn {{ 'primary' if not origin else '' }}"
          hx-get="{{ '/field-catalog/rows' | prefixed }}?usage={{ usage }}&origin=&category={{ category }}"
+         hx-push-url="{{ '/field-catalog' | prefixed }}?usage={{ usage }}&origin=&category={{ category }}"
          href="{{ '/field-catalog' | prefixed }}?usage={{ usage }}&origin=&category={{ category }}">Toutes</a>
       {% for value in origin_order %}
       <a class="btn {{ 'primary' if origin == value else '' }}"
          hx-get="{{ '/field-catalog/rows' | prefixed }}?usage={{ usage }}&origin={{ value }}&category={{ category }}"
+         hx-push-url="{{ '/field-catalog' | prefixed }}?usage={{ usage }}&origin={{ value }}&category={{ category }}"
          href="{{ '/field-catalog' | prefixed }}?usage={{ usage }}&origin={{ value }}&category={{ category }}">{{ origin_labels[value] }}</a>
       {% endfor %}
     </div>
@@ -149,10 +159,12 @@
       <span class="filter-group-label">Catégorie</span>
       <a class="btn {{ 'primary' if not category else '' }}"
          hx-get="{{ '/field-catalog/rows' | prefixed }}?usage={{ usage }}&origin={{ origin }}&category="
+         hx-push-url="{{ '/field-catalog' | prefixed }}?usage={{ usage }}&origin={{ origin }}&category="
          href="{{ '/field-catalog' | prefixed }}?usage={{ usage }}&origin={{ origin }}&category=">Toutes</a>
       {% for value in categories %}
       <a class="btn {{ 'primary' if category == value else '' }}"
          hx-get="{{ '/field-catalog/rows' | prefixed }}?usage={{ usage }}&origin={{ origin }}&category={{ value }}"
+         hx-push-url="{{ '/field-catalog' | prefixed }}?usage={{ usage }}&origin={{ origin }}&category={{ value }}"
          href="{{ '/field-catalog' | prefixed }}?usage={{ usage }}&origin={{ origin }}&category={{ value }}">{{ value }}</a>
       {% endfor %}
     </div>

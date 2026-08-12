@@ -1226,3 +1226,126 @@ class TestDashboardPretDistingueDonneePresenteOuAbsente:
             "badge-ready-now employé dans le gabarit mais absent du CSS : il "
             "s'afficherait sans aucun style"
         )
+
+
+# ---------------------------------------------------------------------------
+# 7. Persistance du filtre (le reset au bout de ~5s, signalé par l'utilisateur)
+# ---------------------------------------------------------------------------
+#
+# CAUSE MESURÉE : le conteneur de filtres ne remplace QUE `#field-catalog-rows`
+# (`hx-target` + `hx-swap="innerHTML"`) et ne pousse JAMAIS l'URL. La page
+# reste sur `/field-catalog` sans paramètre : tout nouveau rendu de la page
+# (retour arrière, restauration d'onglet, rechargement) retombe sur l'état
+# NON filtré, puisque l'état du filtre ne vit que dans le DOM.
+#
+# Le correctif : `hx-push-url` sur les boutons, avec une URL EXPLICITE
+# (`/field-catalog?...`, jamais `/field-catalog/rows?...` qui rendrait un
+# fragment nu si collé dans la barre d'adresse) + le routeur `/field-catalog`
+# qui lit `usage`/`origin`/`category` de la query string et rend la page DÉJÀ
+# filtrée, bouton actif compris.
+
+
+class TestPersistanceDuFiltre:
+    def test_la_page_complete_est_deja_filtree_depuis_la_query_string(
+        self, dashboards_dir: Path
+    ) -> None:
+        """LE test qui compte : `/field-catalog?usage=unused` rend la page
+        COMPLÈTE (pas un fragment), déjà filtrée — pas juste le paramètre
+        accepté, le NOMBRE de lignes doit refléter le filtre."""
+        app = _build_app(FakeClickHouseClient(), dashboards_dir)
+        client = TestClient(app)
+
+        tout = client.get("/field-catalog")
+        filtre = client.get("/field-catalog", params={"usage": "unused"})
+
+        assert tout.status_code == 200
+        assert filtre.status_code == 200
+        # Page COMPLÈTE : le fragment n'a pas de <h1>, la page si.
+        assert "<h1>" in filtre.text
+        # DISCRIMINANT : le rendu filtré contient strictement moins de lignes.
+        assert filtre.text.count("<tr") < tout.text.count("<tr")
+
+    def test_le_bouton_actif_reflete_le_filtre_de_la_query_string(
+        self, dashboards_dir: Path
+    ) -> None:
+        """Après rechargement sur `?usage=unused`, le bouton « Inexploités »
+        doit porter la classe active — sinon l'exploitant croit que rien
+        n'est filtré alors que la liste, elle, l'est déjà."""
+        app = _build_app(FakeClickHouseClient(), dashboards_dir)
+
+        corps = TestClient(app).get("/field-catalog", params={"usage": "unused"}).text
+
+        bouton = re.search(
+            r'<a class="btn[^"]*"\s+hx-get="[^"]*usage=unused[^"]*"[^>]*>Inexploités</a>',
+            corps,
+        )
+        assert bouton, "bouton « Inexploités » introuvable dans le rendu filtré"
+        assert "primary" in bouton.group(0), (
+            "le bouton « Inexploités » ne porte pas la classe active alors que "
+            "le filtre `usage=unused` est bien appliqué à l'écran — l'exploitant "
+            "verrait une liste filtrée sans aucun bouton actif"
+        )
+
+    def test_les_boutons_de_filtre_poussent_l_url_de_la_page_complete(self) -> None:
+        """`hx-push-url` doit pointer vers `/field-catalog?...`, JAMAIS vers
+        `/field-catalog/rows?...` : une URL de fragment collée dans la barre
+        d'adresse rendrait un tableau nu, sans mise en page ni CSS."""
+        template = (
+            Path(__file__).resolve().parent.parent
+            / "app"
+            / "templates"
+            / "field_catalog.html"
+        ).read_text(encoding="utf-8")
+
+        boutons_filtre = re.findall(r"<a class=\"btn[^\"]*\"[^>]*>[^<]*</a>", template)
+        boutons_filtre = [b for b in boutons_filtre if "hx-get" in b and "/rows" in b]
+        assert boutons_filtre, "aucun bouton de filtre hx-get trouvé"
+
+        for bouton in boutons_filtre:
+            assert 'hx-push-url="' in bouton, (
+                f"bouton sans hx-push-url, le filtre ne survivra pas à un "
+                f"nouveau rendu de la page : {bouton!r}"
+            )
+            match = re.search(r'hx-push-url="([^"]*)"', bouton)
+            assert match, bouton
+            url_poussee = match.group(1)
+            assert "/rows" not in url_poussee, (
+                "l'URL poussée pointe vers le fragment de lignes "
+                f"({url_poussee!r}) : rechargée telle quelle, elle rendrait un "
+                "tableau nu sans mise en page"
+            )
+            # Comparaison sur le SOURCE Jinja (pas rendu) : la valeur littérale
+            # passée à `prefixed` doit être la page complète, pas le fragment.
+            assert "'/field-catalog'" in url_poussee, (
+                f"l'URL poussée ne cible pas la page complète : {url_poussee!r}"
+            )
+
+    def test_le_fragment_de_lignes_reste_un_fragment_pour_htmx(
+        self, dashboards_dir: Path
+    ) -> None:
+        """`/field-catalog/rows` doit continuer à rendre le fragment SEUL pour
+        une requête HTMX (header `HX-Request`) : c'est ce que `hx-target`
+        consomme au clic. Ne pas basculer cette route sur la page complète."""
+        app = _build_app(FakeClickHouseClient(), dashboards_dir)
+
+        corps = TestClient(app).get(
+            "/field-catalog/rows",
+            params={"usage": "unused"},
+            headers={"HX-Request": "true"},
+        ).text
+
+        assert "<h1>" not in corps
+        assert "<table" in corps or "notice" in corps
+
+    def test_un_usage_hors_allowlist_sur_la_page_complete_est_refuse(
+        self, dashboards_dir: Path
+    ) -> None:
+        """Même garde d'allowlist sur `/field-catalog` que sur `/rows` : une
+        valeur hors énumération ne doit jamais être interpolée."""
+        app = _build_app(FakeClickHouseClient(), dashboards_dir)
+
+        reponse = TestClient(app).get(
+            "/field-catalog", params={"usage": "n-importe-quoi"}
+        )
+
+        assert reponse.status_code == 400
