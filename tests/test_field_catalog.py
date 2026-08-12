@@ -2252,3 +2252,53 @@ class TestGlisserDeposerDesFiltres:
         )
         assert bouton_inexploites
         assert "hx-get=" in bouton_inexploites.group(0)
+
+
+class TestLeDepotPousseBienLUrl:
+    """DÉFAUT MESURÉ AU NAVIGATEUR (2026-08-12), invisible à toute suite Python.
+
+    Le dépôt d'un filtre mettait bien le tableau à jour, mais la barre
+    d'adresse restait sur le filtre PRÉCÉDENT : une option `pushUrl` était
+    passée à `htmx.ajax`, or cette option n'existe pas dans son API — ni
+    `pushUrl` ni `pushURL` ne figurent dans `htmx.min.js` 2.0.4. Elle était
+    donc ignorée EN SILENCE.
+
+    Conséquence pour l'exploitant : recharger, partager le lien ou revenir en
+    arrière ramenait l'état d'AVANT le dépôt. C'est exactement le défaut de
+    persistance corrigé plus tôt sur le CLIC, qui survivait sur le GLISSER
+    faute d'avoir exercé ce geste-là au navigateur.
+
+    Ce test verrouille la CONDITION réelle : l'URL est poussée par une API qui
+    existe (`history.pushState`), pas par une clé d'option inventée.
+    """
+
+    _JS = (
+        Path(__file__).resolve().parent.parent
+        / "app"
+        / "static"
+        / "field-catalog-filters.js"
+    )
+
+    def test_le_depot_pousse_l_url_par_une_api_qui_existe(self) -> None:
+        source = self._JS.read_text(encoding="utf-8")
+
+        assert "history.pushState" in source, (
+            "le dépôt doit pousser l'URL via history.pushState : sans cela le "
+            "tableau se met à jour mais la barre d'adresse reste sur le filtre "
+            "précédent, et un rechargement ramène l'état d'avant le dépôt"
+        )
+
+    def test_aucune_option_pushurl_inventee_passee_a_htmx_ajax(self) -> None:
+        """`htmx.ajax` n'accepte AUCUNE option de ce nom : la passer donne
+        l'illusion que l'URL suit, alors qu'elle est ignorée sans erreur."""
+        source = self._JS.read_text(encoding="utf-8")
+
+        appel = re.search(r"htmx\.ajax\([^;]*?\);", source, re.S)
+        assert appel, "l'appel à htmx.ajax est attendu dans ce fichier"
+
+        for cle_inventee in ("pushUrl:", "pushURL:"):
+            assert cle_inventee not in appel.group(0), (
+                f"{cle_inventee} est passé à htmx.ajax alors que cette option "
+                "n'existe pas dans son API (vérifié dans htmx.min.js 2.0.4) : "
+                "elle serait ignorée en silence. Utiliser history.pushState."
+            )

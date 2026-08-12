@@ -142,8 +142,23 @@
       window.htmx.ajax("GET", url, {
         target: target,
         swap: "innerHTML",
-        pushUrl: pushUrl || false,
       });
+      /* L'URL est poussée ICI, pas via une option de `htmx.ajax`.
+       *
+       * DÉFAUT MESURÉ AU NAVIGATEUR (2026-08-12) : une option `pushUrl` était
+       * passée à `htmx.ajax` — elle n'existe pas dans son API (vérifié dans
+       * `htmx.min.js` 2.0.4 : ni `pushUrl` ni `pushURL` n'y figurent). Elle
+       * était donc ignorée EN SILENCE : le tableau se mettait bien à jour, mais
+       * la barre d'adresse restait sur le filtre précédent. Un rechargement, un
+       * partage de lien ou un retour arrière ramenait l'état d'avant le dépôt —
+       * exactement le défaut de persistance corrigé plus tôt sur le CLIC, qui
+       * survivait ici sur le GLISSER faute d'avoir exercé ce geste-là.
+       *
+       * `history.pushState` est l'API du navigateur : elle ne dépend d'aucune
+       * convention interne de htmx et fait ce qu'elle dit. */
+      if (pushUrl && window.history && window.history.pushState) {
+        window.history.pushState({ htmx: true }, "", pushUrl);
+      }
     } else if (pushUrl) {
       /* ROBUSTESSE — htmx pas encore chargé (chargement en cours) : la
        * navigation complète reste un geste fonctionnel, jamais un dépôt
