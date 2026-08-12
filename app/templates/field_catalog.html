@@ -178,12 +178,14 @@
     </div>
   </section>
 
-  <section class="panel">
-    <div class="panel-head"><h2>Les {{ catalog.total_count }} champs</h2></div>
-    <div id="field-catalog-rows">
-      {% include "_field_catalog_rows.html" %}
-    </div>
-  </section>
+  {# La zone swap-able HTMX englobe désormais la BARRE DE FILTRE ACTIF et le
+     TITRE du tableau, pas seulement les lignes : sans ça, un clic de filtre
+     mettrait à jour la liste mais laisserait le titre et la barre affichant
+     l'état PRÉCÉDENT — exactement le défaut « le titre ment » signalé par
+     l'utilisateur. `_field_catalog_rows.html` porte donc les trois. #}
+  <div id="field-catalog-rows">
+    {% include "_field_catalog_rows.html" %}
+  </div>
 
 {% endif %}
 {% endblock %}

@@ -57,7 +57,10 @@ from fastapi.testclient import TestClient
 
 from app.services import field_catalog
 from app.services.field_catalog import (
+    CATEGORY_APPLICATION,
+    CATEGORY_ROUTING,
     ORIGIN_COLLECTOR_ENRICHMENT,
+    ORIGIN_LABELS,
     ORIGIN_NETWORK_EQUIPMENT,
     ORIGIN_PROTOCOL,
     build_catalog,
@@ -1349,3 +1352,415 @@ class TestPersistanceDuFiltre:
         )
 
         assert reponse.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# 8. Barre de filtre actif (demande utilisateur 2026-08-12)
+# ---------------------------------------------------------------------------
+#
+# CAPTURE À L'APPUI : le bouton « Applicatif / ports » est visiblement actif,
+# 3 lignes seulement sont affichées (Proto, SrcPort, DstPort) — et le titre du
+# tableau annonce « Les 62 champs ». Trois défauts distincts :
+#   1. Le titre ment : `catalog.total_count` (le catalogue) au lieu du nombre
+#      RÉELLEMENT affiché (`entries`, la liste filtrée).
+#   2. Aucun récapitulatif du filtre actif : l'exploitant doit deviner l'état
+#      courant en lisant 3 groupes de boutons.
+#   3. Un croisement vide (`usage=unused&category=...`) rend 0 ligne sans dire
+#      lequel des filtres croisés est en cause.
+
+
+class TestLeTitreDitCeQuiEstReellementAffiche:
+    """Le titre du tableau doit refléter `entries` (filtré), jamais
+    `catalog.total_count` (le catalogue entier) — c'est le défaut mesuré en
+    capture : bouton « Applicatif / ports » actif, 3 lignes rendues, titre
+    annonçant quand même « Les 62 champs »."""
+
+    def test_le_titre_reflete_le_nombre_de_lignes_filtrees_categorie(
+        self, dashboards_dir: Path
+    ) -> None:
+        app = _build_app(FakeClickHouseClient(), dashboards_dir)
+
+        reponse = TestClient(app).get(
+            "/field-catalog", params={"category": CATEGORY_ROUTING}
+        )
+        corps = reponse.text
+        nb_lignes = corps.count("<tr class=")
+
+        assert nb_lignes > 0
+        assert nb_lignes < len(_DEFAULT_COLUMNS), (
+            "le filtre categorie doit etre discriminant sur ce jeu de test"
+        )
+        # Le titre du TABLEAU (dans le <h2> qui suit le panel-head après la
+        # barre de filtre actif) doit citer le compte RÉEL affiché — pas
+        # n'importe quel <h2> de la page (il y en a plusieurs : « D'où vient
+        # la donnée », « Filtrer »...).
+        ancre = corps.find('id="field-catalog-active-filters"')
+        assert ancre != -1
+        titre = corps[corps.find("<h2>", ancre) : corps.find("</h2>", ancre) + 5]
+        assert f"{nb_lignes} champ" in titre, (
+            f"le titre du tableau n'annonce pas {nb_lignes} (nombre de "
+            f"lignes reellement rendues) — titre: {titre!r}"
+        )
+
+    def test_le_titre_ne_recite_jamais_le_total_catalogue_sous_filtre(
+        self, dashboards_dir: Path
+    ) -> None:
+        """LE test qui aurait mordu sur `titre 62 | lignes 3` : sous un filtre
+        strictement discriminant, le total catalogue ne doit PLUS apparaître
+        seul comme le compte affiché dans le titre."""
+        client = FakeClickHouseClient()
+        catalog_complet = build_catalog(client, dashboards_dir)
+        app = _build_app(FakeClickHouseClient(), dashboards_dir)
+
+        corps = TestClient(app).get(
+            "/field-catalog", params={"category": CATEGORY_ROUTING}
+        ).text
+        nb_lignes = corps.count("<tr class=")
+
+        assert nb_lignes != catalog_complet.total_count, (
+            "jeu de test non discriminant : le filtre doit rendre moins de "
+            "lignes que le catalogue complet pour que ce test soit probant"
+        )
+        assert nb_lignes > 0, (
+            "jeu de test non probant : le filtre doit rendre au moins une "
+            "ligne (categorie presente dans _DEFAULT_COLUMNS)"
+        )
+        ancre = corps.find('id="field-catalog-active-filters"')
+        assert ancre != -1
+        titre = corps[corps.find("<h2>", ancre) : corps.find("</h2>", ancre) + 5]
+        assert str(catalog_complet.total_count) not in titre or (
+            f"{nb_lignes} champ" in titre
+        ), (
+            f"le titre affiche encore le total catalogue "
+            f"({catalog_complet.total_count}) sans mentionner le compte "
+            f"filtre reel ({nb_lignes}) : {titre!r}"
+        )
+
+    def test_sans_filtre_le_titre_reste_coherent(self, dashboards_dir: Path) -> None:
+        """Sans filtre, filtré == catalogue : le titre doit rester correct
+        (comportement déjà correct par hasard, ne pas le casser)."""
+        client = FakeClickHouseClient()
+        catalog = build_catalog(client, dashboards_dir)
+        app = _build_app(FakeClickHouseClient(), dashboards_dir)
+
+        corps = TestClient(app).get("/field-catalog").text
+
+        assert f"{catalog.total_count} champ" in corps
+
+
+class TestBarreDeFiltreActif:
+    """« mettre une barre qui fixe le filtre en cours pour faciliter la
+    gestion » — demande utilisateur mot pour mot. La barre doit : nommer
+    chaque filtre actif en clair, le dire aussi quand il n'y en a aucun,
+    permettre de retirer un filtre d'un clic (jeton + croix), et rester
+    visible au défilement (sticky)."""
+
+    def test_aucun_filtre_actif_est_dit_explicitement(self, dashboards_dir: Path) -> None:
+        app = _build_app(FakeClickHouseClient(), dashboards_dir)
+
+        corps = TestClient(app).get("/field-catalog").text
+
+        assert "field-catalog-active-filters" in corps
+        assert "Aucun filtre actif" in corps
+
+    def test_un_filtre_usage_actif_est_nomme_en_clair(self, dashboards_dir: Path) -> None:
+        app = _build_app(FakeClickHouseClient(), dashboards_dir)
+
+        corps = TestClient(app).get(
+            "/field-catalog", params={"usage": "unused"}
+        ).text
+
+        barre = corps[
+            corps.find('id="field-catalog-active-filters"') :
+            corps.find('id="field-catalog-active-filters"') + 2000
+        ]
+        assert "Exploitation" in barre
+        assert "Inexploités" in barre
+        assert "Aucun filtre actif" not in barre
+
+    def test_un_filtre_categorie_avec_espace_et_accent_est_nomme(
+        self, dashboards_dir: Path
+    ) -> None:
+        """Les catégories sont des libellés FR complets : « Applicatif /
+        ports », espace + barre oblique. Doit s'afficher tel quel."""
+        app = _build_app(FakeClickHouseClient(), dashboards_dir)
+
+        corps = TestClient(app).get(
+            "/field-catalog", params={"category": CATEGORY_APPLICATION}
+        ).text
+
+        barre = corps[
+            corps.find('id="field-catalog-active-filters"') :
+            corps.find('id="field-catalog-active-filters"') + 2000
+        ]
+        assert CATEGORY_APPLICATION in barre
+
+    def test_plusieurs_filtres_actifs_sont_tous_nommes(self, dashboards_dir: Path) -> None:
+        app = _build_app(FakeClickHouseClient(), dashboards_dir)
+
+        corps = TestClient(app).get(
+            "/field-catalog",
+            params={"usage": "unused", "origin": ORIGIN_NETWORK_EQUIPMENT},
+        ).text
+
+        barre = corps[
+            corps.find('id="field-catalog-active-filters"') :
+            corps.find('id="field-catalog-active-filters"') + 2000
+        ]
+        assert "Inexploités" in barre
+        assert ORIGIN_LABELS[ORIGIN_NETWORK_EQUIPMENT] in barre
+
+    def test_le_compte_affiche_sur_total_est_dans_la_barre(
+        self, dashboards_dir: Path
+    ) -> None:
+        """« 3 champs affichés sur 62 » : le compteur qui corrige le titre
+        menteur doit aussi être lisible depuis la barre elle-même."""
+        client = FakeClickHouseClient()
+        catalog = build_catalog(client, dashboards_dir)
+        app = _build_app(FakeClickHouseClient(), dashboards_dir)
+
+        corps = TestClient(app).get(
+            "/field-catalog", params={"category": CATEGORY_APPLICATION}
+        ).text
+        nb_lignes = corps.count("<tr class=")
+
+        barre = corps[
+            corps.find('id="field-catalog-active-filters"') :
+            corps.find('id="field-catalog-active-filters"') + 2000
+        ]
+        assert str(nb_lignes) in barre
+        assert str(catalog.total_count) in barre
+
+    def test_chaque_jeton_de_filtre_est_un_lien_retirant_ce_seul_filtre(
+        self, dashboards_dir: Path
+    ) -> None:
+        """Retirer le jeton « Exploitation » doit produire l'URL SANS `usage`
+        mais en conservant `origin` — geste à la souris, jamais l'URL tapée."""
+        app = _build_app(FakeClickHouseClient(), dashboards_dir)
+
+        corps = TestClient(app).get(
+            "/field-catalog",
+            params={"usage": "unused", "origin": ORIGIN_NETWORK_EQUIPMENT},
+        ).text
+
+        barre = corps[
+            corps.find('id="field-catalog-active-filters"') :
+            corps.find('id="field-catalog-active-filters"') + 3000
+        ]
+        liens_retrait = re.findall(r'href="([^"]*field-catalog\?[^"]*)"', barre)
+        assert liens_retrait, "aucun lien de retrait trouve dans la barre"
+
+        # Un des liens doit retirer `usage` en gardant `origin`.
+        cible_usage = [
+            href for href in liens_retrait
+            if "usage=all" in href and f"origin={ORIGIN_NETWORK_EQUIPMENT}" in href
+        ]
+        assert cible_usage, (
+            f"aucun lien ne retire usage tout en gardant origin — liens "
+            f"trouves: {liens_retrait!r}"
+        )
+
+        # Un des liens doit retirer `origin` en gardant `usage=unused`.
+        cible_origin = [
+            href for href in liens_retrait
+            if "usage=unused" in href and "origin=" in href
+            and f"origin={ORIGIN_NETWORK_EQUIPMENT}" not in href
+        ]
+        assert cible_origin, (
+            f"aucun lien ne retire origin tout en gardant usage=unused — "
+            f"liens trouves: {liens_retrait!r}"
+        )
+
+    def test_le_bouton_tout_reinitialiser_efface_tous_les_filtres(
+        self, dashboards_dir: Path
+    ) -> None:
+        app = _build_app(FakeClickHouseClient(), dashboards_dir)
+
+        corps = TestClient(app).get(
+            "/field-catalog",
+            params={
+                "usage": "unused",
+                "origin": ORIGIN_NETWORK_EQUIPMENT,
+                "category": CATEGORY_ROUTING,
+            },
+        ).text
+
+        barre = corps[
+            corps.find('id="field-catalog-active-filters"') :
+            corps.find('id="field-catalog-active-filters"') + 3000
+        ]
+        assert "réinitialiser" in barre.lower() or "Réinitialiser" in barre
+
+        reset = re.search(
+            r'href="([^"]*field-catalog\?usage=all&(?:amp;)?origin=&(?:amp;)?'
+            r'category=[^"]*)"',
+            barre,
+        )
+        assert reset, f"pas de lien de reinitialisation complet trouve dans {barre!r}"
+
+    def test_les_jetons_sont_des_liens_hx_get_avec_push_url_page_complete(
+        self, dashboards_dir: Path
+    ) -> None:
+        """Même contrat que les boutons de filtre existants : `<a href>`
+        fonctionnel sans JS, `hx-get` vers `/rows`, `hx-push-url` vers la page
+        complète — jamais celle du fragment."""
+        app = _build_app(FakeClickHouseClient(), dashboards_dir)
+
+        corps = TestClient(app).get(
+            "/field-catalog", params={"usage": "unused"}
+        ).text
+
+        barre = corps[
+            corps.find('id="field-catalog-active-filters"') :
+            corps.find('id="field-catalog-active-filters"') + 3000
+        ]
+        # Un jeton = un <a>...</a> dont le contenu (potentiellement structuré
+        # en <span>) porte la croix de retrait.
+        jetons = re.findall(r"<a\b[^>]*>(?:(?!</a>).)*×(?:(?!</a>).)*</a>", barre, re.S)
+        assert jetons, f"aucun jeton retirable (avec x) trouve dans {barre!r}"
+        for jeton in jetons:
+            assert "hx-get=" in jeton
+            assert '/field-catalog/rows' in jeton
+            assert 'hx-push-url="' in jeton
+            match = re.search(r'hx-push-url="([^"]*)"', jeton)
+            assert match
+            assert "/rows" not in match.group(1)
+
+    def test_la_barre_porte_hx_select_unset(self, dashboards_dir: Path) -> None:
+        """Même piège que les autres conteneurs d'action de ce projet :
+        `hx-select` hérité insérerait un fragment vide en silence."""
+        app = _build_app(FakeClickHouseClient(), dashboards_dir)
+
+        corps = TestClient(app).get("/field-catalog").text
+        debut = corps.find('id="field-catalog-active-filters"')
+        assert debut != -1
+        bloc = corps[max(0, debut - 300) : debut]
+
+        assert 'hx-select="unset"' in bloc or 'hx-select="unset"' in corps[debut:debut + 400]
+
+    def test_la_barre_est_positionnee_sticky_en_css(self) -> None:
+        """« une barre qui FIXE le filtre en cours » : `position: sticky` (pas
+        `fixed`, qui casserait la mise en page dans le flux du panneau)."""
+        css = (
+            Path(__file__).resolve().parent.parent / "app" / "static" / "style.css"
+        ).read_text(encoding="utf-8")
+
+        bloc = re.search(
+            r"\.field-catalog-active-filters\s*\{([^}]*)\}", css
+        )
+        assert bloc, "aucune regle CSS .field-catalog-active-filters trouvee"
+        assert "sticky" in bloc.group(1)
+        assert "top:" in bloc.group(1)
+
+    def test_la_barre_est_dans_le_fragment_swap_able(self) -> None:
+        """La barre doit vivre DANS `#field-catalog-rows` (le fragment
+        HTMX swap-able), pas dans `field_catalog.html` en dehors de cette
+        zone : sinon un clic de filtre remplacerait les lignes sans jamais
+        mettre à jour la barre, qui continuerait d'afficher l'état PRÉCÉDENT.
+        """
+        rows_fragment = (
+            Path(__file__).resolve().parent.parent
+            / "app"
+            / "templates"
+            / "_field_catalog_rows.html"
+        ).read_text(encoding="utf-8")
+        page = (
+            Path(__file__).resolve().parent.parent
+            / "app"
+            / "templates"
+            / "field_catalog.html"
+        ).read_text(encoding="utf-8")
+
+        assert "field-catalog-active-filters" in rows_fragment
+        # La zone swap doit englober le fragment entier (id sur le <div>
+        # parent de l'`{% include %}`), pas seulement un sous-bloc statique.
+        assert 'id="field-catalog-rows"' in page
+        include_pos = page.find("{% include")
+        div_pos = page.rfind('id="field-catalog-rows"', 0, include_pos)
+        assert div_pos != -1, (
+            "le div #field-catalog-rows doit envelopper l'include du "
+            "fragment pour que la barre soit remplacee avec les lignes"
+        )
+
+
+class TestCroisementDeFiltresVide:
+    """Défaut 3 : `?usage=unused&category=X` qui ne rend rien doit NOMMER les
+    filtres en cause, pas afficher un message générique indiscernable d'une
+    panne — règle zéro silencieux appliquée à l'UI."""
+
+    @staticmethod
+    def _client_avec_champs_applicatifs() -> FakeClickHouseClient:
+        """`_DEFAULT_COLUMNS` ne porte aucun champ `Applicatif / ports` : on
+        ajoute Proto/SrcPort/DstPort pour pouvoir vider ce croisement
+        précisément (et pas un simple filtre catégorie déjà vide seul)."""
+        return FakeClickHouseClient(
+            columns=[
+                *_DEFAULT_COLUMNS,
+                ("Proto", "UInt8"),
+                ("SrcPort", "UInt16"),
+                ("DstPort", "UInt16"),
+            ]
+        )
+
+    @staticmethod
+    def _dossier_tout_exploite(tmp_path: Path) -> Path:
+        """Dashboard qui exploite TOUS les champs `Applicatif / ports`
+        ajoutés ci-dessus, pour forcer un croisement
+        usage=unused × category=Applicatif vide."""
+        directory = tmp_path / "d"
+        directory.mkdir()
+        _write_dashboard(
+            directory,
+            "00-app.json",
+            "Dashboard applicatif complet",
+            ["SELECT Proto, SrcPort, DstPort FROM flows"],
+        )
+        return directory
+
+    def test_le_croisement_vide_nomme_les_deux_filtres_en_cause(
+        self, tmp_path: Path
+    ) -> None:
+        directory = self._dossier_tout_exploite(tmp_path)
+        app = _build_app(self._client_avec_champs_applicatifs(), directory)
+
+        reponse = TestClient(app).get(
+            "/field-catalog",
+            params={"usage": "unused", "category": CATEGORY_APPLICATION},
+        )
+        corps = reponse.text.lower()
+
+        assert "aucun champ" in corps
+        assert "exploitation" in corps or "inexploités" in corps.lower() or (
+            "inexploité" in corps
+        )
+        assert "catégorie" in corps or "categorie" in corps
+        assert "applicatif" in corps
+
+    def test_le_message_de_croisement_vide_propose_de_relacher(
+        self, tmp_path: Path
+    ) -> None:
+        directory = self._dossier_tout_exploite(tmp_path)
+        app = _build_app(self._client_avec_champs_applicatifs(), directory)
+
+        corps = TestClient(app).get(
+            "/field-catalog",
+            params={"usage": "unused", "category": CATEGORY_APPLICATION},
+        ).text.lower()
+
+        assert "retirer" in corps or "relâcher" in corps or "relacher" in corps
+
+    def test_un_seul_filtre_vide_garde_un_message_simple_pas_de_croisement(
+        self, dashboards_dir: Path
+    ) -> None:
+        """Un SEUL filtre actif qui rend 0 ligne ne doit pas parler de
+        « croisement » — ce vocabulaire est réservé à 2+ filtres actifs."""
+        app = _build_app(FakeClickHouseClient(), dashboards_dir)
+
+        # `_DEFAULT_COLUMNS` ne porte aucun champ « Applicatif / ports » :
+        # un SEUL filtre catégorie suffit ici à vider le résultat.
+        corps = TestClient(app).get(
+            "/field-catalog", params={"category": CATEGORY_APPLICATION}
+        ).text.lower()
+
+        assert "aucun champ" in corps
+        assert "croisement" not in corps

@@ -2351,3 +2351,117 @@ label { color: var(--text-dim); font-size: 12.5px; }
 }
 .field-catalog-table tr.field-prepared td:first-child { box-shadow: inset 3px 0 0 var(--info); }
 .stat-value.info { color: var(--info); }
+
+/* ---------- Barre de filtre actif (/field-catalog) ---------- */
+/* Demande utilisateur mot pour mot : « mettre une barre qui fixe le filtre
+   en cours pour faciliter la gestion ». `position: sticky`, PAS `fixed` :
+   `fixed` sortirait la barre du flux du `.panel` et casserait sa largeur en
+   écran étroit (piège inverse de celui déjà mesuré sur `.bulk-actions`, où
+   c'est `sticky` qui aurait échoué à cause d'un ANCÊTRE `overflow: auto` —
+   absent ici : `.content` n'a aucun `overflow`, donc `sticky` s'ancre bien à
+   la fenêtre comme `.topbar`).
+   `top: 57px` = hauteur du bandeau topbar (`min-height: 56px` + 1px de
+   `border-bottom`) : la barre s'empile SOUS le topbar sticky sans jamais le
+   chevaucher ni laisser d'espace vide entre les deux au défilement. */
+.field-catalog-active-filters {
+  position: sticky;
+  top: 57px;
+  z-index: 8;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 35%);
+}
+
+.field-catalog-active-filters__label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.field-catalog-active-filters__hint {
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.field-catalog-active-filters__count {
+  margin-left: auto;
+  font-size: 13px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.field-catalog-active-filters__tokens {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+}
+
+/* Jeton = lien fonctionnel (pas un bouton JS) : la croix retire CE SEUL
+   filtre au clic, en conservant les deux autres — geste « à la souris »
+   imposé par le CLAUDE.md du projet, jamais une URL tapée à la main. */
+.filter-token {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px 4px 10px;
+  background: var(--accent-dim);
+  color: var(--accent);
+  border: 1px solid rgba(45,212,191,0.35);
+  border-radius: 999px;
+  font-size: 12.5px;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background 0.12s, border-color 0.12s;
+}
+.filter-token:hover {
+  background: rgba(45,212,191,0.22);
+  border-color: var(--accent);
+}
+.filter-token__group {
+  color: var(--text-dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.filter-token__value { font-weight: 600; }
+.filter-token__remove {
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0.75;
+}
+.filter-token:hover .filter-token__remove { opacity: 1; }
+
+/* « Tout réinitialiser » : même famille visuelle que les jetons mais sans
+   accent de couleur, pour rester secondaire face aux jetons nommés. */
+.filter-token--reset {
+  background: transparent;
+  color: var(--text-dim);
+  border-style: dashed;
+  border-color: var(--border);
+}
+.filter-token--reset:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+
+/* Écran étroit : le compte passe sous les jetons plutôt que de forcer un
+   défilement horizontal de la barre (même esprit que le `flex-wrap` déjà
+   appliqué à `.topbar` et aux `.filter-group`). */
+@media (max-width: 720px) {
+  .field-catalog-active-filters__count { margin-left: 0; }
+}

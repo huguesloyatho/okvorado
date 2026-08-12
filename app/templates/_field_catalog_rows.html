@@ -1,87 +1,165 @@
-{# Fragment HTMX : le tableau des champs SEUL.
+{# Fragment HTMX : barre de filtre actif + titre + tableau des champs.
 
-   Séparé de la page pour que les filtres (à la souris) ne rechargent que les
-   lignes. Le `<tbody>` porte les `<tr>` que les tests comptent pour vérifier
+   Séparé de la page pour que les filtres (à la souris) ne rechargent que ce
+   bloc. Le `<tbody>` porte les `<tr>` que les tests comptent pour vérifier
    qu'un filtre est réellement DISCRIMINANT — un filtre qui rend autant de
-   lignes que « tout » est un défaut mesuré sur ce projet. #}
+   lignes que « tout » est un défaut mesuré sur ce projet.
+
+   LA BARRE ET LE TITRE VIVENT ICI, DANS LE FRAGMENT SWAP-ABLE (pas dans
+   field_catalog.html) : un clic de filtre remplace `#field-catalog-rows` en
+   entier, donc titre et barre doivent être DANS cette zone pour se mettre à
+   jour avec les lignes — sinon ils continueraient d'afficher l'état
+   PRÉCÉDENT après le clic, exactement le défaut « le titre ment » signalé
+   par l'utilisateur (capture : bouton « Applicatif / ports » actif, 3 lignes
+   rendues, titre annonçant quand même « Les 62 champs »). #}
 
 {% if not catalog.schema_available %}
   <p class="notice notice-warn">
     <strong>Catalogue indisponible</strong>
     {{ catalog.error_message }}
   </p>
-{% elif not entries %}
-  <p class="notice notice-info">
-    <strong>Aucun champ ne correspond à ce filtre</strong>
-    Le catalogue contient {{ catalog.total_count }} champs : retirez un filtre
-    pour les revoir. Ceci est bien un résultat de filtrage, pas une absence de
-    mesure.
-  </p>
 {% else %}
-<table class="field-catalog-table">
-  <thead>
-    <tr>
-      <th>Champ</th>
-      <th>Type</th>
-      <th>Origine de la donnée</th>
-      <th class="num">Rempli</th>
-      <th>À quoi ça sert</th>
-      <th>Statut</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for entry in entries %}
-    <tr class="{% if entry.used %}field-used{% elif entry.prepared %}field-prepared{% else %}field-unused{% endif %}">
-      <td>
-        <span class="mono field-name">{{ entry.name }}</span>
-        <span class="field-label">{{ entry.label }}</span>
-      </td>
-      <td class="mono field-type">{{ entry.clickhouse_type }}</td>
-      <td>
-        <span class="badge badge-origin-{{ entry.origin }}">{{ entry.origin_label }}</span>
-      </td>
-      {# Le taux ILLUSTRE l'origine, il ne la détermine pas. « indisponible »
-         quand la mesure a échoué — jamais 0 %, qui se lirait « champ vide ». #}
-      <td class="num field-fill {{ 'field-fill-unknown' if entry.fill_rate is none else '' }}">
-        {{ entry.fill_rate_display }}
-      </td>
-      <td class="field-usage">
-        {{ entry.potential_usage }}
-        {% if entry.required_action %}
-          <span class="field-action">{{ entry.required_action }}</span>
-        {% endif %}
-      </td>
-      <td>
-        {% if entry.used %}
-          <span class="badge badge-used">Exploité</span>
-          <span class="field-dashboards">{{ entry.dashboards | join(', ') }}</span>
-        {% elif entry.prepared %}
-          {# Ni exploité, ni à développer : le dashboard EXISTE déjà. Reste à
-             savoir s'il AFFICHERA quelque chose — et c'est le taux de
-             remplissage RÉEL qui tranche, pas la seule existence du fichier.
-             Le compter comme « exploité » ferait chuter le potentiel annoncé
-             sans qu'aucune donnée ne s'affiche.
 
-             DÉFAUT MESURÉ À L'ÉCRAN (2026-08-11) : `SrcNetPrefix` (rempli à
-             100 %), `InIfBoundary` (100 %) et `SrcNetRole` (83 %) affichaient
-             « en attente de la source » alors que leur donnée est DÉJÀ là. En
-             présentation, cela revenait à annoncer « il nous manque un
-             équipement » pour des champs immédiatement exploitables — un
-             argument affaibli par une étiquette fausse.
+  {# BARRE DE FILTRE ACTIF — demande utilisateur : « une barre qui fixe le
+     filtre en cours pour faciliter la gestion ». `position: sticky` (voir
+     style.css) : elle reste visible pendant le défilement des {{ catalog.total_count }}
+     champs, sans jamais masquer le contenu (mesurée sous le bandeau topbar).
 
-             Deux libellés distincts, donc, selon ce que la mesure dit. #}
-          {% if entry.fill_rate is not none and entry.fill_rate > 0 %}
-            <span class="badge badge-ready-now">Dashboard prêt — donnée déjà présente</span>
-          {% else %}
-            <span class="badge badge-prepared">Prêt — en attente de la source</span>
-          {% endif %}
-          <span class="field-dashboards">{{ entry.pending_dashboards | join(', ') }}</span>
+     `hx-select="unset"` : même piège que le conteneur de filtres — un
+     `hx-select` hérité ferait insérer un fragment VIDE en silence. #}
+  <section id="field-catalog-active-filters"
+           class="field-catalog-active-filters"
+           hx-select="unset"
+           hx-target="#field-catalog-rows"
+           hx-swap="innerHTML">
+    {% if active_filters %}
+      <span class="field-catalog-active-filters__label">Filtre actif :</span>
+      <ul class="field-catalog-active-filters__tokens">
+        {% for token in active_filters %}
+        <li>
+          {# Jeton = lien fonctionnel sans JS (même contrat que les boutons de
+             filtre) : retirer CE SEUL filtre, conserver les deux autres.
+             `hx-push-url` cible la PAGE complète, jamais `/rows`. #}
+          <a class="filter-token"
+             hx-get="{{ '/field-catalog/rows' | prefixed }}?usage={{ token.usage }}&origin={{ token.origin }}&category={{ token.category }}"
+             hx-push-url="{{ '/field-catalog' | prefixed }}?usage={{ token.usage }}&origin={{ token.origin }}&category={{ token.category }}"
+             href="{{ '/field-catalog' | prefixed }}?usage={{ token.usage }}&origin={{ token.origin }}&category={{ token.category }}"
+             title="Retirer ce filtre">
+            <span class="filter-token__group">{{ token.group }}</span>
+            <span class="filter-token__value">{{ token.value }}</span>
+            <span class="filter-token__remove" aria-hidden="true">×</span>
+          </a>
+        </li>
+        {% endfor %}
+      </ul>
+      <a class="filter-token filter-token--reset"
+         hx-get="{{ '/field-catalog/rows' | prefixed }}?usage=all&origin=&category="
+         hx-push-url="{{ '/field-catalog' | prefixed }}?usage=all&origin=&category="
+         href="{{ '/field-catalog' | prefixed }}?usage=all&origin=&category=">Tout réinitialiser</a>
+    {% else %}
+      <span class="field-catalog-active-filters__label">Aucun filtre actif</span>
+      <span class="field-catalog-active-filters__hint">— les {{ catalog.total_count }} champs du catalogue sont affichés.</span>
+    {% endif %}
+    {# Compte affiché / total : corrige le titre menteur même si la barre
+       venait à disparaître un jour — répété ici pour rester à côté du
+       recours (jetons, réinitialiser). #}
+    <span class="field-catalog-active-filters__count">
+      {{ filtered_count }} champ{{ 's' if filtered_count != 1 else '' }} affiché{{ 's' if filtered_count != 1 else '' }} sur {{ catalog.total_count }}
+    </span>
+  </section>
+
+  <section class="panel">
+    {# Le titre cite désormais le compte RÉELLEMENT rendu (`filtered_count`),
+       jamais `catalog.total_count` seul — c'est le défaut mesuré en capture :
+       titre « Les 62 champs » alors que 3 lignes seulement s'affichaient. #}
+    <div class="panel-head">
+      <h2>
+        {% if filtered_count == catalog.total_count %}
+          Les {{ catalog.total_count }} champs
         {% else %}
-          <span class="badge badge-unused">Inexploité</span>
+          {{ filtered_count }} champ{{ 's' if filtered_count != 1 else '' }} sur les {{ catalog.total_count }} du catalogue
         {% endif %}
-      </td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+      </h2>
+    </div>
+
+    {% if not entries %}
+      <p class="notice notice-info">
+        <strong>Aucun champ ne correspond à ce filtre</strong>
+        {% if empty_result_reason %}
+          {{ empty_result_reason }}
+        {% else %}
+          Le catalogue contient {{ catalog.total_count }} champs : retirez un
+          filtre pour les revoir.
+        {% endif %}
+        Ceci est bien un résultat de filtrage, pas une absence de mesure.
+      </p>
+    {% else %}
+    <table class="field-catalog-table">
+      <thead>
+        <tr>
+          <th>Champ</th>
+          <th>Type</th>
+          <th>Origine de la donnée</th>
+          <th class="num">Rempli</th>
+          <th>À quoi ça sert</th>
+          <th>Statut</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for entry in entries %}
+        <tr class="{% if entry.used %}field-used{% elif entry.prepared %}field-prepared{% else %}field-unused{% endif %}">
+          <td>
+            <span class="mono field-name">{{ entry.name }}</span>
+            <span class="field-label">{{ entry.label }}</span>
+          </td>
+          <td class="mono field-type">{{ entry.clickhouse_type }}</td>
+          <td>
+            <span class="badge badge-origin-{{ entry.origin }}">{{ entry.origin_label }}</span>
+          </td>
+          {# Le taux ILLUSTRE l'origine, il ne la détermine pas. « indisponible »
+             quand la mesure a échoué — jamais 0 %, qui se lirait « champ vide ». #}
+          <td class="num field-fill {{ 'field-fill-unknown' if entry.fill_rate is none else '' }}">
+            {{ entry.fill_rate_display }}
+          </td>
+          <td class="field-usage">
+            {{ entry.potential_usage }}
+            {% if entry.required_action %}
+              <span class="field-action">{{ entry.required_action }}</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if entry.used %}
+              <span class="badge badge-used">Exploité</span>
+              <span class="field-dashboards">{{ entry.dashboards | join(', ') }}</span>
+            {% elif entry.prepared %}
+              {# Ni exploité, ni à développer : le dashboard EXISTE déjà. Reste à
+                 savoir s'il AFFICHERA quelque chose — et c'est le taux de
+                 remplissage RÉEL qui tranche, pas la seule existence du fichier.
+                 Le compter comme « exploité » ferait chuter le potentiel annoncé
+                 sans qu'aucune donnée ne s'affiche.
+
+                 DÉFAUT MESURÉ À L'ÉCRAN (2026-08-11) : `SrcNetPrefix` (rempli à
+                 100 %), `InIfBoundary` (100 %) et `SrcNetRole` (83 %) affichaient
+                 « en attente de la source » alors que leur donnée est DÉJÀ là. En
+                 présentation, cela revenait à annoncer « il nous manque un
+                 équipement » pour des champs immédiatement exploitables — un
+                 argument affaibli par une étiquette fausse.
+
+                 Deux libellés distincts, donc, selon ce que la mesure dit. #}
+              {% if entry.fill_rate is not none and entry.fill_rate > 0 %}
+                <span class="badge badge-ready-now">Dashboard prêt — donnée déjà présente</span>
+              {% else %}
+                <span class="badge badge-prepared">Prêt — en attente de la source</span>
+              {% endif %}
+              <span class="field-dashboards">{{ entry.pending_dashboards | join(', ') }}</span>
+            {% else %}
+              <span class="badge badge-unused">Inexploité</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </section>
 {% endif %}

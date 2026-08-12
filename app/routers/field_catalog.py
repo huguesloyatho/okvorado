@@ -86,11 +86,94 @@ def _validate_filters(usage: str, origin: str, category: str) -> str:
     return ""
 
 
+_USAGE_LABELS: dict[str, str] = {
+    "used": "Exploités",
+    "unused": "Inexploités",
+}
+"""Libellés FR des jetons de filtre d'exploitation. `all` n'a pas de jeton :
+c'est l'état neutre, pas une restriction à annoncer."""
+
+
+def _active_filter_tokens(
+    usage: str, origin: str, category: str
+) -> list[dict[str, str]]:
+    """Construit les jetons de la barre de filtre actif.
+
+    Chaque jeton porte son libellé (groupe + valeur, en clair) et les
+    paramètres URL à conserver une fois CE filtre retiré — c'est ce qui
+    permet un retrait « jeton par jeton » sans jamais toucher aux deux autres
+    filtres. Les valeurs de catégorie (accents, espaces, `/`) passent telles
+    quelles : c'est Jinja/Starlette qui les urlencode à l'affichage.
+    """
+    tokens: list[dict[str, str]] = []
+    if usage != "all":
+        tokens.append(
+            {
+                "group": "Exploitation",
+                "value": _USAGE_LABELS.get(usage, usage),
+                "usage": "all",
+                "origin": origin,
+                "category": category,
+            }
+        )
+    if origin:
+        tokens.append(
+            {
+                "group": "Origine",
+                "value": ORIGIN_LABELS.get(origin, origin),
+                "usage": usage,
+                "origin": "",
+                "category": category,
+            }
+        )
+    if category:
+        tokens.append(
+            {
+                "group": "Catégorie",
+                "value": category,
+                "usage": usage,
+                "origin": origin,
+                "category": "",
+            }
+        )
+    return tokens
+
+
+def _empty_result_reason(usage: str, origin: str, category: str) -> str:
+    """Message qui NOMME le ou les filtres responsables d'un résultat vide.
+
+    Zéro silencieux appliqué à l'UI : un tableau vide légitime (résultat de
+    filtrage) doit rester distinguable d'une panne, ET dire comment en sortir.
+    Un croisement de PLUSIEURS filtres emploie le mot « croisement » ; un seul
+    filtre actif reste un message simple — le vocabulaire ne doit pas laisser
+    croire à un croisement là où un seul filtre suffit à tout exclure.
+    """
+    parts: list[str] = []
+    if usage != "all":
+        parts.append(f"Exploitation : {_USAGE_LABELS.get(usage, usage)}")
+    if origin:
+        parts.append(f"Origine : {ORIGIN_LABELS.get(origin, origin)}")
+    if category:
+        parts.append(f"Catégorie : {category}")
+
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return f"Le filtre {parts[0]} n'a aucune correspondance."
+    liste = ", ".join(parts[:-1]) + " et " + parts[-1]
+    return (
+        f"Le croisement de {len(parts)} filtres ({liste}) n'a aucune "
+        "correspondance : retirez-en un pour revoir des champs."
+    )
+
+
 def _context(catalog: FieldCatalog, usage: str, origin: str, category: str) -> dict[str, Any]:
     """Contexte commun à la page complète et au fragment de lignes."""
+    entries = catalog.filtered(usage=usage, origin=origin, category=category)
     return {
         "catalog": catalog,
-        "entries": catalog.filtered(usage=usage, origin=origin, category=category),
+        "entries": entries,
+        "filtered_count": len(entries),
         "usage": usage,
         "origin": origin,
         "category": category,
@@ -100,6 +183,8 @@ def _context(catalog: FieldCatalog, usage: str, origin: str, category: str) -> d
         "categories": [
             name for name in CATEGORY_ORDER if any(e.category == name for e in catalog.entries)
         ],
+        "active_filters": _active_filter_tokens(usage, origin, category),
+        "empty_result_reason": _empty_result_reason(usage, origin, category),
         "active_page": "field_catalog",
     }
 
