@@ -20,15 +20,134 @@
   </p>
 {% else %}
 
+  {# FILTRES À LA SOURIS — jamais par URL tapée.
+
+     VIT ICI, DANS LE FRAGMENT SWAP-ABLE (pas dans field_catalog.html) :
+     c'est ce qui permet de CUMULER les filtres. Un clic remplace
+     `#field-catalog-rows` en entier, donc les URL de CES boutons doivent
+     elles-mêmes être recalculées à chaque rendu du fragment — sinon elles
+     resteraient celles du chargement de la page, et un second clic
+     écraserait le premier filtre en silence (défaut mesuré : cliquer
+     « Inexploités » puis une catégorie renvoyait `usage=all` figé).
+
+     ⚠️ `hx-select="unset"` : cet attribut est HÉRITÉ. Sans lui, un conteneur
+     parent porteur d'un `hx-select` ferait insérer un fragment VIDE par ces
+     boutons, en silence. Piège mesuré 3 fois sur ce projet (db_health.html,
+     retention.html, exporters.html).
+
+     GLISSER-DÉPOSER (cadrage utilisateur 2026-08-12, « code le jusqu'au
+     bout ») : chaque bouton (hors Export) porte `draggable="true"` et ses
+     URL DÉJÀ CALCULÉES en attributs `data-drop-url` / `data-drop-push-url`
+     — le script (`field-catalog-filters.js`) les lit telles quelles au
+     dépôt sur la barre de filtre actif, sans jamais reconstruire une URL de
+     son côté (aucune divergence possible avec le contrat `hx-get` du même
+     bouton). Le CLIC reste inchangé : `hx-get`/`hx-push-url`/`href`
+     continuent de fonctionner sans JS, le glisser est un AJOUT. #}
+  <section class="panel field-catalog-filters"
+           hx-select="unset"
+           hx-target="#field-catalog-rows"
+           hx-swap="innerHTML">
+    <div class="panel-head"><h2>Filtrer</h2></div>
+    <p class="hint field-catalog-filters__hint">
+      Cliquez un filtre, ou glissez-le sur la barre ci-dessous pour l'ajouter
+      aux filtres actifs.
+    </p>
+
+    {# `hx-push-url` pointe vers la PAGE COMPLÈTE (`/field-catalog?...`),
+       jamais vers `/field-catalog/rows?...` : htmx pousse ici l'URL EXPLICITE
+       donnée en valeur, pas l'URL du `hx-get`. Une URL de fragment collée
+       dans la barre d'adresse rendrait un tableau nu, sans mise en page ni
+       CSS — c'est ce que ce choix évite. #}
+    <div class="filter-group">
+      <span class="filter-group-label">Exploitation</span>
+      <a class="btn {{ 'primary' if usage == 'all' else '' }}"
+         draggable="true"
+         data-drop-url="{{ '/field-catalog/rows' | prefixed }}?usage=all&origin={{ origin }}&category={{ category }}"
+         data-drop-push-url="{{ '/field-catalog' | prefixed }}?usage=all&origin={{ origin }}&category={{ category }}"
+         hx-get="{{ '/field-catalog/rows' | prefixed }}?usage=all&origin={{ origin }}&category={{ category }}"
+         hx-push-url="{{ '/field-catalog' | prefixed }}?usage=all&origin={{ origin }}&category={{ category }}"
+         href="{{ '/field-catalog' | prefixed }}?usage=all&origin={{ origin }}&category={{ category }}">Tout</a>
+      <a class="btn {{ 'primary' if usage == 'used' else '' }}"
+         draggable="true"
+         data-drop-url="{{ '/field-catalog/rows' | prefixed }}?usage=used&origin={{ origin }}&category={{ category }}"
+         data-drop-push-url="{{ '/field-catalog' | prefixed }}?usage=used&origin={{ origin }}&category={{ category }}"
+         hx-get="{{ '/field-catalog/rows' | prefixed }}?usage=used&origin={{ origin }}&category={{ category }}"
+         hx-push-url="{{ '/field-catalog' | prefixed }}?usage=used&origin={{ origin }}&category={{ category }}"
+         href="{{ '/field-catalog' | prefixed }}?usage=used&origin={{ origin }}&category={{ category }}">Exploités</a>
+      <a class="btn {{ 'primary' if usage == 'unused' else '' }}"
+         draggable="true"
+         data-drop-url="{{ '/field-catalog/rows' | prefixed }}?usage=unused&origin={{ origin }}&category={{ category }}"
+         data-drop-push-url="{{ '/field-catalog' | prefixed }}?usage=unused&origin={{ origin }}&category={{ category }}"
+         hx-get="{{ '/field-catalog/rows' | prefixed }}?usage=unused&origin={{ origin }}&category={{ category }}"
+         hx-push-url="{{ '/field-catalog' | prefixed }}?usage=unused&origin={{ origin }}&category={{ category }}"
+         href="{{ '/field-catalog' | prefixed }}?usage=unused&origin={{ origin }}&category={{ category }}">Inexploités</a>
+    </div>
+
+    <div class="filter-group">
+      <span class="filter-group-label">Origine</span>
+      <a class="btn {{ 'primary' if not origin else '' }}"
+         draggable="true"
+         data-drop-url="{{ '/field-catalog/rows' | prefixed }}?usage={{ usage }}&origin=&category={{ category }}"
+         data-drop-push-url="{{ '/field-catalog' | prefixed }}?usage={{ usage }}&origin=&category={{ category }}"
+         hx-get="{{ '/field-catalog/rows' | prefixed }}?usage={{ usage }}&origin=&category={{ category }}"
+         hx-push-url="{{ '/field-catalog' | prefixed }}?usage={{ usage }}&origin=&category={{ category }}"
+         href="{{ '/field-catalog' | prefixed }}?usage={{ usage }}&origin=&category={{ category }}">Toutes</a>
+      {% for value in origin_order %}
+      <a class="btn {{ 'primary' if origin == value else '' }}"
+         draggable="true"
+         data-drop-url="{{ '/field-catalog/rows' | prefixed }}?usage={{ usage }}&origin={{ value }}&category={{ category }}"
+         data-drop-push-url="{{ '/field-catalog' | prefixed }}?usage={{ usage }}&origin={{ value }}&category={{ category }}"
+         hx-get="{{ '/field-catalog/rows' | prefixed }}?usage={{ usage }}&origin={{ value }}&category={{ category }}"
+         hx-push-url="{{ '/field-catalog' | prefixed }}?usage={{ usage }}&origin={{ value }}&category={{ category }}"
+         href="{{ '/field-catalog' | prefixed }}?usage={{ usage }}&origin={{ value }}&category={{ category }}">{{ origin_labels[value] }}</a>
+      {% endfor %}
+    </div>
+
+    <div class="filter-group">
+      <span class="filter-group-label">Catégorie</span>
+      <a class="btn {{ 'primary' if not category else '' }}"
+         draggable="true"
+         data-drop-url="{{ '/field-catalog/rows' | prefixed }}?usage={{ usage }}&origin={{ origin }}&category="
+         data-drop-push-url="{{ '/field-catalog' | prefixed }}?usage={{ usage }}&origin={{ origin }}&category="
+         hx-get="{{ '/field-catalog/rows' | prefixed }}?usage={{ usage }}&origin={{ origin }}&category="
+         hx-push-url="{{ '/field-catalog' | prefixed }}?usage={{ usage }}&origin={{ origin }}&category="
+         href="{{ '/field-catalog' | prefixed }}?usage={{ usage }}&origin={{ origin }}&category=">Toutes</a>
+      {% for value in categories %}
+      <a class="btn {{ 'primary' if category == value else '' }}"
+         draggable="true"
+         data-drop-url="{{ '/field-catalog/rows' | prefixed }}?usage={{ usage }}&origin={{ origin }}&category={{ value }}"
+         data-drop-push-url="{{ '/field-catalog' | prefixed }}?usage={{ usage }}&origin={{ origin }}&category={{ value }}"
+         hx-get="{{ '/field-catalog/rows' | prefixed }}?usage={{ usage }}&origin={{ origin }}&category={{ value }}"
+         hx-push-url="{{ '/field-catalog' | prefixed }}?usage={{ usage }}&origin={{ origin }}&category={{ value }}"
+         href="{{ '/field-catalog' | prefixed }}?usage={{ usage }}&origin={{ origin }}&category={{ value }}">{{ value }}</a>
+      {% endfor %}
+    </div>
+
+    {# Export demandé explicitement : un fichier à ouvrir dans un tableur et
+       annoter pendant la réunion. Toujours COMPLET, jamais filtré. PAS
+       glissable : ce n'est pas un filtre, le déposer sur la barre n'aurait
+       aucun sens. #}
+    <div class="filter-group">
+      <span class="filter-group-label">Export</span>
+      <a class="btn" href="{{ '/field-catalog/export.csv' | prefixed }}"
+         hx-boost="false" download>Télécharger le catalogue (CSV)</a>
+    </div>
+  </section>
+
   {# BARRE DE FILTRE ACTIF — demande utilisateur : « une barre qui fixe le
      filtre en cours pour faciliter la gestion ». `position: sticky` (voir
      style.css) : elle reste visible pendant le défilement des {{ catalog.total_count }}
      champs, sans jamais masquer le contenu (mesurée sous le bandeau topbar).
 
      `hx-select="unset"` : même piège que le conteneur de filtres — un
-     `hx-select` hérité ferait insérer un fragment VIDE en silence. #}
+     `hx-select` hérité ferait insérer un fragment VIDE en silence.
+
+     `data-filter-dropzone` : marque cette zone comme CIBLE de dépôt pour
+     `field-catalog-filters.js` — déposer un bouton de filtre glissé ici
+     déclenche la même navigation que son clic. #}
   <section id="field-catalog-active-filters"
            class="field-catalog-active-filters"
+           data-filter-dropzone
            hx-select="unset"
            hx-target="#field-catalog-rows"
            hx-swap="innerHTML">

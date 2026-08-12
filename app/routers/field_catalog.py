@@ -198,12 +198,16 @@ def get_field_catalog(
     origin: str = Query(default=""),
     category: str = Query(default=""),
 ) -> Any:
-    """Page complète du catalogue des champs."""
+    """Page complète du catalogue des champs.
+
+    Seul point d'entrée autorisé à MESURER le remplissage (cache froid ou
+    expiré) — cadrage utilisateur 2026-08-12 : le filtrage ne doit jamais le
+    faire, cf. `get_field_catalog_rows`."""
     error = _validate_filters(usage, origin, category)
     if error:
         return JSONResponse(status_code=400, content={"error": error})
 
-    catalog = build_catalog(client, dashboards_dir)
+    catalog = build_catalog(client, dashboards_dir, allow_fill_rate_refresh=True)
     return templates.TemplateResponse(
         request, "field_catalog.html", _context(catalog, usage, origin, category)
     )
@@ -218,12 +222,19 @@ def get_field_catalog_rows(
     origin: str = Query(default=""),
     category: str = Query(default=""),
 ) -> Any:
-    """Fragment HTMX : uniquement le tableau, pour les filtres à la souris."""
+    """Fragment HTMX : uniquement le tableau, pour les filtres à la souris.
+
+    CADRAGE UTILISATEUR (2026-08-12), mot pour mot : « pourquoi tu fais
+    recherche clickhouse au moment du filtre ?????? [...] fait le au
+    changement de la page ou a un autre moment ». Ce chemin ne mesure JAMAIS
+    le remplissage (`allow_fill_rate_refresh=False`) : il sert le cache tel
+    quel, y compris périmé (marqué comme tel), jamais une nouvelle requête
+    ClickHouse — le filtrage porte sur des lignes déjà en mémoire."""
     error = _validate_filters(usage, origin, category)
     if error:
         return JSONResponse(status_code=400, content={"error": error})
 
-    catalog = build_catalog(client, dashboards_dir)
+    catalog = build_catalog(client, dashboards_dir, allow_fill_rate_refresh=False)
     return templates.TemplateResponse(
         request, "_field_catalog_rows.html", _context(catalog, usage, origin, category)
     )

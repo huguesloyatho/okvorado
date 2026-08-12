@@ -108,84 +108,36 @@
     </dl>
   </section>
 
-  {# FILTRES À LA SOURIS — jamais par URL tapée.
+  {# FILTRES À LA SOURIS — désormais rendus DANS `_field_catalog_rows.html`
+     (voir le `<div id="field-catalog-rows">` ci-dessous), pas ici.
 
-     ⚠️ `hx-select="unset"` : cet attribut est HÉRITÉ. Sans lui, un conteneur
-     parent porteur d'un `hx-select` ferait insérer un fragment VIDE par ces
-     boutons, en silence. Piège mesuré 3 fois sur ce projet (db_health.html,
-     retention.html, exporters.html). #}
-  <section class="panel field-catalog-filters"
-           hx-select="unset"
-           hx-target="#field-catalog-rows"
-           hx-swap="innerHTML">
-    <div class="panel-head"><h2>Filtrer</h2></div>
+     CORRECTIF (retour utilisateur 2026-08-12) : « on peut pas en mettre
+     plusieurs » / « le cliquer pour filtrer ne met pas dans le champ filtre
+     actif ». CAUSE MESURÉE : tant que les boutons vivaient ICI, hors de
+     `#field-catalog-rows`, un clic de filtre remplaçait les LIGNES mais ne
+     touchait jamais aux boutons eux-mêmes — leurs URL restaient celles
+     calculées au chargement de la PAGE. Cliquer « Inexploités » puis une
+     catégorie renvoyait donc `usage=all` (figé) et effaçait le premier
+     filtre ; et le bouton cliqué ne devenait jamais visuellement actif.
 
-    {# `hx-push-url` pointe vers la PAGE COMPLÈTE (`/field-catalog?...`),
-       jamais vers `/field-catalog/rows?...` : htmx pousse ici l'URL EXPLICITE
-       donnée en valeur, pas l'URL du `hx-get`. Une URL de fragment collée
-       dans la barre d'adresse rendrait un tableau nu, sans mise en page ni
-       CSS — c'est ce que ce choix évite. #}
-    <div class="filter-group">
-      <span class="filter-group-label">Exploitation</span>
-      <a class="btn {{ 'primary' if usage == 'all' else '' }}"
-         hx-get="{{ '/field-catalog/rows' | prefixed }}?usage=all&origin={{ origin }}&category={{ category }}"
-         hx-push-url="{{ '/field-catalog' | prefixed }}?usage=all&origin={{ origin }}&category={{ category }}"
-         href="{{ '/field-catalog' | prefixed }}?usage=all&origin={{ origin }}&category={{ category }}">Tout</a>
-      <a class="btn {{ 'primary' if usage == 'used' else '' }}"
-         hx-get="{{ '/field-catalog/rows' | prefixed }}?usage=used&origin={{ origin }}&category={{ category }}"
-         hx-push-url="{{ '/field-catalog' | prefixed }}?usage=used&origin={{ origin }}&category={{ category }}"
-         href="{{ '/field-catalog' | prefixed }}?usage=used&origin={{ origin }}&category={{ category }}">Exploités</a>
-      <a class="btn {{ 'primary' if usage == 'unused' else '' }}"
-         hx-get="{{ '/field-catalog/rows' | prefixed }}?usage=unused&origin={{ origin }}&category={{ category }}"
-         hx-push-url="{{ '/field-catalog' | prefixed }}?usage=unused&origin={{ origin }}&category={{ category }}"
-         href="{{ '/field-catalog' | prefixed }}?usage=unused&origin={{ origin }}&category={{ category }}">Inexploités</a>
-    </div>
+     En les faisant vivre dans le fragment swappé, chaque clic régénère les
+     URL de TOUS les boutons avec l'état COURANT (les trois filtres),
+     exactement comme la barre de filtre actif et le titre du tableau, qui
+     avaient déjà dû migrer ici pour la même raison. #}
 
-    <div class="filter-group">
-      <span class="filter-group-label">Origine</span>
-      <a class="btn {{ 'primary' if not origin else '' }}"
-         hx-get="{{ '/field-catalog/rows' | prefixed }}?usage={{ usage }}&origin=&category={{ category }}"
-         hx-push-url="{{ '/field-catalog' | prefixed }}?usage={{ usage }}&origin=&category={{ category }}"
-         href="{{ '/field-catalog' | prefixed }}?usage={{ usage }}&origin=&category={{ category }}">Toutes</a>
-      {% for value in origin_order %}
-      <a class="btn {{ 'primary' if origin == value else '' }}"
-         hx-get="{{ '/field-catalog/rows' | prefixed }}?usage={{ usage }}&origin={{ value }}&category={{ category }}"
-         hx-push-url="{{ '/field-catalog' | prefixed }}?usage={{ usage }}&origin={{ value }}&category={{ category }}"
-         href="{{ '/field-catalog' | prefixed }}?usage={{ usage }}&origin={{ value }}&category={{ category }}">{{ origin_labels[value] }}</a>
-      {% endfor %}
-    </div>
-
-    <div class="filter-group">
-      <span class="filter-group-label">Catégorie</span>
-      <a class="btn {{ 'primary' if not category else '' }}"
-         hx-get="{{ '/field-catalog/rows' | prefixed }}?usage={{ usage }}&origin={{ origin }}&category="
-         hx-push-url="{{ '/field-catalog' | prefixed }}?usage={{ usage }}&origin={{ origin }}&category="
-         href="{{ '/field-catalog' | prefixed }}?usage={{ usage }}&origin={{ origin }}&category=">Toutes</a>
-      {% for value in categories %}
-      <a class="btn {{ 'primary' if category == value else '' }}"
-         hx-get="{{ '/field-catalog/rows' | prefixed }}?usage={{ usage }}&origin={{ origin }}&category={{ value }}"
-         hx-push-url="{{ '/field-catalog' | prefixed }}?usage={{ usage }}&origin={{ origin }}&category={{ value }}"
-         href="{{ '/field-catalog' | prefixed }}?usage={{ usage }}&origin={{ origin }}&category={{ value }}">{{ value }}</a>
-      {% endfor %}
-    </div>
-
-    {# Export demandé explicitement : un fichier à ouvrir dans un tableur et
-       annoter pendant la réunion. Toujours COMPLET, jamais filtré. #}
-    <div class="filter-group">
-      <span class="filter-group-label">Export</span>
-      <a class="btn" href="{{ '/field-catalog/export.csv' | prefixed }}"
-         hx-boost="false" download>Télécharger le catalogue (CSV)</a>
-    </div>
-  </section>
-
-  {# La zone swap-able HTMX englobe désormais la BARRE DE FILTRE ACTIF et le
-     TITRE du tableau, pas seulement les lignes : sans ça, un clic de filtre
-     mettrait à jour la liste mais laisserait le titre et la barre affichant
-     l'état PRÉCÉDENT — exactement le défaut « le titre ment » signalé par
-     l'utilisateur. `_field_catalog_rows.html` porte donc les trois. #}
+  {# La zone swap-able HTMX englobe les FILTRES, la BARRE DE FILTRE ACTIF et
+     le TITRE du tableau — pas seulement les lignes : sans ça, un clic de
+     filtre mettrait à jour la liste mais laisserait les boutons, le titre et
+     la barre affichant l'état PRÉCÉDENT. `_field_catalog_rows.html` porte
+     donc les quatre. #}
   <div id="field-catalog-rows">
     {% include "_field_catalog_rows.html" %}
   </div>
+
+  {# Glisser-déposer des filtres (cadrage utilisateur 2026-08-12) : distinct
+     de field-composer.js (voir en-tête du fichier), même convention de
+     chargement (`defer`, cache-busting par `static_version`). #}
+  <script src="{{ '/static/field-catalog-filters.js?v=' | prefixed }}{{ static_version }}" defer></script>
 
 {% endif %}
 {% endblock %}

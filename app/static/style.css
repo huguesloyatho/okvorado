@@ -2378,6 +2378,21 @@ label { color: var(--text-dim); font-size: 12.5px; }
   border-left: 3px solid var(--accent);
   border-radius: var(--radius);
   box-shadow: 0 4px 16px rgb(0 0 0 / 35%);
+  transition: border-color 0.12s, background 0.12s;
+}
+
+/* Cible de dépôt active (glisser-déposer, field-catalog-filters.js) :
+   surlignage net pendant le survol avec un bouton de filtre glissé. */
+.field-catalog-active-filters.is-drop-target {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+/* Bouton de filtre en cours de glissement : opacité réduite, geste visible
+   sans dupliquer un curseur `grab` (l'affordance cliquable reste `pointer`,
+   cf. `button, .btn`). */
+.field-catalog-filters .btn.is-dragging {
+  opacity: 0.5;
 }
 
 .field-catalog-active-filters__label {
@@ -2411,9 +2426,17 @@ label { color: var(--text-dim); font-size: 12.5px; }
   padding: 0;
 }
 
-/* Jeton = lien fonctionnel (pas un bouton JS) : la croix retire CE SEUL
-   filtre au clic, en conservant les deux autres — geste « à la souris »
-   imposé par le CLAUDE.md du projet, jamais une URL tapée à la main. */
+/* Jeton = lien fonctionnel (pas un bouton JS, et surtout pas un élément
+   déplaçable) : la croix retire CE SEUL filtre au clic, en conservant les
+   deux autres — geste « à la souris » imposé par le CLAUDE.md du projet,
+   jamais une URL tapée à la main.
+
+   AFFORDANCE CORRIGÉE (retour utilisateur 2026-08-12) : « il faut forcer
+   pour glisser déposer un filtre ». Aucun glisser-déposer n'existe ici — la
+   forme arrondie en « pastille » rappelait visuellement les tags DÉPLAÇABLES
+   du composeur de champs (`.field-composer__tag`, `cursor: grab`, écran
+   différent). `cursor: pointer` explicite lève l'ambiguïté : ce jeton se
+   CLIQUE, il ne se saisit pas. */
 .filter-token {
   display: inline-flex;
   align-items: center;
@@ -2426,9 +2449,11 @@ label { color: var(--text-dim); font-size: 12.5px; }
   font-size: 12.5px;
   text-decoration: none;
   white-space: nowrap;
-  transition: background 0.12s, border-color 0.12s;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, box-shadow 0.12s;
 }
 .filter-token:hover {
+  box-shadow: 0 1px 4px rgb(0 0 0 / 20%);
   background: rgba(45,212,191,0.22);
   border-color: var(--accent);
 }

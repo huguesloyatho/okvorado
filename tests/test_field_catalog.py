@@ -163,6 +163,17 @@ def _write_dashboard(directory: Path, name: str, title: str, sqls: list[str]) ->
     (directory / name).write_text(json.dumps(payload), encoding="utf-8")
 
 
+@pytest.fixture(autouse=True)
+def _cache_de_remplissage_isole() -> None:
+    """Le cache de taux de remplissage (`get_cached_fill_rates`) est un état
+    de PROCESSUS, partagé entre tous les tests qui appellent `build_catalog`.
+    Sans ce reset systématique, l'ORDRE d'exécution des tests changerait leur
+    résultat — un test qui mesure `fill_counts={"Bytes": 700}` verrait le
+    cache rempli par le test précédent. Chaque test doit repartir à froid,
+    exactement comme avant l'introduction du cache."""
+    field_catalog.reset_fill_rate_cache()
+
+
 @pytest.fixture
 def dashboards_dir(tmp_path: Path) -> Path:
     """Deux dashboards couvrant les cas de détection qui comptent."""
@@ -1082,8 +1093,12 @@ class TestGardesHtmxEtCsp:
     def test_les_sections_d_action_portent_hx_select_unset(self) -> None:
         """PIÈGE MESURÉ 3 FOIS : `hx-select` est HÉRITÉ. Un conteneur parent qui
         le porte fait insérer un fragment VIDE par les boutons enfants, en
-        silence."""
-        source = self._TEMPLATE.read_text(encoding="utf-8")
+        silence.
+
+        Cherché dans LES DEUX templates : les sections d'action (filtres,
+        barre de filtre actif) vivent désormais dans le fragment swappable,
+        pas dans la page statique — cf. `TestCumulDesFiltres`."""
+        source = self._both
 
         assert 'hx-select="unset"' in source
 
@@ -1279,7 +1294,7 @@ class TestPersistanceDuFiltre:
         corps = TestClient(app).get("/field-catalog", params={"usage": "unused"}).text
 
         bouton = re.search(
-            r'<a class="btn[^"]*"\s+hx-get="[^"]*usage=unused[^"]*"[^>]*>Inexploités</a>',
+            r'<a class="btn[^"]*"[^>]*hx-get="[^"]*usage=unused[^"]*"[^>]*>Inexploités</a>',
             corps,
         )
         assert bouton, "bouton « Inexploités » introuvable dans le rendu filtré"
@@ -1292,12 +1307,16 @@ class TestPersistanceDuFiltre:
     def test_les_boutons_de_filtre_poussent_l_url_de_la_page_complete(self) -> None:
         """`hx-push-url` doit pointer vers `/field-catalog?...`, JAMAIS vers
         `/field-catalog/rows?...` : une URL de fragment collée dans la barre
-        d'adresse rendrait un tableau nu, sans mise en page ni CSS."""
+        d'adresse rendrait un tableau nu, sans mise en page ni CSS.
+
+        Les boutons vivent désormais dans le fragment swappable
+        (`_field_catalog_rows.html`) — cf. `TestCumulDesFiltres` — mais le
+        contrat `hx-push-url` reste identique, seul l'emplacement a changé."""
         template = (
             Path(__file__).resolve().parent.parent
             / "app"
             / "templates"
-            / "field_catalog.html"
+            / "_field_catalog_rows.html"
         ).read_text(encoding="utf-8")
 
         boutons_filtre = re.findall(r"<a class=\"btn[^\"]*\"[^>]*>[^<]*</a>", template)
@@ -1764,3 +1783,472 @@ class TestCroisementDeFiltresVide:
 
         assert "aucun champ" in corps
         assert "croisement" not in corps
+
+
+# ---------------------------------------------------------------------------
+# 9. Performance du filtrage — cache des taux de remplissage
+# ---------------------------------------------------------------------------
+#
+# RETOUR UTILISATEUR (2026-08-12), mot pour mot : « c'est très poussif au
+# fonctionnement [...] ca rame alors qu'on filtre 62 champs ».
+#
+# CAUSE MESURÉE : `fetch_fill_rates()` balaie 24 h de flux (~1870 ms) à CHAQUE
+# clic de filtre, alors que filtrer porte sur 62 lignes déjà en mémoire. Le
+# filtrage ne doit plus jamais solliciter cette mesure coûteuse — un double de
+# test qui COMPTE les appels au client ClickHouse le prouve mieux qu'un
+# chronomètre (un chrono peut rester vert sur une machine rapide).
+
+
+class TestPerformanceDuFiltrage:
+    def test_le_chemin_de_filtre_ne_declenche_jamais_countif_meme_a_froid(
+        self, dashboards_dir: Path
+    ) -> None:
+        """CADRAGE UTILISATEUR (2026-08-12), mot pour mot : « pourquoi tu fais
+        recherche clickhouse au moment du filtre ?????? [...] fait le au
+        changement de la page ou a un autre moment ». Contrat STRICT : le
+        chemin de filtre (`/field-catalog/rows`) ne mesure JAMAIS le
+        remplissage, cache froid ou pas — la mesure est le ressort de la PAGE
+        complete, jamais du filtrage."""
+        field_catalog.reset_fill_rate_cache()
+        client = FakeClickHouseClient()
+        app = _build_app(client, dashboards_dir)
+        http = TestClient(app)
+
+        http.get("/field-catalog/rows", params={"usage": "unused"})
+        http.get("/field-catalog/rows", params={"category": CATEGORY_APPLICATION})
+
+        appels = [sql for sql, _ in client.queries if "countIf" in sql]
+        assert appels == [], (
+            f"le chemin de filtre a declenche la mesure de remplissage "
+            f"(countIf), meme a cache froid: {appels!r} — c'est le cout de "
+            f"1873 ms mesure en prod, sur un filtrage qui ne porte que sur "
+            f"des lignes deja en memoire"
+        )
+
+    def test_seule_la_page_complete_declenche_la_mesure_a_cache_froid(
+        self, dashboards_dir: Path
+    ) -> None:
+        """Le chargement de `/field-catalog` (page complète) reste le SEUL
+        déclencheur légitime de la mesure, à cache froid."""
+        field_catalog.reset_fill_rate_cache()
+        client = FakeClickHouseClient()
+        app = _build_app(client, dashboards_dir)
+        http = TestClient(app)
+
+        http.get("/field-catalog")
+
+        appels = [sql for sql, _ in client.queries if "countIf" in sql]
+        assert len(appels) == 1
+
+    def test_le_filtrage_seul_nappelle_jamais_countif_a_cache_chaud(
+        self, dashboards_dir: Path
+    ) -> None:
+        """Cache déjà chaud (page déjà chargée une fois) : changer de filtre
+        ne doit plus toucher `countIf` du tout."""
+        field_catalog.reset_fill_rate_cache()
+        client = FakeClickHouseClient()
+        app = _build_app(client, dashboards_dir)
+        http = TestClient(app)
+        http.get("/field-catalog")  # charge la page, rechauffe le cache
+
+        client.queries.clear()
+        http.get("/field-catalog/rows", params={"usage": "unused"})
+
+        appels = [sql for sql, _ in client.queries if "countIf" in sql]
+        assert appels == [], (
+            f"le filtrage a resollicite ClickHouse pour le remplissage: {appels!r}"
+        )
+
+    def test_le_cache_expire_et_se_reactualise_apres_le_ttl(
+        self, dashboards_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """L'écran doit rester JUSTE après un changement réel (dashboard livré,
+        nouvelle colonne) : passé le TTL, une nouvelle mesure doit avoir lieu."""
+        field_catalog.reset_fill_rate_cache()
+        horloge = {"t": 1_000.0}
+        monkeypatch.setattr(field_catalog.time, "monotonic", lambda: horloge["t"])
+
+        client = FakeClickHouseClient(fill_counts={"Bytes": 500}, total_flows=1000)
+        premiere = field_catalog.get_cached_fill_rates(client, ["Bytes"])
+        assert premiere.rates["Bytes"] == pytest.approx(50.0, abs=0.1)
+
+        horloge["t"] += field_catalog.FILL_RATE_CACHE_TTL_SECONDS + 1
+        client2 = FakeClickHouseClient(fill_counts={"Bytes": 900}, total_flows=1000)
+        seconde = field_catalog.get_cached_fill_rates(client2, ["Bytes"])
+
+        assert seconde.rates["Bytes"] == pytest.approx(90.0, abs=0.1)
+        assert len(client2.queries) == 1, "le TTL expire doit redeclencher UNE mesure"
+
+    def test_un_cache_encore_frais_ne_resollicite_pas_clickhouse(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        field_catalog.reset_fill_rate_cache()
+        horloge = {"t": 1_000.0}
+        monkeypatch.setattr(field_catalog.time, "monotonic", lambda: horloge["t"])
+
+        client = FakeClickHouseClient(fill_counts={"Bytes": 500}, total_flows=1000)
+        field_catalog.get_cached_fill_rates(client, ["Bytes"])
+
+        horloge["t"] += field_catalog.FILL_RATE_CACHE_TTL_SECONDS - 1
+        client2 = FakeClickHouseClient(fill_counts={"Bytes": 900}, total_flows=1000)
+        resultat = field_catalog.get_cached_fill_rates(client2, ["Bytes"])
+
+        assert resultat.rates["Bytes"] == pytest.approx(50.0, abs=0.1), (
+            "le cache encore frais doit servir la valeur mesuree precedemment"
+        )
+        assert client2.queries == []
+
+    def test_zero_silencieux_une_premiere_mesure_en_echec_reste_indisponible(
+        self, dashboards_dir: Path
+    ) -> None:
+        """Un cache qui n'a jamais pu se remplir doit continuer a dire
+        « indisponible », jamais servir un 0 % ou une valeur perimee inventee."""
+        field_catalog.reset_fill_rate_cache()
+        client = FakeClickHouseClient()
+        client.raise_on = {"countIf"}
+
+        resultat = field_catalog.get_cached_fill_rates(client, ["Bytes"])
+
+        assert resultat.available is False
+        assert resultat.rates == {}
+
+    def test_zero_silencieux_le_cache_perime_signale_sa_fraicheur(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Si le rafraichissement echoue apres un premier succes, l'ecran doit
+        pouvoir DIRE que la donnee servie est perimee — jamais la faire passer
+        pour fraiche en silence (regle dure du CLAUDE.md)."""
+        field_catalog.reset_fill_rate_cache()
+        horloge = {"t": 1_000.0}
+        monkeypatch.setattr(field_catalog.time, "monotonic", lambda: horloge["t"])
+
+        client = FakeClickHouseClient(fill_counts={"Bytes": 500}, total_flows=1000)
+        field_catalog.get_cached_fill_rates(client, ["Bytes"])
+
+        horloge["t"] += field_catalog.FILL_RATE_CACHE_TTL_SECONDS + 1
+        client_en_panne = FakeClickHouseClient()
+        client_en_panne.raise_on = {"countIf"}
+        resultat = field_catalog.get_cached_fill_rates(client_en_panne, ["Bytes"])
+
+        assert resultat.stale is True
+        assert resultat.rates["Bytes"] == pytest.approx(50.0, abs=0.1), (
+            "la derniere valeur connue reste servie, mais marquee perimee"
+        )
+
+    def test_build_catalog_utilise_le_cache_et_reste_juste(
+        self, dashboards_dir: Path
+    ) -> None:
+        """Non-regression : build_catalog() doit continuer a exposer des taux
+        mesures coherents, via le cache plutot qu'un appel direct."""
+        field_catalog.reset_fill_rate_cache()
+        client = FakeClickHouseClient(fill_counts={"Bytes": 700}, total_flows=1000)
+
+        catalog = build_catalog(client, dashboards_dir)
+        par_nom = {entry.name: entry for entry in catalog.entries}
+
+        assert catalog.fill_rates_available is True
+        assert par_nom["Bytes"].fill_rate == pytest.approx(70.0, abs=0.1)
+
+
+# ---------------------------------------------------------------------------
+# 10. Cumul des filtres — les boutons doivent refleter l'etat courant
+# ---------------------------------------------------------------------------
+#
+# RETOUR UTILISATEUR (2026-08-12), mot pour mot : « le cliquer pour filtrer ne
+# met pas dans le champ filtre actif donc si c'est que t'as implemente ca
+# fonctionne juste pas dans ce cas » — et « on peut pas en mettre plusieurs ».
+#
+# CAUSE MESUREE : les boutons de filtre vivent dans field_catalog.html, HORS de
+# #field-catalog-rows. Le hx-swap ne remplace QUE #field-catalog-rows : les
+# boutons gardent donc les URL calculees au chargement de la PAGE. Cliquer
+# « Inexploites » puis une categorie renvoie usage=all (fige) et efface le
+# premier filtre.
+
+
+class TestCumulDesFiltres:
+    def test_les_boutons_de_filtre_vivent_dans_la_zone_swappee(self) -> None:
+        """Les boutons doivent etre dans le fragment HTMX (celui qui est
+        reellement remplace a chaque clic), pas dans la page statique — sinon
+        ils gardent pour toujours les URL calculees au premier chargement."""
+        rows_fragment = (
+            Path(__file__).resolve().parent.parent
+            / "app"
+            / "templates"
+            / "_field_catalog_rows.html"
+        ).read_text(encoding="utf-8")
+
+        # Cible la classe EXACTE de la section (pas une sous-chaine qui
+        # matcherait aussi field-catalog-filters.js ou __hint) : un test trop
+        # large resterait vert meme si la section elle-meme disparaissait.
+        assert 'class="panel field-catalog-filters"' in rows_fragment, (
+            "les boutons de filtre (Exploitation/Origine/Categorie) doivent "
+            "vivre dans le fragment swappable pour que leurs URL refletent "
+            "TOUJOURS l'etat courant apres un clic"
+        )
+
+    def test_apres_un_premier_filtre_les_boutons_rendus_portent_l_etat_courant(
+        self, dashboards_dir: Path
+    ) -> None:
+        """LE test qui aurait mordu sur le bug signale : sur une reponse DEJA
+        filtree par usage=unused, le bouton de categorie doit proposer une URL
+        qui CONSERVE usage=unused — jamais usage=all fige."""
+        app = _build_app(FakeClickHouseClient(), dashboards_dir)
+
+        corps = TestClient(app).get(
+            "/field-catalog/rows", params={"usage": "unused"}
+        ).text
+
+        boutons_categorie = re.findall(
+            r'hx-get="[^"]*category=[^"&]*[^"]*"', corps
+        )
+        assert boutons_categorie, "aucun bouton de categorie trouve dans le fragment"
+        assert any("usage=unused" in bouton for bouton in boutons_categorie), (
+            "les boutons de categorie, rendus APRES un filtre usage=unused, "
+            "ne portent pas usage=unused dans leur propre URL — cliquer dessus "
+            "effacerait silencieusement le premier filtre"
+        )
+
+    def test_cumuler_usage_puis_categorie_croise_bien_les_deux(
+        self, dashboards_dir: Path
+    ) -> None:
+        """Le geste complet demande par l'utilisateur : Inexploites PUIS
+        Applicatif / ports doit donner le CROISEMENT, pas juste le second
+        filtre applique seul."""
+        client_avec_app = FakeClickHouseClient(
+            columns=[
+                *_DEFAULT_COLUMNS,
+                ("Proto", "UInt8"),
+                ("SrcPort", "UInt16"),
+            ]
+        )
+        app = _build_app(client_avec_app, dashboards_dir)
+        http = TestClient(app)
+
+        seul_categorie = http.get(
+            "/field-catalog/rows", params={"category": CATEGORY_APPLICATION}
+        ).text
+        croise = http.get(
+            "/field-catalog/rows",
+            params={"usage": "unused", "category": CATEGORY_APPLICATION},
+        ).text
+
+        # Bytes est exploite par le dashboard de test, mais Proto/SrcPort ne le
+        # sont pas : le croisement doit exclure tout champ Applicatif exploite,
+        # donc rendre un nombre de lignes <= au filtre categorie seul.
+        assert croise.count("<tr class=") <= seul_categorie.count("<tr class=")
+        assert "SrcPort" in croise or "Proto" in croise
+
+    def test_le_bouton_categorie_rendu_apres_filtre_reste_actif_au_clic_suivant(
+        self, dashboards_dir: Path
+    ) -> None:
+        """Apres avoir applique category=Applicatif, le bouton correspondant
+        doit porter la classe active DANS LE FRAGMENT (pas seulement dans la
+        page complete) — sinon l'utilisateur ne voit jamais son filtre pris en
+        compte, exactement le symptome signale."""
+        client_avec_app = FakeClickHouseClient(
+            columns=[*_DEFAULT_COLUMNS, ("Proto", "UInt8")]
+        )
+        app = _build_app(client_avec_app, dashboards_dir)
+
+        corps = TestClient(app).get(
+            "/field-catalog/rows", params={"category": CATEGORY_APPLICATION}
+        ).text
+
+        bouton = re.search(
+            rf'<a class="btn[^"]*"[^>]*category={re.escape(CATEGORY_APPLICATION)}[^"]*"[^>]*>'
+            rf"{re.escape(CATEGORY_APPLICATION)}</a>",
+            corps,
+        )
+        assert bouton, "bouton de la categorie active introuvable dans le fragment"
+        assert "primary" in bouton.group(0), (
+            "le bouton de categorie cliqué ne porte pas la classe active dans "
+            "le FRAGMENT rendu — c'est exactement « le cliquer pour filtrer ne "
+            "met pas dans le champ filtre actif »"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 11. Affordance — cliquable, pas deplacable
+# ---------------------------------------------------------------------------
+#
+# RETOUR UTILISATEUR (2026-08-12) : « il faut forcer pour glisser deposer un
+# filtre » — AUCUN glisser-deposer n'existe, ce sont des liens. L'apparence
+# doit dire « cliquable », jamais suggerer un geste de drag.
+
+
+class TestAffordanceCliquablePasDeplacable:
+    _CSS = Path(__file__).resolve().parent.parent / "app" / "static" / "style.css"
+
+    def test_aucun_curseur_de_glisser_deposer_sur_les_filtres(self) -> None:
+        """`cursor: grab`/`grabbing` sur .btn ou .filter-token suggererait un
+        geste de drag qui n'existe pas — c'est la confusion signalee."""
+        css = self._CSS.read_text(encoding="utf-8")
+
+        bloc_btn = re.search(r"button, \.btn \{([^}]*)\}", css)
+        assert bloc_btn
+        assert "grab" not in bloc_btn.group(1)
+
+        bloc_token = re.search(r"\.filter-token \{([^}]*)\}", css)
+        assert bloc_token
+        assert "grab" not in bloc_token.group(1)
+
+    def test_les_filtres_declarent_explicitement_un_curseur_cliquable(self) -> None:
+        css = self._CSS.read_text(encoding="utf-8")
+
+        bloc_btn = re.search(r"button, \.btn \{([^}]*)\}", css)
+        assert bloc_btn and "cursor: pointer" in bloc_btn.group(1)
+
+        bloc_token = re.search(r"\.filter-token \{([^}]*)\}", css)
+        assert bloc_token and "cursor: pointer" in bloc_token.group(1)
+
+    def test_aucun_attribut_draggable_sur_les_jetons_de_filtre_actif(self) -> None:
+        """Les JETONS de la barre de filtre actif restent de simples liens
+        cliquables (retrait d'un filtre) : ce sont les BOUTONS de filtre qui
+        deviennent glissables, pas les jetons déjà posés — cf.
+        `TestGlisserDeposerDesFiltres`."""
+        template = (
+            Path(__file__).resolve().parent.parent
+            / "app"
+            / "templates"
+            / "_field_catalog_rows.html"
+        ).read_text(encoding="utf-8")
+
+        # Le bloc des jetons vit entre `field-catalog-active-filters__tokens`
+        # et la fermeture de la `<ul>`.
+        debut = template.find("field-catalog-active-filters__tokens")
+        fin = template.find("</ul>", debut)
+        assert debut != -1 and fin != -1
+        bloc_jetons = template[debut:fin]
+
+        assert "draggable" not in bloc_jetons.lower()
+
+
+# ---------------------------------------------------------------------------
+# 12. Glisser-déposer des filtres — geste codé jusqu'au bout
+# ---------------------------------------------------------------------------
+#
+# CADRAGE UTILISATEUR (2026-08-12) : « ca fonctionne a moitie mais pas
+# maitrise a priori, code le jusqu'au bout ». Le geste de glisser-déposer
+# existe DÉJÀ dans l'application (app/static/field-composer.js, sur l'écran
+# de configuration) — l'utilisateur l'essaie naturellement ici, où rien ne le
+# gérait. Le clic doit continuer de fonctionner EXACTEMENT pareil : le
+# glisser est un AJOUT, pas un remplacement.
+
+
+class TestGlisserDeposerDesFiltres:
+    _JS = (
+        Path(__file__).resolve().parent.parent
+        / "app"
+        / "static"
+        / "field-catalog-filters.js"
+    )
+
+    def test_le_fichier_js_dedie_existe(self) -> None:
+        """UN concept = UNE source : un second mécanisme de drag&drop, mais un
+        fichier dédié (contrat différent de field-composer.js — ici on
+        déclenche une NAVIGATION htmx, pas une synchronisation de champ
+        caché), pas une duplication du composeur existant dans le même
+        fichier."""
+        assert self._JS.is_file(), (
+            "app/static/field-catalog-filters.js est attendu : le geste de "
+            "glisser-deposer des filtres doit etre code, pas seulement son "
+            "affordance corrigee"
+        )
+
+    def test_le_script_est_charge_par_la_page(self) -> None:
+        page = (
+            Path(__file__).resolve().parent.parent
+            / "app"
+            / "templates"
+            / "field_catalog.html"
+        ).read_text(encoding="utf-8")
+
+        assert "field-catalog-filters.js" in page
+
+    def test_le_script_ne_contient_aucun_appel_eval_ni_document_write(self) -> None:
+        """CSP stricte `script-src 'self'` sans `unsafe-eval` : même garde que
+        field-composer.js et tabs.js."""
+        source = self._JS.read_text(encoding="utf-8")
+
+        assert "eval(" not in source
+        assert "document.write" not in source
+        assert "new Function(" not in source
+
+    def test_les_boutons_de_filtre_sont_rendus_glissables(self) -> None:
+        """Les boutons Exploitation/Origine/Catégorie doivent porter
+        `draggable="true"` — c'est la SOURCE du glisser, la barre de filtre
+        actif en est la CIBLE de dépôt."""
+        template = (
+            Path(__file__).resolve().parent.parent
+            / "app"
+            / "templates"
+            / "_field_catalog_rows.html"
+        ).read_text(encoding="utf-8")
+
+        debut = template.find('class="filter-group-label">Exploitation')
+        fin = template.find("</div>", debut)
+        bloc = template[debut:fin]
+
+        assert 'draggable="true"' in bloc, (
+            "les boutons du groupe Exploitation ne sont pas glissables — le "
+            "geste demande par l'utilisateur ne serait code qu'a moitie"
+        )
+
+    def test_la_barre_de_filtre_actif_est_une_cible_de_depot(self) -> None:
+        """La zone de dépôt doit être identifiable par le script (attribut
+        `data-*` dédié), distincte du simple `id` déjà utilisé par htmx."""
+        template = (
+            Path(__file__).resolve().parent.parent
+            / "app"
+            / "templates"
+            / "_field_catalog_rows.html"
+        ).read_text(encoding="utf-8")
+
+        debut = template.find('id="field-catalog-active-filters"')
+        fin = template.find(">", debut)
+        balise_ouvrante = template[debut : fin + 1]
+
+        assert "data-filter-dropzone" in balise_ouvrante
+
+    def test_chaque_bouton_glissable_porte_ses_urls_en_attributs_data(self) -> None:
+        """Le script n'a pas à reconstruire une URL : il lit `data-drop-url`
+        (fragment, pour htmx.ajax) et `data-drop-push-url` (page complète,
+        pour l'historique) déjà calculées par Jinja — même URL que celle du
+        `hx-get`/`hx-push-url` du bouton, aucune divergence possible."""
+        template = (
+            Path(__file__).resolve().parent.parent
+            / "app"
+            / "templates"
+            / "_field_catalog_rows.html"
+        ).read_text(encoding="utf-8")
+
+        debut = template.find('class="filter-group-label">Exploitation')
+        fin = template.find("</div>", debut)
+        bloc = template[debut:fin]
+
+        boutons = re.findall(r"<a\b[^>]*>", bloc)
+        boutons_draggable = [b for b in boutons if 'draggable="true"' in b]
+        assert boutons_draggable
+        for bouton in boutons_draggable:
+            assert 'data-drop-url="' in bouton
+            assert 'data-drop-push-url="' in bouton
+
+    def test_le_clic_reste_fonctionnel_sur_les_boutons_glissables(
+        self, dashboards_dir: Path
+    ) -> None:
+        """NON-RÉGRESSION EXPLICITE : rendre un bouton glissable ne doit PAS
+        altérer son contrat de clic (hx-get/hx-push-url/href) — le geste est
+        un AJOUT, jamais un remplacement."""
+        app = _build_app(FakeClickHouseClient(), dashboards_dir)
+
+        corps = TestClient(app).get("/field-catalog/rows").text
+
+        assert 'hx-get="' in corps
+        assert 'hx-push-url="' in corps
+        assert 'href="' in corps
+        # Les boutons de filtre restent des <a> fonctionnels sans JS.
+        bouton_inexploites = re.search(
+            r'<a class="btn[^"]*"[^>]*>Inexploités</a>', corps
+        )
+        assert bouton_inexploites
+        assert "hx-get=" in bouton_inexploites.group(0)

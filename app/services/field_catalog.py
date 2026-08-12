@@ -54,6 +54,8 @@ import io
 import json
 import logging
 import re
+import threading
+import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -751,6 +753,11 @@ class FieldCatalog:
     schema_available: bool
     dashboards_available: bool
     fill_rates_available: bool
+    fill_rates_stale: bool = False
+    """`True` si les taux affichés viennent du cache et datent d'une mesure
+    précédente (le dernier recalcul a échoué). Distinct de `fill_rates_
+    available=False` : ici il y A une mesure à montrer, mais elle peut être
+    périmée — l'écran doit le dire, jamais la faire passer pour fraîche."""
     error_message: str = ""
     unreadable_dashboards: list[str] = field(default_factory=list)
     dashboard_titles: list[str] = field(default_factory=list)
@@ -979,6 +986,153 @@ def fetch_fill_rates(
 
 
 # ---------------------------------------------------------------------------
+# Cache des taux de remplissage — LE correctif de lenteur (2026-08-12)
+# ---------------------------------------------------------------------------
+#
+# RETOUR UTILISATEUR, mot pour mot : « ca rame alors qu'on filtre 62 champs ».
+# MESURÉ : `fetch_fill_rates()` balaie 24 h de flux (~1870 ms sur ~1970 ms de
+# `build_catalog()` total) — recalculé à CHAQUE clic de filtre, alors que
+# filtrer porte sur 62 lignes déjà en mémoire. Les taux de remplissage ne
+# bougent qu'à l'échelle de la fenêtre de mesure (24 h) : les recalculer à
+# chaque clic est un gaspillage pur, découplé de ce que fait réellement un
+# filtre.
+#
+# Le cache est PROCESSUS (dict + verrou), pas par requête : aucune dépendance
+# supplémentaire (pas de Redis), cohérent avec le reste du projet qui n'a
+# aucune infra de cache. TTL par défaut aligné sur la fenêtre de mesure
+# elle-même (24 h) : au-delà, la mesure elle-même porte sur une fenêtre
+# glissante différente, donc la revalider a du sens.
+#
+# ZÉRO SILENCIEUX : trois états distincts et JAMAIS confondus —
+#   1. jamais mesuré et mesure indisponible -> `available=False`, `rates={}` ;
+#   2. mesure fraîche (< TTL) -> `available=True`, `stale=False` ;
+#   3. mesure PÉRIMÉE (> TTL) et le RAFRAÎCHISSEMENT a échoué -> la DERNIÈRE
+#      valeur connue reste servie, mais `stale=True` : l'appelant DOIT pouvoir
+#      le lire et le dire à l'écran plutôt que de faire passer une mesure
+#      d'hier pour une mesure d'aujourd'hui.
+
+
+FILL_RATE_CACHE_TTL_SECONDS = 86_400
+"""Durée de vie du cache de remplissage : 24 h, alignée sur `FILL_RATE_WINDOW_
+SECONDS` — la fenêtre de mesure elle-même glisse à cette échelle, revalider
+plus souvent n'apporterait aucune fraîcheur supplémentaire."""
+
+
+@dataclass(frozen=True)
+class FillRateCacheResult:
+    """Ce que le cache rend à l'appelant — jamais une simple `dict`, pour que
+    la fraîcheur de la mesure ne puisse pas être perdue en route."""
+
+    rates: dict[str, float]
+    available: bool
+    """`False` si AUCUNE mesure n'a jamais pu être obtenue (première mesure en
+    échec). Distinct de `stale` : un cache jamais rempli n'a rien à montrer,
+    un cache périmé a une dernière valeur connue à montrer EN LE DISANT."""
+    stale: bool = False
+    """`True` si la valeur servie date de plus de `FILL_RATE_CACHE_TTL_
+    SECONDS` et que la tentative de rafraîchissement a échoué. Zéro silencieux
+    appliqué au cache : une mesure d'hier ne doit jamais passer pour une
+    mesure d'aujourd'hui sans le dire."""
+    measured_at: float | None = None
+    """Horodatage `time.monotonic()` de la dernière mesure réussie. `None` si
+    aucune mesure n'a jamais abouti."""
+
+
+_fill_rate_cache_lock = threading.Lock()
+_fill_rate_cache: dict[str, Any] = {
+    "rates": {},
+    "measured_at": None,
+    "key": None,
+}
+
+
+def reset_fill_rate_cache() -> None:
+    """Vide le cache — utilisé par les tests pour partir d'un état connu, et
+    disponible pour un futur bouton "Forcer le recalcul" si besoin."""
+    with _fill_rate_cache_lock:
+        _fill_rate_cache["rates"] = {}
+        _fill_rate_cache["measured_at"] = None
+        _fill_rate_cache["key"] = None
+
+
+def get_cached_fill_rates(
+    client: ClickHouseQueryable,
+    column_names: list[str],
+    ttl_seconds: float = FILL_RATE_CACHE_TTL_SECONDS,
+    allow_refresh: bool = True,
+) -> FillRateCacheResult:
+    """Sert les taux de remplissage depuis un cache en mémoire, avec TTL.
+
+    C'est CE mécanisme qui rend le filtrage rapide. CADRAGE UTILISATEUR
+    (2026-08-12), mot pour mot : « pourquoi tu fais recherche clickhouse au
+    moment du filtre ?????? [...] fait le au changement de la page ou a un
+    autre moment, on a besoin d'une donnee dans l'heure pas a la seconde ».
+
+    `allow_refresh=False` (le chemin de FILTRAGE, `/field-catalog/rows`) : NE
+    DÉCLENCHE JAMAIS `fetch_fill_rates`, cache froid ou pas — sert uniquement
+    ce que le cache contient déjà, `available=False` si rien n'y est encore.
+    `allow_refresh=True` (le chargement de PAGE, `/field-catalog`) : seul
+    chemin autorisé à mesurer, à froid ou après expiration du TTL.
+
+    Le cache est invalidé automatiquement si l'ENSEMBLE de colonnes change
+    (schéma qui évolue) : servir un cache calculé sur un ancien jeu de
+    colonnes serait incomplet en silence.
+    """
+    cache_key = tuple(sorted(column_names))
+
+    with _fill_rate_cache_lock:
+        cached_rates = dict(_fill_rate_cache["rates"])
+        measured_at = _fill_rate_cache["measured_at"]
+        same_key = _fill_rate_cache["key"] == cache_key
+
+    now = time.monotonic()
+    has_fresh_cache = (
+        same_key and measured_at is not None and (now - measured_at) < ttl_seconds
+    )
+    if has_fresh_cache:
+        return FillRateCacheResult(
+            rates=cached_rates, available=True, stale=False, measured_at=measured_at
+        )
+
+    if not allow_refresh:
+        # Chemin de FILTRAGE : jamais de mesure ici, quel que soit l'état du
+        # cache. Un cache jamais rempli sert « indisponible » ; un cache
+        # périmé (TTL dépassé) sert la dernière valeur connue, marquée
+        # `stale` — jamais un nouvel appel ClickHouse.
+        if same_key and measured_at is not None:
+            return FillRateCacheResult(
+                rates=cached_rates, available=True, stale=True, measured_at=measured_at
+            )
+        return FillRateCacheResult(rates={}, available=False, stale=False)
+
+    try:
+        fresh_rates = fetch_fill_rates(client, column_names)
+    except (FieldCatalogUnavailableError, ValueError) as exc:
+        if same_key and measured_at is not None:
+            # Rafraîchissement en échec APRÈS un succès passé : on sert la
+            # dernière valeur connue, mais MARQUÉE périmée — jamais en
+            # silence. C'est le zéro silencieux appliqué au cache.
+            log.error(
+                "field_catalog: rafraichissement du cache de remplissage en "
+                "echec, service de la derniere valeur connue (perimee): %s",
+                exc,
+            )
+            return FillRateCacheResult(
+                rates=cached_rates, available=True, stale=True, measured_at=measured_at
+            )
+        # Jamais mesuré du tout : rien à servir, l'appelant doit dire
+        # « indisponible », jamais 0 %.
+        return FillRateCacheResult(rates={}, available=False, stale=False)
+
+    with _fill_rate_cache_lock:
+        _fill_rate_cache["rates"] = dict(fresh_rates)
+        _fill_rate_cache["measured_at"] = now
+        _fill_rate_cache["key"] = cache_key
+
+    return FillRateCacheResult(rates=fresh_rates, available=True, stale=False, measured_at=now)
+
+
+# ---------------------------------------------------------------------------
 # Lecture des dashboards
 # ---------------------------------------------------------------------------
 
@@ -1094,12 +1248,19 @@ def columns_used_by_dashboards(directory: Path) -> set[str]:
 # ---------------------------------------------------------------------------
 
 
-def build_catalog(client: ClickHouseQueryable, dashboards_dir: Path) -> FieldCatalog:
+def build_catalog(
+    client: ClickHouseQueryable, dashboards_dir: Path, *, allow_fill_rate_refresh: bool = True
+) -> FieldCatalog:
     """Assemble le catalogue complet — le point d'entrée de l'écran.
 
     Les trois dépendances (schéma, dashboards, remplissage) échouent
     INDÉPENDAMMENT : une panne de mesure du remplissage ne doit pas emporter le
     ratio exploité/inexploité, qui reste l'argument principal.
+
+    `allow_fill_rate_refresh` (cadrage utilisateur 2026-08-12) : `False` sur
+    le chemin de FILTRAGE (`/field-catalog/rows`) — ne déclenche JAMAIS la
+    mesure ClickHouse, cache froid ou pas. `True` uniquement au chargement de
+    la PAGE complète (`/field-catalog`), seul moment légitime pour mesurer.
     """
     errors: list[str] = []
 
@@ -1135,15 +1296,29 @@ def build_catalog(client: ClickHouseQueryable, dashboards_dir: Path) -> FieldCat
             + ", ".join(usage.unreadable_files)
         )
 
-    try:
-        fill_rates = fetch_fill_rates(client, [column.name for column in columns])
-        fill_rates_available = True
-    except (FieldCatalogUnavailableError, ValueError) as exc:
-        fill_rates = {}
-        fill_rates_available = False
+    # CACHE, jamais un appel direct : mesurer le remplissage balaie 24 h de
+    # flux (~1870 ms mesurés en prod). Filtrer porte sur les 62 lignes déjà en
+    # mémoire — recalculer cette mesure à chaque clic de filtre serait un
+    # gaspillage pur, découplé de ce que fait un filtre. Le cache est TTL
+    # (24 h) et signale explicitement une mesure périmée (`stale`), jamais un
+    # zéro silencieux.
+    cache_result = get_cached_fill_rates(
+        client,
+        [column.name for column in columns],
+        allow_refresh=allow_fill_rate_refresh,
+    )
+    fill_rates = cache_result.rates
+    fill_rates_available = cache_result.available
+    fill_rates_stale = cache_result.stale
+    if not cache_result.available:
         errors.append(
-            f"Les taux de remplissage n'ont pas pu être mesurés ({exc}). Les "
-            "champs sont affichés sans taux — aucun n'est présenté comme vide."
+            "Les taux de remplissage n'ont pas pu être mesurés. Les champs "
+            "sont affichés sans taux — aucun n'est présenté comme vide."
+        )
+    elif cache_result.stale:
+        errors.append(
+            "Les taux de remplissage affichés datent d'une mesure précédente "
+            "(le dernier recalcul a échoué) : ils peuvent être périmés."
         )
 
     entries: list[CatalogEntry] = []
@@ -1176,6 +1351,7 @@ def build_catalog(client: ClickHouseQueryable, dashboards_dir: Path) -> FieldCat
         schema_available=schema_available,
         dashboards_available=dashboards_available,
         fill_rates_available=fill_rates_available,
+        fill_rates_stale=fill_rates_stale,
         error_message=" ".join(errors),
         unreadable_dashboards=list(usage.unreadable_files),
         dashboard_titles=list(usage.dashboard_titles),
